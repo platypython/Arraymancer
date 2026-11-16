@@ -1,0 +1,5 @@
+// Provides the typed Apple C ABI to Swift.
+module ArraymancerAppleABI {
+  header "apple_abi.h"
+  export *
+}

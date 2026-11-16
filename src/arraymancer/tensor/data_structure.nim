@@ -111,16 +111,24 @@ when defined(opencl):
         discard releaseMemObject p.value.toClpointer
 
 
-when defined(cuda) and defined(opencl):
-  type AnyTensor*[T] = Tensor[T] or CudaTensor[T] or ClTensor[T]
-elif defined(cuda):
-  type AnyTensor*[T] = Tensor[T] or CudaTensor[T]
-elif defined(opencl):
-  type AnyTensor*[T] = Tensor[T] or ClTensor[T]
-else:
-  type AnyTensor*[T] = Tensor[T]
+when defined(metal) or defined(coreai):
+  import ./metal_types
 
-type GpuTensor[T] = AnyTensor[T] and not Tensor[T]
+when defined(cuda) and defined(opencl):
+  type LegacyTensor[T] = Tensor[T] or CudaTensor[T] or ClTensor[T]
+elif defined(cuda):
+  type LegacyTensor[T] = Tensor[T] or CudaTensor[T]
+elif defined(opencl):
+  type LegacyTensor[T] = Tensor[T] or ClTensor[T]
+else:
+  type LegacyTensor[T] = Tensor[T]
+
+when defined(metal) or defined(coreai):
+  type AnyTensor*[T] = LegacyTensor[T] or MetalTensor[T]
+else:
+  type AnyTensor*[T] = LegacyTensor[T]
+
+type GpuTensor[T] = LegacyTensor[T] and not Tensor[T]
 
 
 

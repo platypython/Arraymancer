@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add optional native Metal float32 storage and explicit CPU transfers on macOS
+  arm64. Build with `nim c -r tools/build_apple.nim --backend=metal`, then enable
+  `-d:metal`; unavailable devices or libraries raise explicit backend errors.
 - Count initialized CPU rank-zero tensors as one element while preserving empty
   uninitialized tensor sentinels.
 - Return a rank-zero scalar from autograd `mse_loss`, retaining mean-normalized
