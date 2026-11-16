@@ -27,8 +27,8 @@ proc mse_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
   assert gradient.shape == [1]
   let grad = gradient.unsafe_raw_offset[0]
 
-  let norm = grad * 2'f32 / gradient.size.float32 # TODO divide by total number of elements or by batch size? https://github.com/pytorch/pytorch/issues/3322
-                                                  # See also Stanford course: http://theory.stanford.edu/~tim/s15/l/l15.pdf
+  type T = typeof(grad)
+  let norm = grad * T(2) / T(self.cache.value.size)
 
   result = newDiffs[TT](1)
   result[0] = map2_inline(self.cache.value, self.target):
@@ -61,6 +61,7 @@ proc mse_loss*[TT](input: Variable[TT], target: TT): Variable[TT] =
   ## Input:
   ##   - An input variable of predicted values of shape [batch_size, features]
   ##   - The ground truth of the same shape
+  ## The loss averages over every input element; backward uses the same divisor.
 
   # Resulting var
   new result

@@ -37,6 +37,14 @@ suite "Pinned PyTorch conformance foundation":
         check compareObservations(caseData["expected"], runCase(caseData),
           caseData["atol"].getFloat(), caseData["rtol"].getFloat()).len == 0
 
+  test "Mean-MSE gradients average over all prediction elements":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr() == "loss.mse_mean":
+        let actual = runCase(caseData)
+        check compareObservations(caseData["expected"]["grad"], actual["grad"],
+          caseData["atol"].getFloat(), caseData["rtol"].getFloat()).len == 0
+
   test "Shape differs even when flattened values match":
     let expected = %*{"result": {"shape": [2, 2], "values": [1.0, 2.0, 3.0, 4.0]}}
     let actual = %*{"result": {"shape": [4], "values": [1.0, 2.0, 3.0, 4.0]}}
