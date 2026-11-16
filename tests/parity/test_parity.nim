@@ -1,0 +1,127 @@
+# Copyright 2026 the Arraymancer contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+## Exercises portable conformance comparisons, native matches and strict coverage policy.
+import std/[json, unittest]
+import ./[parity_support, native_cases, run_parity]
+
+proc duplicate(node: JsonNode): JsonNode = parseJson($node)
+
+proc withoutFirst(node: JsonNode): JsonNode =
+  result = newJArray()
+  for i in 1 ..< node.len: result.add(node[i])
+
+suite "Pinned PyTorch conformance foundation":
+  let reference = loadReference(parityRoot & "reference.json")
+  let inventory = parseFile(parityRoot & "inventory.json")
+  let capabilities = parseFile(parityRoot & "capabilities.json")
+  let requirements = loadAppleRequirements(parityRoot & "apple_requirements.json")
+
+  test "Five matching native CPU contracts":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    let ids = ["tensor.transpose_alias", "tensor.empty_shape", "tensor.broadcast_same_rank",
+      "tensor.matmul_2d", "autograd.mean_gradient"]
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr() in ids:
+        check compareObservations(caseData["expected"], runCase(caseData),
+          caseData["atol"].getFloat(), caseData["rtol"].getFloat()).len == 0
+
+  test "Shape differs even when flattened values match":
+    let expected = %*{"result": {"shape": [2, 2], "values": [1.0, 2.0, 3.0, 4.0]}}
+    let actual = %*{"result": {"shape": [4], "values": [1.0, 2.0, 3.0, 4.0]}}
+    let differences = compareObservations(expected, actual, 0, 0)
+    check differences.len > 0
+    check differences[0].path == "/result/shape"
+
+  test "Nonfinite values never match finite values or opposite infinities":
+    check compareObservations(%*{"values": [1.0]}, %*{"values": ["nan"]}, 1, 1).len == 1
+    check compareObservations(%*{"values": ["+inf"]}, %*{"values": ["-inf"]}, 1, 1).len == 1
+    check compareObservations(%*{"values": ["nan"]}, %*{"values": ["nan"]}, 0, 0).len == 0
+
+  test "Tolerance boundary is inclusive and elementwise":
+    check compareObservations(%*{"values": [1.0]}, %*{"values": [1.25]}, 0.125, 0.125).len == 0
+    check compareObservations(%*{"values": [1.0]}, %*{"values": [1.2501]}, 0.125, 0.125).len == 1
+    check compareObservations(%*{"numel": 1}, %*{"numel": 2}, 100, 100).len == 1
+    check compareObservations(%*{"values": [1.0, 2.0]}, %*{"values": [1.0]}, 0, 0).len == 1
+
+  test "Fixture provenance and complete unique IDs are mandatory":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var malformed = duplicate(fixtures)
+    malformed["reference"]["torch"] = %"0.0.0"
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    malformed["cases"] = withoutFirst(malformed["cases"])
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    malformed["cases"][1]["id"] = malformed["cases"][0]["id"]
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    malformed["oracle"]["python"] = %"3.13.0"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+  test "Invalid selectors fail before execution":
+    expect ValueError: discard parseSelection(@["--profile=unknown"])
+    expect ValueError: discard parseSelection(@["--case=tensor.matmul_2d"])
+    expect ValueError: discard parseSelection(@["--profile=apple", "--case=tensor.matmul_2d"])
+    expect ValueError:
+      discard collectReport(parseSelection(@["--profile=cpu", "--case=unknown"]))
+
+  test "Apple profiles remain independent mandatory gates":
+    let metal = collectAppleCoverage(requirements, capabilities, @["apple-metal"])
+    let coreai = collectAppleCoverage(requirements, capabilities, @["apple-coreai"])
+    check metal.len == 10
+    check coreai.len == 8
+    check collectAppleCoverage(requirements, capabilities, @["cpu"]).len == 0
+    for entries in [metal, coreai]:
+      for entry in entries:
+        check entry["execution"].getStr() == "not_run"
+        check entry["actual"].kind == JNull
+      let report = %*{"counts": {"mismatch": 0, "error": 0}, "apple_counts": {"unobserved": entries.len}}
+      check reportExitCode(report) == 1
+
+  test "Partial annotations cannot establish execution":
+    var changed = duplicate(capabilities)
+    for i in 0 ..< changed["apple_requirements"].len:
+      changed["apple_requirements"][i]["status"] = %"partial"
+    validateCapabilities(changed, inventory, requirements)
+    let coverage = collectAppleCoverage(requirements, changed, @["apple-metal", "apple-coreai"])
+    check coverage.len == 18
+    for entry in coverage:
+      check entry["implementation_status"].getStr() == "partial"
+      check entry["execution"].getStr() == "not_run"
+      check entry["actual"].kind == JNull
+    check reportExitCode(%*{"counts": {"mismatch": 0, "error": 0}, "apple_counts": {"unobserved": coverage.len}}) == 1
+
+  test "Missing Apple profiles requirements and MPS links are invalid":
+    var malformed = duplicate(requirements)
+    malformed["profiles"] = withoutFirst(malformed["profiles"])
+    expect ValueError: validateAppleRequirements(malformed, reference, inventory)
+    malformed = duplicate(requirements)
+    malformed["requirements"] = withoutFirst(malformed["requirements"])
+    expect ValueError: validateAppleRequirements(malformed, reference, inventory)
+    malformed = duplicate(requirements)
+    for row in malformed["requirements"]:
+      var remaining = newJArray()
+      for id in row["reference_ids"]:
+        if id.getStr() != "mps:torch.mps.compile_shader": remaining.add(id)
+      row["reference_ids"] = remaining
+    expect ValueError: validateAppleRequirements(malformed, reference, inventory)
+
+  test "Verified annotations and incomplete area coverage are invalid":
+    var malformed = duplicate(capabilities)
+    malformed["apple_requirements"][0]["status"] = %"verified"
+    expect ValueError: validateCapabilities(malformed, inventory, requirements)
+    malformed = duplicate(capabilities)
+    malformed["areas"] = withoutFirst(malformed["areas"])
+    expect ValueError: validateCapabilities(malformed, inventory, requirements)

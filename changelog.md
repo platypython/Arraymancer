@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add a pinned PyTorch conformance inventory and offline CPU observations, with
+  separate mandatory Metal training and Core AI inference coverage gates.
+
 Arraymancer v0.7.33 Oct 11 2024
 =====================================================
 

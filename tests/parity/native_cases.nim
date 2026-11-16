@@ -1,0 +1,103 @@
+# Copyright 2026 the Arraymancer contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+## Observes fixture-driven CPU operations without replacing native semantics.
+import std/[json, math]
+import ../../src/arraymancer
+
+proc getTensor(desc: JsonNode): Tensor[float64] =
+  let shapeNode = desc["shape"]
+  if shapeNode.len > LASER_MAXRANK: raise newException(ValueError, "input rank exceeds LASER_MAXRANK")
+  var shape = newSeq[int](shapeNode.len)
+  for i in 0 ..< shapeNode.len: shape[i] = shapeNode[i].getInt
+  result = newTensorUninit[float64](toMetadata(shape))
+  let values = desc["values"]
+  if values.len != result.size: raise newException(ValueError, "input value count mismatch")
+  var raw = result.unsafe_raw_offset
+  for i in 0 ..< values.len: raw[i] = values[i].getFloat
+
+proc floatNode(value: float64): JsonNode =
+  case classify(value)
+  of fcNan: result = %"nan"
+  of fcInf: result = %"+inf"
+  of fcNegInf: result = %"-inf"
+  else: result = %value
+proc tensorObservation[T](t: Tensor[T], includeValues = true): JsonNode =
+  result = newJObject()
+  var shape = newJArray()
+  for dim in t.shape: shape.add newJInt(dim)
+  result["shape"] = shape
+  result["numel"] = newJInt(t.size.int)
+  result["dtype"] = %"float64"
+  result["device"] = %"cpu"
+  if includeValues:
+    var values = newJArray()
+    for _, value in enumerate(t): values.add floatNode(value.float64)
+    result["values"] = values
+
+proc runCase*(caseData: JsonNode): JsonNode =
+  let id = caseData["id"].getStr
+  let inputs = caseData["inputs"]
+  result = newJObject()
+  case id
+  of "tensor.transpose_alias":
+    var base = getTensor(inputs["a"])
+    var view = base.transpose
+    let mutation = inputs["mutation"]
+    let index = mutation["index"]
+    if index.len != 2: raise newException(ValueError, "transpose mutation index must have rank 2")
+    view[index[0].getInt, index[1].getInt] = mutation["value"].getFloat
+    result["base"] = tensorObservation(base)
+    result["view"] = tensorObservation(view)
+  of "tensor.empty_shape":
+    var shape = newSeq[int](inputs["shape"].len)
+    for i in 0 ..< inputs["shape"].len: shape[i] = inputs["shape"][i].getInt
+    if shape.len > LASER_MAXRANK: raise newException(ValueError, "input rank exceeds LASER_MAXRANK")
+    result["result"] = tensorObservation(newTensorUninit[float64](toMetadata(shape)))
+  of "tensor.scalar_metadata":
+    let scalar = newTensorUninit[float64]([])
+    result["result"] = tensorObservation(scalar, false)
+  of "tensor.broadcast_same_rank", "tensor.broadcast_leading_dims":
+    let a = getTensor(inputs["a"])
+    let b = getTensor(inputs["b"])
+    result["result"] = tensorObservation(a +. b)
+  of "tensor.matmul_2d":
+    let a = getTensor(inputs["a"])
+    let b = getTensor(inputs["b"])
+    result["result"] = tensorObservation(a * b)
+  of "autograd.mean_gradient":
+    let ctx = newContext Tensor[float64]
+    let x = ctx.variable(getTensor(inputs["x"]), requires_grad = true)
+    let y = x.mean
+    y.backprop
+    result["grad"] = tensorObservation(x.grad)
+  of "loss.mse_mean":
+    let ctx = newContext Tensor[float64]
+    let prediction = ctx.variable(getTensor(inputs["prediction"]), requires_grad = true)
+    let target = getTensor(inputs["target"])
+    let loss = prediction.mse_loss(target)
+    loss.backprop
+    result["loss"] = tensorObservation(loss.value)
+    result["grad"] = tensorObservation(prediction.grad)
+  of "autograd.no_grad_exception":
+    let ctx = newContext Tensor[float64]
+    let x = ctx.variable(getTensor(inputs["x"]), requires_grad = true)
+    try:
+      ctx.no_grad_mode:
+        raise newException(ValueError, "parity probe")
+    except ValueError:
+      discard
+    result["tracking_after_exception"] = %x.is_grad_needed
+  else:
+    raise newException(ValueError, "unknown parity case: " & id)

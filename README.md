@@ -230,6 +230,7 @@ Of them; she's murder'd of your galla?
   - [Table of Contents](#table-of-contents)
   - [Installation](#installation)
   - [Full documentation](#full-documentation)
+  - [PyTorch conformance checks](#pytorch-conformance-checks)
   - [Features](#features)
     - [Arraymancer as a Deep Learning library](#arraymancer-as-a-deep-learning-library)
       - [Fizzbuzz with fully-connected layers (also called Dense, Affine or Linear layers)](#fizzbuzz-with-fully-connected-layers-also-called-dense-affine-or-linear-layers)
@@ -267,6 +268,30 @@ Windows users may have to download `libopenblas.dll` from the binary releases
 ## Full documentation
 
 Detailed API is available at Arraymancer official [documentation](https://mratsim.github.io/Arraymancer/). Note: This documentation is only generated for 0.X release. Check the [examples folder](examples/) for the latest devel evolutions.
+
+## PyTorch conformance checks
+
+`nimble parity` compares nine native CPU cases with checked-in PyTorch 2.15.0
+observations and writes `build/pytorch-parity.json`. It also reports ten required
+Metal training contracts and eight required Core AI inference contracts.
+These Apple contracts have no native execution observations yet, so the strict
+command exits nonzero even if every CPU case matches. Full feature parity is
+not established.
+
+After building, use `build/pytorch_parity --profile=cpu --case=tensor.matmul_2d`
+for a single CPU case, or `build/pytorch_parity --profile=apple` for the dedicated
+Apple coverage gate. Exit codes are 0 for a passing selection, 1 for observed
+differences or unobserved required coverage, and 2 for invalid input or I/O errors.
+Normal checks need no Python, reference checkout, Apple SDK, or accelerator.
+
+The version pins and source provenance live in `tests/parity/`. Capability
+annotations describe inspected implementation evidence, not passing tests.
+The source catalogue covers root API areas, ATen schemas, autograd rules and MPS
+exports; its counts are not a feature-parity percentage.
+Developers can regenerate it with `tools/pytorch_inventory.nim` against the pinned
+commit in `ref/pytorch`; `--check` detects stale inventory without rewriting it.
+The separate `tests/parity/references/generate_fixtures.py` oracle requires
+CPython 3.13.18 and Torch 2.15.0. Neither is an Arraymancer runtime dependency.
 
 ## Features
 

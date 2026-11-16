@@ -192,6 +192,11 @@ task all_tests, "Run all tests - Intel MKL + Cuda + OpenCL + OpenMP":
 task test, "Run all tests - Default BLAS & Lapack":
   test "tests_cpu", "", split = false
 
+task parity, "Run strict pinned PyTorch conformance and required Apple coverage gates":
+  if not dirExists "build":
+    mkDir "build"
+  exec "nim c -r -d:ssl -o:build/pytorch_parity tests/parity/run_parity.nim --profile=all --output=build/pytorch-parity.json"
+
 task test_arc, "Run all tests under ARC - Default BLAS & Lapack":
   test "tests_cpu", "--gc:arc", split = false
 

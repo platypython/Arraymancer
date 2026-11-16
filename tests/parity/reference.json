@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "torch": "2.15.0",
+  "source_commit": "31a77fc9c0a7c6fff15a1ff58c743f53b1a9d457",
+  "python": "3.13.18",
+  "apple": {
+    "xcode": "27.1",
+    "xcode_build": "27A9275",
+    "macos_sdk": "27.0",
+    "swift": "6.4",
+    "minimum_macos": "27.0",
+    "architecture": "arm64",
+    "metal_api": "4"
+  }
+}

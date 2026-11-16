@@ -15,6 +15,7 @@
 {.push warning[Spacing]: off.}
 import ../src/arraymancer,
         ./tensor/test_init,
+        ./parity/test_parity,
         ./tensor/test_operators_comparison,
         ./tensor/test_accessors,
         ./tensor/test_accessors_slicer,
