@@ -10,7 +10,7 @@
   "areas": [
     {"id":"api:accelerator","status":"unreviewed","evidence":[],"gaps":[]},
     {"id":"api:amp","status":"unreviewed","evidence":[],"gaps":[]},
-    {"id":"api:autograd","status":"partial","evidence":[{"path":"src/arraymancer/autograd/autograd_common.nim","symbol":"backprop"},{"path":"src/arraymancer/autograd/autograd_common.nim","symbol":"no_grad_mode"}],"gaps":["Reverse-mode tape exists; seeded VJPs, retained/higher-order graphs, forward AD, mutation checks, and exception-safe mode restoration are absent or not established."]},
+    {"id":"api:autograd","status":"partial","evidence":[{"path":"src/arraymancer/autograd/autograd_common.nim","symbol":"backprop"},{"path":"src/arraymancer/autograd/autograd_common.nim","symbol":"no_grad_mode"}],"gaps":["Reverse-mode tape and exception-safe no-grad mode restoration exist; seeded VJPs, retained/higher-order graphs, forward AD and mutation checks remain absent or not established."]},
     {"id":"api:backends","status":"unreviewed","evidence":[],"gaps":[]},
     {"id":"api:benchmark_utils","status":"unreviewed","evidence":[],"gaps":[]},
     {"id":"api:checkpoint","status":"unreviewed","evidence":[],"gaps":[]},

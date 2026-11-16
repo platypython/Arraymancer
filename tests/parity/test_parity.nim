@@ -28,10 +28,10 @@ suite "Pinned PyTorch conformance foundation":
   let capabilities = parseFile(parityRoot & "capabilities.json")
   let requirements = loadAppleRequirements(parityRoot & "apple_requirements.json")
 
-  test "Five matching native CPU contracts":
+  test "Matching native CPU contracts":
     let fixtures = loadFixtures(parityRoot & "fixtures.json")
     let ids = ["tensor.transpose_alias", "tensor.empty_shape", "tensor.broadcast_same_rank",
-      "tensor.matmul_2d", "autograd.mean_gradient"]
+      "tensor.matmul_2d", "autograd.mean_gradient", "autograd.no_grad_exception"]
     for caseData in fixtures["cases"]:
       if caseData["id"].getStr() in ids:
         check compareObservations(caseData["expected"], runCase(caseData),

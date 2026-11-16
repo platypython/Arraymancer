@@ -199,12 +199,14 @@ template no_grad_mode*(ctx: Context, body: untyped): untyped =
   ## to each Variable.
   ##
   ## This should be used for validation or prediction to optimize memory.
-  let prev_state = ctx.no_grad
-  ctx.no_grad = true
-
-  body
-
-  ctx.no_grad = prev_state
+  ## The previous tracking mode is restored on every exit, including exceptions.
+  let context = ctx
+  let prev_state = context.no_grad
+  context.no_grad = true
+  try:
+    body
+  finally:
+    context.no_grad = prev_state
 
 func is_grad_needed*(v: Variable): bool {.inline.} =
   ## Depending on the input variable and its context no_grad_mode,

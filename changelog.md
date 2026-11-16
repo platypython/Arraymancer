@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Restore the previous autograd tracking mode when `no_grad_mode` exits through
+  an exception.
+
 - Add a pinned PyTorch conformance inventory and offline CPU observations, with
   separate mandatory Metal training and Core AI inference coverage gates.
 
