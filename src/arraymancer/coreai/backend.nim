@@ -11,6 +11,7 @@ type
   CoreAIUnavailableError* = object of CoreAIError
   CoreAIDescriptorError* = object of CoreAIError
   CoreAITimeoutError* = object of CoreAIError
+  CoreAIBufferBusyError* = object of CoreAIError
 
   AMStatus* {.bycopy.} = object
     code*: int32
@@ -27,7 +28,9 @@ type
     rank*, dynamicShape*, resolved*, reserved*: int32
     shape*, strides*: array[8, int64]
     minimumBytes*, hostCopyBytes*: uint64
-
+    descriptorHandle*: pointer
+    bufferIdentity*, byteOffset*: uint64
+    borrowed*, reserved2*: int32
   ACBinding* {.bycopy.} = object
     name*: cstring
     array*: pointer
@@ -39,6 +42,7 @@ type
     preferredUnit*, reserved*: int32
     hostCopyBytes*, materializationBytes*, cpuFallbackCount*: uint64
     assetDigest*, functionName*, architecture*: cstring
+    borrowedInputCount*, producerCount*: uint64
 
   CoreAIApi* = object
     messageFree*: proc(message: cstring) {.cdecl, gcsafe, raises: [].}
@@ -56,6 +60,10 @@ type
     arrayImport*: proc(host: pointer; descriptor: AMTensorDescriptor; array: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
     arrayCopy*: proc(array: pointer; host: pointer; descriptor: AMTensorDescriptor): AMStatus {.cdecl, gcsafe, raises: [].}
     arrayDescriptor*: proc(array: pointer; descriptor: ptr ACArrayDescriptor): AMStatus {.cdecl, gcsafe, raises: [].}
+    arrayView*: proc(buffer: pointer; descriptor: AMTensorDescriptor;
+      array: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+    descriptorResolve*: proc(descriptorHandle: pointer; shape: ptr int64;
+      rank: uint32; outValue: ptr ACArrayDescriptor): AMStatus {.cdecl, gcsafe, raises: [].}
     submit*: proc(function: pointer; inputs: ptr ACBinding; count: uint32; job: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
     jobOutputCount*: proc(job: pointer; count: ptr uint32): AMStatus {.cdecl, gcsafe, raises: [].}
     jobOutput*: proc(job: pointer; index: uint32; name: ptr cstring; array: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
@@ -101,6 +109,8 @@ proc coreAIApi*(): CoreAIApi {.gcsafe.} =
       resolve(arrayImport, "ac_array_import")
       resolve(arrayCopy, "ac_array_copy")
       resolve(arrayDescriptor, "ac_array_descriptor")
+      resolve(arrayView, "ac_array_view")
+      resolve(descriptorResolve, "ac_descriptor_resolve")
       resolve(submit, "ac_submit")
       resolve(jobOutputCount, "ac_job_output_count")
       resolve(jobOutput, "ac_job_output")
@@ -125,6 +135,10 @@ proc checkCoreAI*(status: AMStatus) {.gcsafe.} =
     raise error
   of 102:
     var error = newException(CoreAIDescriptorError, message)
+    error.nativeCode = status.code
+    raise error
+  of 105:
+    var error = newException(CoreAIBufferBusyError, message)
     error.nativeCode = status.code
     raise error
   of 104:

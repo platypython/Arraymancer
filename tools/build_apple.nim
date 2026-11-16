@@ -69,8 +69,7 @@ when isMainModule:
   let sdk = run("xcrun", ["--sdk", "macosx", "--show-sdk-path"]).strip
   let root = currentSourcePath().parentDir.parentDir
   createDir(output)
-  if backend in ["all", "metal"] or
-      not fileExists(output / "libarraymancer_metal.dylib"):
-    buildMetal(root, output, sdk)
+  # Core AI links the shared Metal ABI, so rebuild that dependency together.
+  buildMetal(root, output, sdk)
   if backend in ["all", "coreai"]:
     buildCoreAI(root, output, sdk)

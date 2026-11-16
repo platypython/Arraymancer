@@ -1,11 +1,13 @@
 // Copyright 2026 Arraymancer contributors. Apache-2.0.
-// Core AI objects cross the C ABI only as retained opaque handles. No Swift
-// storage view or caller-owned host pointer survives its synchronous closure.
+// Core AI objects cross the C ABI only as retained opaque handles. Raw views
+// stay task-local through awaited SDK runs; caller host pointers stay synchronous.
 import ArraymancerAppleABI
 import CoreAI
 import CryptoKit
 import Darwin
+import Dispatch
 import Foundation
+import Metal
 import Synchronization
 
 private enum ABIError: Error {
@@ -39,6 +41,20 @@ private func statusFailure(_ error: Error, fallback: Int32 = 103) -> AMStatus {
     return statusFailure(error.code, error.message)
   }
   return statusFailure(fallback, String(describing: error))
+}
+private func checkMetalStatus(_ status: AMStatus, fallback: Int32) throws {
+  guard status.code != 0 else {
+    if let message = status.message { am_message_free(message) }
+    return
+  }
+  let message: String
+  if let nativeMessage = status.message {
+    message = String(cString: nativeMessage)
+    am_message_free(nativeMessage)
+  } else {
+    message = "native Metal buffer operation failed with status \(status.code)"
+  }
+  throw abiError(status.code == 10 ? 105 : fallback, message)
 }
 
 private func ownedCString(_ value: String) -> UnsafeMutablePointer<CChar>? {
@@ -114,6 +130,8 @@ private struct EvidenceContext: Sendable {
   let functionName: String
   var assetDigest: String
   var architecture: String
+  var borrowedInputCount: UInt64 = 0
+  var producerCount: UInt64 = 0
 }
 
 @available(macOS 27.0, *)
@@ -171,16 +189,96 @@ private final class CoreFunctionHandle: @unchecked Sendable {
 }
 
 @available(macOS 27.0, *)
+private final class BorrowedMetalStorage: @unchecked Sendable {
+  let ownerHandle: UnsafeMutableRawPointer
+  let metalBuffer: any MTLBuffer
+  let identity: UInt64
+  let descriptor: AMTensorDescriptor
+  let shape: [Int]
+  let strides: [Int]
+  let scalarType: NDArray.ScalarType
+  let byteOffset: Int
+  let minimumBytes: UInt64
+
+  init(
+    ownerHandle: UnsafeMutableRawPointer,
+    metalBuffer: any MTLBuffer,
+    identity: UInt64,
+    descriptor: AMTensorDescriptor,
+    shape: [Int],
+    strides: [Int],
+    scalarType: NDArray.ScalarType,
+    byteOffset: Int,
+    minimumBytes: UInt64
+  ) {
+    self.ownerHandle = ownerHandle
+    self.metalBuffer = metalBuffer
+    self.identity = identity
+    self.descriptor = descriptor
+    self.shape = shape
+    self.strides = strides
+    self.scalarType = scalarType
+    self.byteOffset = byteOffset
+    self.minimumBytes = minimumBytes
+  }
+
+  deinit {
+    am_release(ownerHandle)
+  }
+}
+
+@available(macOS 27.0, *)
+private enum CoreArrayStorage {
+  case owned(NDArray)
+  case borrowed(BorrowedMetalStorage)
+}
+
+@available(macOS 27.0, *)
 private final class CoreArrayHandle: @unchecked Sendable {
-  let array: NDArray
+  let storage: CoreArrayStorage
   let name: String
   let minimumBytes: UInt64
+  let retainedBorrowedOwners: [BorrowedMetalStorage]
   private let hostCopyCounter = Mutex<UInt64>(0)
 
-  init(array: NDArray, name: String = "", minimumBytes: UInt64) {
-    self.array = array
+  init(
+    array: NDArray,
+    name: String = "",
+    minimumBytes: UInt64,
+    retaining borrowedOwners: [BorrowedMetalStorage] = []
+  ) {
+    self.storage = .owned(array)
     self.name = name
     self.minimumBytes = minimumBytes
+    self.retainedBorrowedOwners = borrowedOwners
+  }
+
+  init(borrowed: BorrowedMetalStorage, name: String = "") {
+    self.storage = .borrowed(borrowed)
+    self.name = name
+    self.minimumBytes = borrowed.minimumBytes
+    self.retainedBorrowedOwners = []
+  }
+
+  var shape: [Int] {
+    switch storage {
+    case let .owned(array): array.shape
+    case let .borrowed(value): value.shape
+    }
+  }
+
+  var strides: [Int] {
+    switch storage {
+    case let .owned(array): array.strides
+    case let .borrowed(value): value.strides
+    }
+  }
+
+  var scalarType: NDArray.ScalarType {
+    switch storage {
+    case let .owned(array): array.scalarType
+    case let .borrowed(value): value.scalarType
+    }
   }
 
   func recordHostCopy(_ bytes: UInt64) {
@@ -194,6 +292,68 @@ private final class CoreArrayHandle: @unchecked Sendable {
     hostCopyCounter.withLock { $0 }
   }
 }
+
+@available(macOS 27.0, *)
+private final class CoreDescriptorHandle: @unchecked Sendable {
+  let descriptor: NDArrayDescriptor
+  let name: String
+
+  init(descriptor: NDArrayDescriptor, name: String) {
+    self.descriptor = descriptor
+    self.name = name
+  }
+}
+@available(macOS 27.0, *)
+private final class CoreBufferReadLease: @unchecked Sendable {
+  let nativeHandle: UnsafeMutableRawPointer
+  let producerCount: UInt64
+  private let released = Mutex<Bool>(false)
+
+  init(ownerHandle: UnsafeMutableRawPointer) throws {
+    var leaseHandle: UnsafeMutableRawPointer?
+    var producerCount: UInt64 = 0
+    let status = am_buffer_lease_begin(ownerHandle, 0, &leaseHandle, &producerCount)
+    do {
+      try checkMetalStatus(status, fallback: 102)
+      guard let leaseHandle else {
+        throw abiError(103, "native Metal lease creation returned a nil handle")
+      }
+      self.nativeHandle = leaseHandle
+      self.producerCount = producerCount
+    } catch {
+      if let leaseHandle { am_release(leaseHandle) }
+      throw error
+    }
+  }
+
+  func waitForProducers() async throws {
+    let lease = self
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          try checkMetalStatus(am_buffer_lease_wait(lease.nativeHandle), fallback: 103)
+          continuation.resume()
+        } catch {
+          continuation.resume(throwing: error)
+        }
+      }
+    }
+  }
+
+  func release() {
+    let shouldRelease = released.withLock { value -> Bool in
+      guard !value else { return false }
+      value = true
+      return true
+    }
+    if shouldRelease { am_release(nativeHandle) }
+  }
+
+  deinit {
+    release()
+  }
+}
+
 
 @available(macOS 27.0, *)
 private enum JobOutcome: Sendable {
@@ -408,6 +568,68 @@ private func byteRangeEnd(_ elementOffset: Int64, width: Int) throws -> Int {
   }
   return end
 }
+@available(macOS 27.0, *)
+private func validateBorrowedMetalLayout(
+  _ descriptor: AMTensorDescriptor,
+  buffer: any MTLBuffer
+) throws -> (
+  shape: [Int],
+  strides: [Int],
+  scalarType: NDArray.ScalarType,
+  byteOffset: Int,
+  minimumBytes: UInt64
+) {
+  let layout = try validateHostLayout(descriptor)
+  let shape = try intShape(layout.shape)
+  let strides = try layout.strides.map { stride -> Int in
+    guard let value = Int(exactly: stride), value >= 0 else {
+      throw abiError(102, "Core AI Metal views require nonnegative addressable strides")
+    }
+    return value
+  }
+  guard buffer.storageMode == .shared else {
+    throw abiError(102, "Core AI Metal views require shared MTLBuffer storage")
+  }
+  guard let actualCapacity = UInt64(exactly: buffer.length) else {
+    throw abiError(102, "Metal buffer length is not addressable")
+  }
+
+  var maximum = descriptor.offset
+  if layout.elementCount > 0 {
+    let axes = shape.indices.filter { shape[$0] > 1 }.sorted {
+      strides[$0] < strides[$1]
+    }
+    var occupiedSpan: Int64 = 1
+    for axis in axes {
+      let stride = Int64(strides[axis])
+      guard stride > 0, stride >= occupiedSpan else {
+        throw abiError(102, "Core AI Metal view strides overlap or are unsupported")
+      }
+      let extent = try checkedMultiply(Int64(shape[axis] - 1), stride)
+      occupiedSpan = try checkedAdd(occupiedSpan, extent)
+      maximum = try checkedAdd(maximum, extent)
+    }
+  }
+
+  let requiredBytes: Int
+  if layout.elementCount == 0 {
+    requiredBytes = try byteOffset(descriptor.offset, width: layout.elementWidth)
+  } else {
+    requiredBytes = try byteRangeEnd(maximum, width: layout.elementWidth)
+  }
+  guard UInt64(requiredBytes) <= layout.capacity,
+        UInt64(requiredBytes) <= actualCapacity else {
+    throw abiError(102, "Core AI Metal view reaches outside its actual MTLBuffer")
+  }
+
+  return (
+    shape: shape,
+    strides: strides,
+    scalarType: try scalarTypeForABI(descriptor.dtype),
+    byteOffset: try byteOffset(descriptor.offset, width: layout.elementWidth),
+    minimumBytes: UInt64(requiredBytes)
+  )
+}
 
 private func logicalElementOffset(
   _ linearIndex: Int,
@@ -451,6 +673,46 @@ private func intShape(_ shape: [Int64]) throws -> [Int] {
     return value
   }
 }
+@available(macOS 27.0, *)
+private func makeBorrowedTensor(
+  ownerHandle: UnsafeMutableRawPointer,
+  descriptor: AMTensorDescriptor
+) throws -> CoreArrayHandle {
+  am_retain(ownerHandle)
+  var ownerRetentionTransferred = false
+  defer {
+    if !ownerRetentionTransferred { am_release(ownerHandle) }
+  }
+
+  var metalBufferPointer: UnsafeMutableRawPointer?
+  var identity: UInt64 = 0
+  try checkMetalStatus(
+    am_buffer_info(ownerHandle, descriptor, &metalBufferPointer, &identity),
+    fallback: 102
+  )
+  guard let metalBufferPointer else {
+    throw abiError(102, "native Metal buffer info returned a nil MTLBuffer")
+  }
+  let metalObject = Unmanaged<AnyObject>.fromOpaque(metalBufferPointer).takeUnretainedValue()
+  guard let metalBuffer = metalObject as? any MTLBuffer else {
+    throw abiError(102, "native Metal buffer info returned an object that is not an MTLBuffer")
+  }
+  let layout = try validateBorrowedMetalLayout(descriptor, buffer: metalBuffer)
+  let storage = BorrowedMetalStorage(
+    ownerHandle: ownerHandle,
+    metalBuffer: metalBuffer,
+    identity: identity,
+    descriptor: descriptor,
+    shape: layout.shape,
+    strides: layout.strides,
+    scalarType: layout.scalarType,
+    byteOffset: layout.byteOffset,
+    minimumBytes: layout.minimumBytes
+  )
+  ownerRetentionTransferred = true
+  return CoreArrayHandle(borrowed: storage)
+}
+
 
 @available(macOS 27.0, *)
 private func sdkArrayMinimumBytes(_ array: NDArray) throws -> UInt64 {
@@ -540,13 +802,76 @@ private func validateSdkArrayLayout(
 }
 
 @available(macOS 27.0, *)
+private func copyBorrowedMetalArray(
+  _ handle: CoreArrayHandle,
+  storage: BorrowedMetalStorage,
+  to host: UnsafeMutableRawPointer?,
+  descriptor: AMTensorDescriptor,
+  layout: HostTensorLayout
+) throws -> UInt64 {
+  guard storage.shape.map(Int64.init) == layout.shape else {
+    throw abiError(102, "host output shape does not match the borrowed Core AI NDArray")
+  }
+  guard descriptor.dtype == storage.descriptor.dtype else {
+    throw abiError(102, "host output dtype does not exactly match the borrowed Core AI NDArray")
+  }
+  if layout.elementCount == 0 { return 0 }
+  guard let host else {
+    throw abiError(102, "nonempty host output has a nil data pointer")
+  }
+  let shape = try intShape(layout.shape)
+
+  if isCContiguous(shape, layout.strides) {
+    let target = host.advanced(by: try byteOffset(layout.offset, width: layout.elementWidth))
+    try checkMetalStatus(am_transfer(storage.ownerHandle, storage.descriptor, target, 0), fallback: 103)
+  } else {
+    var contiguous = [UInt8](repeating: 0, count: Int(layout.byteCount))
+    try contiguous.withUnsafeMutableBufferPointer { bytes in
+      guard let source = bytes.baseAddress else {
+        throw abiError(103, "Core AI Metal readback did not allocate its transfer buffer")
+      }
+      try checkMetalStatus(
+        am_transfer(storage.ownerHandle, storage.descriptor, source, 0),
+        fallback: 103
+      )
+      for linearIndex in 0..<layout.elementCount {
+        let targetElement = try logicalElementOffset(
+          linearIndex,
+          shape: shape,
+          strides: layout.strides,
+          baseOffset: layout.offset
+        )
+        let targetBytes = try byteOffset(targetElement, width: layout.elementWidth)
+        memcpy(
+          host.advanced(by: targetBytes),
+          UnsafeRawPointer(source).advanced(by: linearIndex * layout.elementWidth),
+          layout.elementWidth
+        )
+      }
+    }
+  }
+  handle.recordHostCopy(layout.byteCount)
+  return layout.byteCount
+}
+
 private func copySdkArray(
   _ handle: CoreArrayHandle,
   to host: UnsafeMutableRawPointer?,
   descriptor: AMTensorDescriptor
 ) throws -> UInt64 {
   let layout = try validateHostLayout(descriptor)
-  let array = handle.array
+  if case let .borrowed(storage) = handle.storage {
+    return try copyBorrowedMetalArray(
+      handle,
+      storage: storage,
+      to: host,
+      descriptor: descriptor,
+      layout: layout
+    )
+  }
+  guard case let .owned(array) = handle.storage else {
+    throw abiError(103, "unknown Core AI NDArray storage")
+  }
   let actualShape = array.shape
   let actualStrides = array.strides
   guard actualShape.map(Int64.init) == layout.shape else {
@@ -665,6 +990,76 @@ private func makeFunctionDescriptor(
   }
   result.name = ownedCString(name)
   result.dtype = ownedCString(String(describing: arrayDescriptor.scalarType))
+  result.descriptor_handle = retainedHandle(
+    CoreDescriptorHandle(descriptor: arrayDescriptor, name: name)
+  )
+  result.buffer_identity = 0
+  result.byte_offset = 0
+  result.borrowed = 0
+  result.reserved2 = 0
+  return result
+}
+@available(macOS 27.0, *)
+private func makeResolvedDescriptor(
+  handle: CoreDescriptorHandle,
+  shape: [Int64]
+) throws -> ACArrayDescriptor {
+  let original = handle.descriptor
+  guard shape.count == original.shape.count, shape.count <= 8 else {
+    throw abiError(102, "resolved Core AI shape rank does not match its descriptor")
+  }
+  let concreteShape = try intShape(shape)
+  for axis in original.shape.indices {
+    let expectedDimension = original.shape[axis]
+    let actualDimension = concreteShape[axis]
+    guard expectedDimension >= 0 || expectedDimension == -1 else {
+      throw abiError(102, "Core AI descriptor contains an invalid negative dimension")
+    }
+    guard expectedDimension == -1 || expectedDimension == actualDimension else {
+      throw abiError(102, "resolved Core AI shape changes a static dimension")
+    }
+  }
+
+  let resolved = original.resolvingDynamicDimensions(concreteShape)
+  guard !resolved.hasDynamicShape, resolved.shape == concreteShape else {
+    throw abiError(102, "Core AI did not resolve the requested dynamic dimensions")
+  }
+  let preferredStrides = resolved.preferredStrides
+  guard preferredStrides.count == concreteShape.count else {
+    throw abiError(102, "Core AI returned an invalid resolved preferred layout")
+  }
+  let strides64 = try preferredStrides.map { stride -> Int64 in
+    guard let converted = Int64(exactly: stride), converted >= 0 else {
+      throw abiError(102, "resolved Core AI descriptor stride is not representable")
+    }
+    return converted
+  }
+  guard resolved.minimumByteCount >= 0 else {
+    throw abiError(102, "Core AI returned a negative resolved minimum byte count")
+  }
+  let shape64 = try concreteShape.map { dimension -> Int64 in
+    guard let converted = Int64(exactly: dimension) else {
+      throw abiError(102, "resolved Core AI descriptor dimension is not representable")
+    }
+    return converted
+  }
+
+  var result = ACArrayDescriptor()
+  result.name = ownedCString(handle.name)
+  result.dtype = ownedCString(String(describing: resolved.scalarType))
+  result.rank = Int32(concreteShape.count)
+  result.dynamic_shape = 0
+  result.resolved = 1
+  result.shape = int64Tuple(shape64)
+  result.strides = int64Tuple(strides64)
+  result.minimum_bytes = UInt64(resolved.minimumByteCount)
+  result.descriptor_handle = retainedHandle(
+    CoreDescriptorHandle(descriptor: resolved, name: handle.name)
+  )
+  result.buffer_identity = 0
+  result.byte_offset = 0
+  result.borrowed = 0
+  result.reserved2 = 0
   return result
 }
 
@@ -672,7 +1067,7 @@ private func makeFunctionDescriptor(
 private func validateFunctionInputs(
   function: CoreFunctionHandle,
   bindings: [String: CoreArrayHandle]
-) throws -> [String: NDArray] {
+) throws -> [String] {
   let descriptor = function.function.descriptor
   guard descriptor.stateNames.isEmpty else {
     throw abiError(102, "function declares state but this ABI does not accept state bindings")
@@ -683,8 +1078,6 @@ private func validateFunctionInputs(
     throw abiError(102, "inference inputs must exactly match the model's named inputs")
   }
 
-  var inputArrays: [String: NDArray] = [:]
-  inputArrays.reserveCapacity(expectedNames.count)
   for name in expectedNames {
     guard let expected = descriptor.inputDescriptor(of: name),
           case let .ndArray(expectedArray) = expected else {
@@ -693,10 +1086,10 @@ private func validateFunctionInputs(
     guard let actual = bindings[name] else {
       throw abiError(102, "missing Core AI input \(name)")
     }
-    guard actual.array.scalarType == expectedArray.scalarType else {
+    guard actual.scalarType == expectedArray.scalarType else {
       throw abiError(102, "dtype mismatch for Core AI input \(name)")
     }
-    let actualShape = actual.array.shape
+    let actualShape = actual.shape
     let expectedShape = expectedArray.shape
     guard actualShape.count == expectedShape.count else {
       throw abiError(102, "rank mismatch for Core AI input \(name)")
@@ -711,13 +1104,60 @@ private func validateFunctionInputs(
         throw abiError(102, "Core AI input \(name) has a negative dimension")
       }
     }
-    guard abiType(for: actual.array.scalarType) != nil else {
-      throw abiError(102, "host inference inputs support only float32 and int32")
+    guard abiType(for: actual.scalarType) != nil else {
+      throw abiError(102, "Core AI inference inputs support only float32 and int32")
     }
-    inputArrays[name] = actual.array
   }
-  return inputArrays
+  return expectedNames
 }
+@available(macOS 27.0, *)
+private func runInferenceWithInputViews(
+  function: InferenceFunction,
+  names: [String],
+  bindings: [String: CoreArrayHandle],
+  index: Int = 0,
+  inputs: InferenceFunction.Inputs
+) async throws -> InferenceFunction.Outputs {
+  guard index < names.count else {
+    return try await function.run(inputs: inputs)
+  }
+  let name = names[index]
+  guard let handle = bindings[name] else {
+    throw abiError(102, "missing Core AI input \(name)")
+  }
+  var nextInputs = inputs
+  switch handle.storage {
+  case let .owned(array):
+    let rawView = array.rawView()
+    nextInputs.insert(rawView, for: name)
+    return try await runInferenceWithInputViews(
+      function: function,
+      names: names,
+      bindings: bindings,
+      index: index + 1,
+      inputs: nextInputs
+    )
+  case let .borrowed(storage):
+    let metalBuffer = storage.metalBuffer
+    let rawView = NDArray.RawView(
+      metalBuffer: metalBuffer,
+      byteOffset: storage.byteOffset,
+      scalarType: storage.scalarType,
+      shape: storage.shape,
+      strides: storage.strides,
+      interleaveLayout: nil
+    )
+    nextInputs.insert(rawView, for: name)
+    return try await runInferenceWithInputViews(
+      function: function,
+      names: names,
+      bindings: bindings,
+      index: index + 1,
+      inputs: nextInputs
+    )
+  }
+}
+
 
 @available(macOS 27.0, *)
 private func modelEvidenceContext(
@@ -1075,6 +1515,36 @@ public func ac_descriptor(
     return statusFailure(error)
   }
 }
+@c @implementation
+public func ac_descriptor_resolve(
+  _ descriptorHandle: UnsafeMutableRawPointer?,
+  _ shapePointer: UnsafePointer<Int64>?,
+  _ rank: UInt32,
+  _ out: UnsafeMutablePointer<ACArrayDescriptor>?
+) -> AMStatus {
+  guard let out else { return statusFailure(103, "resolved descriptor output pointer is nil") }
+  out.pointee = ACArrayDescriptor()
+  guard #available(macOS 27.0, *) else {
+    return statusFailure(100, "Core AI requires macOS 27 or later")
+  }
+  guard rank <= 8 else {
+    return statusFailure(102, "resolved Core AI descriptor rank exceeds eight")
+  }
+  guard rank == 0 || shapePointer != nil else {
+    return statusFailure(102, "non-scalar resolved descriptor has a nil shape pointer")
+  }
+  do {
+    let handle = try objectHandle(descriptorHandle, as: CoreDescriptorHandle.self)
+    let shape = rank == 0
+      ? []
+      : Array(UnsafeBufferPointer(start: shapePointer, count: Int(rank)))
+    out.pointee = try makeResolvedDescriptor(handle: handle, shape: shape)
+    return statusOK()
+  } catch {
+    return statusFailure(error)
+  }
+}
+
 
 @c @implementation
 public func ac_array_import(
@@ -1089,6 +1559,27 @@ public func ac_array_import(
   }
   do {
     let array = try makeHostTensor(host, descriptor: descriptor)
+    arrayOut.pointee = retainedHandle(array)
+    return statusOK()
+  } catch {
+    return statusFailure(error)
+  }
+}
+
+@c @implementation
+public func ac_array_view(
+  _ ownerPointer: UnsafeMutableRawPointer?,
+  _ descriptor: AMTensorDescriptor,
+  _ arrayOut: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+) -> AMStatus {
+  guard let arrayOut else { return statusFailure(103, "borrowed array output pointer is nil") }
+  arrayOut.pointee = nil
+  guard #available(macOS 27.0, *) else {
+    return statusFailure(100, "Core AI requires macOS 27 or later")
+  }
+  do {
+    guard let ownerPointer else { throw abiError(102, "borrowed Metal owner is nil") }
+    let array = try makeBorrowedTensor(ownerHandle: ownerPointer, descriptor: descriptor)
     arrayOut.pointee = retainedHandle(array)
     return statusOK()
   } catch {
@@ -1116,8 +1607,8 @@ public func ac_array_copy(
 
 @available(macOS 27.0, *)
 private func fillActualArrayDescriptor(_ handle: CoreArrayHandle) throws -> ACArrayDescriptor {
-  let shape = handle.array.shape
-  let strides = handle.array.strides
+  let shape = handle.shape
+  let strides = handle.strides
   guard shape.count <= 8, shape.count == strides.count else {
     throw abiError(102, "Core AI NDArray rank exceeds the C ABI descriptor")
   }
@@ -1135,7 +1626,7 @@ private func fillActualArrayDescriptor(_ handle: CoreArrayHandle) throws -> ACAr
   }
   var result = ACArrayDescriptor()
   result.name = ownedCString(handle.name)
-  result.dtype = ownedCString(String(describing: handle.array.scalarType))
+  result.dtype = ownedCString(String(describing: handle.scalarType))
   result.rank = Int32(shape.count)
   result.dynamic_shape = 0
   result.resolved = 1
@@ -1143,6 +1634,19 @@ private func fillActualArrayDescriptor(_ handle: CoreArrayHandle) throws -> ACAr
   result.strides = int64Tuple(strides64)
   result.minimum_bytes = handle.minimumBytes
   result.host_copy_bytes = handle.hostCopyBytes
+  result.descriptor_handle = nil
+  result.buffer_identity = 0
+  result.byte_offset = 0
+  result.borrowed = 0
+  result.reserved2 = 0
+  if case let .borrowed(storage) = handle.storage {
+    guard let byteOffset = UInt64(exactly: storage.byteOffset) else {
+      throw abiError(102, "borrowed Core AI byte offset is not representable")
+    }
+    result.buffer_identity = storage.identity
+    result.byte_offset = byteOffset
+    result.borrowed = 1
+  }
   return result
 }
 
@@ -1198,23 +1702,60 @@ public func ac_submit(
         bindings[bindingName] = array
       }
     }
-    // Validate all names and metadata before constructing SDK input views.
-    let inputArrays = try validateFunctionInputs(function: function, bindings: bindings)
-    let model = function.model
-    let context = modelEvidenceContext(
+
+    let inputNames = try validateFunctionInputs(function: function, bindings: bindings)
+    var borrowedOwners: [BorrowedMetalStorage] = []
+    var leases: [CoreBufferReadLease] = []
+    var leasedIdentities = Set<UInt64>()
+    var borrowedInputCount: UInt64 = 0
+    var producerCount: UInt64 = 0
+    for name in inputNames {
+      guard let binding = bindings[name] else {
+        throw abiError(102, "missing Core AI input \(name)")
+      }
+      guard case let .borrowed(storage) = binding.storage else { continue }
+      let (nextBorrowedCount, borrowedOverflow) =
+        borrowedInputCount.addingReportingOverflow(1)
+      borrowedInputCount = borrowedOverflow ? UInt64.max : nextBorrowedCount
+      borrowedOwners.append(storage)
+      if leasedIdentities.insert(storage.identity).inserted {
+        let lease = try CoreBufferReadLease(ownerHandle: storage.ownerHandle)
+        leases.append(lease)
+        let (nextProducerCount, producerOverflow) =
+          producerCount.addingReportingOverflow(lease.producerCount)
+        producerCount = producerOverflow ? UInt64.max : nextProducerCount
+      }
+    }
+    let submittedBindings = bindings
+    let submittedLeases = leases
+    let submittedBorrowedOwners = borrowedOwners
+
+
+    var context = modelEvidenceContext(
       invocationID: nextInvocationID(),
-      policy: model.requestedPolicy,
-      options: model.options,
+      policy: function.model.requestedPolicy,
+      options: function.model.options,
       functionName: function.name,
-      assetDigest: model.assetDigest,
-      architecture: model.architecture
+      assetDigest: function.model.assetDigest,
+      architecture: function.model.architecture
     )
+    context.borrowedInputCount = borrowedInputCount
+    context.producerCount = producerCount
     let job = CoreJobHandle(context: context)
     jobOut.pointee = retainedHandle(job)
+
     Task.detached(priority: .userInitiated) {
-      defer { withExtendedLifetime(bindings) {} }
+      var outcome: JobOutcome
       do {
-        var sdkOutputs = try await function.function.run(inputs: inputArrays)
+        for lease in submittedLeases {
+          try await lease.waitForProducers()
+        }
+        var sdkOutputs = try await runInferenceWithInputViews(
+          function: function.function,
+          names: inputNames,
+          bindings: submittedBindings,
+          inputs: InferenceFunction.Inputs()
+        )
         let expectedNames = function.function.descriptor.outputNames
         let reportedNames = Array(sdkOutputs.names)
         guard Set(reportedNames) == Set(expectedNames),
@@ -1231,17 +1772,23 @@ public func ac_submit(
           outputs[name] = CoreArrayHandle(
             array: output,
             name: name,
-            minimumBytes: minimumBytes
+            minimumBytes: minimumBytes,
+            retaining: submittedBorrowedOwners
           )
         }
-        job.finish(.outputs(outputs))
+        outcome = .outputs(outputs)
       } catch {
         let failure = error as? ABIError
-        job.finish(.failure(JobFailure(
+        outcome = .failure(JobFailure(
           code: failure?.code ?? 103,
           message: failure?.message ?? String(describing: error)
-        )))
+        ))
       }
+      for lease in submittedLeases { lease.release() }
+      job.finish(outcome)
+      withExtendedLifetime(submittedBindings) {}
+      withExtendedLifetime(submittedBorrowedOwners) {}
+      withExtendedLifetime(function) {}
     }
     return statusOK()
   } catch {
@@ -1340,6 +1887,8 @@ public func ac_job_evidence(
     evidence.host_copy_bytes = 0
     evidence.materialization_bytes = 0
     evidence.cpu_fallback_count = 0
+    evidence.borrowed_input_count = context.borrowedInputCount
+    evidence.producer_count = context.producerCount
     evidence.asset_digest = ownedCString(context.assetDigest)
     evidence.function_name = ownedCString(context.functionName)
     evidence.architecture = ownedCString(context.architecture)

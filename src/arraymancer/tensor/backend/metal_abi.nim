@@ -59,6 +59,8 @@ type
     deviceCount*: proc(count: ptr int32): AMStatus {.cdecl, gcsafe, raises: [].}
     device*: proc(index: int32; handle: ptr pointer; identity: ptr uint64): AMStatus {.cdecl, gcsafe, raises: [].}
     buffer*: proc(device: pointer; bytes: uint64; handle: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+    bufferInfo*: proc(buffer: pointer; descriptor: AMTensorDescriptor;
+      metalBuffer: ptr pointer; identity: ptr uint64): AMStatus {.cdecl, gcsafe, raises: [].}
     transfer*: proc(buffer: pointer; descriptor: AMDescriptor; host: pointer; upload: int32): AMStatus {.cdecl, gcsafe, raises: [].}
     evidence*: proc(buffer: pointer; evidence: ptr AMEvidence): AMStatus {.cdecl, gcsafe, raises: [].}
     copy*: proc(source: pointer; input: AMDescriptor; destination: pointer;
@@ -121,6 +123,7 @@ proc metalApi*(): MetalApi {.gcsafe.} =
       resolve(deviceCount, "am_device_count")
       resolve(device, "am_device")
       resolve(buffer, "am_buffer")
+      resolve(bufferInfo, "am_buffer_info")
       resolve(evidence, "am_buffer_evidence")
       resolve(transfer, "am_transfer")
       resolve(library, "am_library")

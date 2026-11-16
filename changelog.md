@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Preserve Core AI shared Metal-buffer views with byte offsets and strides.
+  SDK descriptor resolution retains preferred layouts; producer-scoped native
+  leases reject competing mutation until inference completes without host packing.
 - Load authentic Core AI source and architecture-matched compiled models through
   a native Swift adapter. Named descriptors enforce dtype, shape and rank;
   retained asynchronous jobs preserve inputs across waits and timeouts.

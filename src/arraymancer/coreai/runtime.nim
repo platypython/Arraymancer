@@ -1,14 +1,16 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
 ## Provides typed Core AI model, descriptor, array and inference-job APIs.
 import std/options
+from ../tensor/metal_types import MetalTensor
 import ../tensor/[data_structure, init_cpu]
-import ./backend except CoreAIError, CoreAIUnavailableError, CoreAIDescriptorError, CoreAITimeoutError
+import ./backend except CoreAIError, CoreAIUnavailableError, CoreAIDescriptorError, CoreAITimeoutError, CoreAIBufferBusyError
 
 type
   CoreAIError* = backend.CoreAIError
   CoreAIUnavailableError* = backend.CoreAIUnavailableError
   CoreAIDescriptorError* = backend.CoreAIDescriptorError
   CoreAITimeoutError* = backend.CoreAITimeoutError
+  CoreAIBufferBusyError* = backend.CoreAIBufferBusyError
 
   CoreAIComputePolicy* = enum
     ## Preferences may fall back; they do not establish actual hardware placement.
@@ -32,23 +34,24 @@ type
     actualPlacement*, preferredUnit*: int32
     availableMask*, allowedMask*: uint32
     hostCopyBytes*, materializationBytes*, cpuFallbackCount*: uint64
+    borrowedInputCount*, producerCount*: uint64
     assetDigest*, functionName*, architecture*: string
-
-  CoreAIArrayDescriptor* = object
-    ## Dynamic dimensions are -1. Strides/minimumBytes are unavailable until resolved.
-    name*, dtype*: string
-    shape*, strides*: Metadata
-    dynamicShape*, resolved*: bool
-    minimumBytes*, hostCopyBytes*: uint64
-
-  CoreAIFunctionDescriptor* = object
-    name*: string
-    inputs*, outputs*, states*: seq[CoreAIArrayDescriptor]
 
   CoreAIHandleObj = object
     handle: pointer
     release: proc(handle: pointer) {.cdecl, gcsafe, raises: [].}
   CoreAIHandle = ref CoreAIHandleObj
+
+  CoreAIArrayDescriptor* = object
+    ## Dynamic dimensions are -1. Strides/minimumBytes are unavailable until resolved.
+    name*, dtype*: string
+    shape*, strides*: Metadata
+    dynamicShape*, resolved*, borrowed*: bool
+    minimumBytes*, hostCopyBytes*, bufferIdentity*, byteOffset*: uint64
+    descriptorOwner: CoreAIHandle
+  CoreAIFunctionDescriptor* = object
+    name*: string
+    inputs*, outputs*, states*: seq[CoreAIArrayDescriptor]
 
   CoreAIModel* = ref object
     ## Owns a loaded SDK model; compute options are selected when opening it.
@@ -107,18 +110,24 @@ proc freeArrayDescriptor(value: var ACArrayDescriptor) =
   releaseCString(value.dtype)
   value.name = nil
   value.dtype = nil
+  if value.descriptorHandle != nil:
+    coreAIApi().release(value.descriptorHandle)
+    value.descriptorHandle = nil
 
-proc toPublicDescriptor(value: ACArrayDescriptor): CoreAIArrayDescriptor =
+proc toPublicDescriptor(value: var ACArrayDescriptor): CoreAIArrayDescriptor =
   if value.rank < 0 or value.rank > 8 or value.rank > LASER_MAXRANK:
     descriptorFailure("Core AI descriptor rank is outside the supported range")
-  if value.dynamicShape notin 0..1 or value.resolved notin 0..1:
+  if value.dynamicShape notin 0..1 or value.resolved notin 0..1 or value.borrowed notin 0..1:
     descriptorFailure("Core AI descriptor contains invalid shape flags")
   result.name = if value.name == nil: "" else: $value.name
   result.dtype = if value.dtype == nil: "" else: $value.dtype
   result.dynamicShape = value.dynamicShape != 0
   result.resolved = value.resolved != 0
+  result.borrowed = value.borrowed != 0
   result.minimumBytes = value.minimumBytes
   result.hostCopyBytes = value.hostCopyBytes
+  result.bufferIdentity = value.bufferIdentity
+  result.byteOffset = value.byteOffset
   result.shape.len = int(value.rank)
   result.strides.len = int(value.rank)
   for axis in 0 ..< int(value.rank):
@@ -127,7 +136,9 @@ proc toPublicDescriptor(value: ACArrayDescriptor): CoreAIArrayDescriptor =
       descriptorFailure("Core AI descriptor contains an invalid dimension")
     result.shape[axis] = int(dimension)
     result.strides[axis] = int(value.strides[axis])
-
+  if value.descriptorHandle != nil:
+    result.descriptorOwner = ownCoreAI(value.descriptorHandle)
+    value.descriptorHandle = nil
 proc descriptor*(array: CoreAIArray): CoreAIArrayDescriptor =
   ## Snapshot the SDK array's concrete shape, strides, dtype and bridge copy count.
   let handle = requireOwner(if array == nil: nil else: array.owner, "array")
@@ -217,6 +228,8 @@ proc coreAIJobEvidence*(job: CoreAIJob): CoreAIEvidence =
     result.hostCopyBytes = native.hostCopyBytes
     result.materializationBytes = native.materializationBytes
     result.cpuFallbackCount = native.cpuFallbackCount
+    result.borrowedInputCount = native.borrowedInputCount
+    result.producerCount = native.producerCount
     result.assetDigest = if native.assetDigest == nil: "" else: $native.assetDigest
     result.functionName = if native.functionName == nil: "" else: $native.functionName
     result.architecture = if native.architecture == nil: "" else: $native.architecture
@@ -342,6 +355,103 @@ proc checkedByteCount(elementCount, elementWidth: int): uint64 =
   if count > high(uint64) div width:
     descriptorFailure("Core AI tensor byte count overflows uint64")
   count * width
+proc resolveDescriptor*(descriptor: CoreAIArrayDescriptor;
+                        shape: Metadata): CoreAIArrayDescriptor =
+  ## Resolve through the retained SDK descriptor, preserving its actual layout.
+  discard checkedShapeCount(shape)
+  if descriptor.shape.len != shape.len:
+    descriptorFailure("Core AI resolved shape has the wrong rank")
+  if descriptor.strides.len != shape.len:
+    descriptorFailure("Core AI descriptor shape and stride ranks differ")
+  for axis in 0 ..< shape.len:
+    let declared = descriptor.shape[axis]
+    if declared >= 0:
+      if declared != shape[axis]:
+        descriptorFailure("Core AI resolved shape conflicts with a static dimension")
+    elif declared != -1 or not descriptor.dynamicShape or descriptor.resolved:
+      descriptorFailure("Core AI descriptor contains an invalid dynamic dimension")
+  if descriptor.descriptorOwner == nil:
+    if not descriptor.resolved:
+      descriptorFailure("Core AI descriptor has no SDK handle for dynamic resolution")
+    return descriptor
+  var nativeShape: array[8, int64]
+  for axis in 0 ..< shape.len:
+    nativeShape[axis] = int64(shape[axis])
+  var native: ACArrayDescriptor
+  let status = coreAIApi().descriptorResolve(
+    requireOwner(descriptor.descriptorOwner, "descriptor"),
+    addr nativeShape[0], uint32(shape.len), addr native)
+  try:
+    checkCoreAI(status)
+    result = toPublicDescriptor(native)
+    if not result.resolved or result.shape.len != shape.len:
+      descriptorFailure("Core AI did not resolve the requested descriptor shape")
+    for axis in 0 ..< shape.len:
+      if result.shape[axis] != shape[axis]:
+        descriptorFailure("Core AI resolved a different concrete shape")
+    if result.descriptorOwner == nil:
+      descriptorFailure("Core AI did not retain the resolved SDK descriptor")
+  finally:
+    freeArrayDescriptor(native)
+
+proc metalTensorDescriptor[T](tensor: MetalTensor[T]): AMTensorDescriptor =
+  when T is float32:
+    result.dtype = 1
+  elif T is int32:
+    result.dtype = 6
+  else:
+    descriptorFailure("Core AI Metal views support only float32 and int32")
+  if tensor.storage == nil or tensor.storage.owner == nil or
+     tensor.storage.owner.handle == nil:
+    descriptorFailure("Cannot borrow an uninitialized Metal tensor")
+  if tensor.shape.len != tensor.strides.len:
+    descriptorFailure("Metal tensor shape and stride ranks differ")
+  let elementCount = checkedShapeCount(tensor.shape)
+  result.rank = int32(tensor.shape.len)
+  result.offset = int64(tensor.offset)
+  result.capacity = tensor.storage.capacity
+  var empty = elementCount == 0
+  var minimumIndex = result.offset
+  var maximumIndex = result.offset
+  for axis in 0 ..< tensor.shape.len:
+    let dimension = tensor.shape[axis]
+    let stride = int64(tensor.strides[axis])
+    result.shape[axis] = int64(dimension)
+    result.strides[axis] = stride
+    if dimension == 0:
+      empty = true
+    elif not empty:
+      let span = checkedMultiply(int64(dimension - 1), stride)
+      if span < 0: minimumIndex = checkedAdd(minimumIndex, span)
+      else: maximumIndex = checkedAdd(maximumIndex, span)
+  if not empty:
+    if minimumIndex < 0 or maximumIndex < minimumIndex:
+      descriptorFailure("Metal tensor view is outside its storage")
+    if maximumIndex == high(int64):
+      descriptorFailure("Metal tensor byte extent overflows int64")
+    let elements = uint64(maximumIndex + 1)
+    let width = uint64(sizeof(T))
+    if elements > high(uint64) div width:
+      descriptorFailure("Metal tensor byte extent overflows uint64")
+    if elements * width > result.capacity:
+      descriptorFailure("Metal tensor view exceeds its native buffer capacity")
+
+proc coreAIView*[T](tensor: MetalTensor[T]): CoreAIArray =
+  ## Borrow the original shared Metal buffer and metadata without host copying.
+  ## Submitted inference holds a whole-buffer read lease until completion;
+  ## competing Metal writes raise ``MetalBufferBusyError``. Unsupported dtype,
+  ## storage or layout raises ``CoreAIDescriptorError`` instead of packing.
+  let descriptor = metalTensorDescriptor(tensor)
+  var nativeArray: pointer
+  let status = coreAIApi().arrayView(tensor.storage.owner.handle, descriptor,
+    addr nativeArray)
+  try:
+    checkCoreAI(status)
+  except:
+    if nativeArray != nil: coreAIApi().release(nativeArray)
+    raise
+  result = CoreAIArray(owner: ownCoreAI(nativeArray))
+
 proc hostDescriptor[T: float32 | int32](tensor: Tensor[T]): AMTensorDescriptor =
   if tensor.storage.isNil or tensor.storage.raw_buffer.isNil:
     descriptorFailure("Cannot import an uninitialized CPU tensor")

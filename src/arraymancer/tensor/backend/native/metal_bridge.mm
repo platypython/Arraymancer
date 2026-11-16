@@ -13,6 +13,10 @@
 @class AMCapture;
 @class AMGenerator;
 
+@class AMBufferLease;
+@class AMPendingUse;
+@class AMPendingCommand;
+@class AMStream;
 @interface AMBuffer : NSObject
 @property(nonatomic, strong) id<MTLBuffer> buffer;
 @property(nonatomic, strong) id<MTLCommandBuffer> producer;
@@ -24,6 +28,8 @@
 @property(nonatomic) uint64_t externalReferences;
 @property(nonatomic) uint64_t inFlightLeases;
 @property(nonatomic, strong) NSMutableArray *customLeases;
+@property(nonatomic, strong) NSMutableArray<AMPendingUse *> *pendingUses;
+@property(nonatomic, strong) NSHashTable<AMBufferLease *> *nativeLeases;
 @property(nonatomic) BOOL cached;
 @end
 @implementation AMBuffer
@@ -48,8 +54,32 @@
 @property(nonatomic) uint64_t invocation;
 @property(nonatomic) uint64_t materializationBytes;
 @property(nonatomic) BOOL finalized;
+@property(nonatomic, copy) NSArray<AMPendingUse *> *pendingUses;
 @end
 @implementation AMPendingCommand
+@end
+
+@interface AMPendingUse : NSObject
+@property(nonatomic, weak) AMBuffer *owner;
+@property(nonatomic, weak) AMStream *stream;
+@property(nonatomic, weak) AMPendingCommand *record;
+@property(nonatomic, strong) id<MTLCommandBuffer> command;
+@property(nonatomic) uint64_t invocation;
+@property(nonatomic) int32_t access;
+@end
+@implementation AMPendingUse
+@end
+
+@interface AMBufferLease : NSObject
+@property(nonatomic, strong) AMBuffer *owner;
+@property(nonatomic, copy) NSArray<AMPendingUse *> *uses;
+@property(nonatomic, copy) NSString *savedError;
+@property(nonatomic) uint64_t producerCount;
+@property(nonatomic) int32_t access;
+@property(nonatomic) uint64_t externalReferences;
+@property(nonatomic) BOOL active;
+@end
+@implementation AMBufferLease
 @end
 
 @interface AMCapture : NSObject
@@ -65,6 +95,8 @@
 static NSObject *captureLock;
 static NSObject *customLeaseLock;
 static AMCapture *activeCapture;
+static void ensureCustomLeaseLock(void);
+static BOOL releaseBufferLease(AMBufferLease *lease);
 
 @interface AMStream : NSObject
 @property(nonatomic, strong) id<MTLDevice> device;
@@ -255,6 +287,13 @@ void am_retain(void *handle) {
       if (capture.externalReferences != UINT64_MAX)
         ++capture.externalReferences;
     }
+  } else if ([object isKindOfClass:AMBufferLease.class]) {
+    AMBufferLease *lease = (AMBufferLease *)object;
+    ensureCustomLeaseLock();
+    @synchronized(customLeaseLock) {
+      if (lease.externalReferences != UINT64_MAX)
+        ++lease.externalReferences;
+    }
   }
   CFRetain((__bridge CFTypeRef)object);
 }
@@ -282,6 +321,8 @@ void am_release(void *handle) {
       if (!capture.externalReferences)
         (void)stopCaptureLocked(capture);
     }
+  } else if ([object isKindOfClass:AMBufferLease.class]) {
+    if (!releaseBufferLease((AMBufferLease *)object)) return;
   }
   CFRelease((__bridge CFTypeRef)object);
 }
@@ -489,14 +530,18 @@ static void finalizeCommand(AMStream *stream, AMPendingCommand *record) {
       }
     }
 
-    if (record.customLeases.count) {
-      ensureCustomLeaseLock();
-      @synchronized(customLeaseLock) {
-        for (AMCustomLease *lease in record.customLeases) {
-          AMBuffer *owner = lease.owner;
-          [owner.customLeases removeObjectIdenticalTo:lease];
-        }
+    ensureCustomLeaseLock();
+    @synchronized(customLeaseLock) {
+      for (AMCustomLease *lease in record.customLeases) {
+        AMBuffer *owner = lease.owner;
+        [owner.customLeases removeObjectIdenticalTo:lease];
       }
+      for (AMPendingUse *use in record.pendingUses) {
+        AMBuffer *owner = use.owner;
+        [owner.pendingUses removeObjectIdenticalTo:use];
+      }
+      record.pendingUses = @[];
+      record.customLeases = @[];
     }
 
     AMDeviceState *state = deviceState(stream.device, nil);
@@ -517,6 +562,10 @@ static void finalizeCommand(AMStream *stream, AMPendingCommand *record) {
     }
   }
   finishStreamCommand(stream, record);
+  record.command = nil;
+  record.retainedHandles = @[];
+  record.bufferLeases = @[];
+  record.outputs = @[];
 }
 
 static NSArray<AMBuffer *> *uniqueBufferOwners(NSArray *handles) {
@@ -536,6 +585,30 @@ static NSArray<AMBuffer *> *uniqueBufferOwners(NSArray *handles) {
 static void ensureCustomLeaseLock(void) {
   static dispatch_once_t once;
   dispatch_once(&once, ^{ customLeaseLock = [NSObject new]; });
+}
+static BOOL releaseBufferLease(AMBufferLease *lease) {
+  ensureCustomLeaseLock();
+  @synchronized(customLeaseLock) {
+    if (!lease.externalReferences) return NO;
+    --lease.externalReferences;
+    if (lease.externalReferences) return YES;
+    if (!lease.active) return YES;
+    lease.active = NO;
+    AMBuffer *owner = lease.owner;
+    AMDeviceState *state = owner.state;
+    @synchronized(state) {
+      if (owner.inFlightLeases) {
+        --owner.inFlightLeases;
+        if (!owner.inFlightLeases)
+          state.inFlightBytes -= owner.capacity;
+      }
+      if (!owner.externalReferences && !owner.inFlightLeases)
+        cacheOwnerLocked(state, owner);
+    }
+    lease.uses = @[];
+    lease.owner = nil;
+  }
+  return YES;
 }
 
 static AMStatus submitCommandDetailed(
@@ -583,46 +656,83 @@ static AMStatus submitCommandDetailed(
           if (!owner.externalReferences || owner.cached ||
               owner.inFlightLeases == UINT64_MAX)
             return failure(2, "Metal command cannot lease an unowned buffer");
+      }
 
-        for (AMCustomLease *lease in customLeases) {
-          AMBuffer *owner = lease.owner;
-          if (!owner.customLeases) owner.customLeases = [NSMutableArray new];
-          for (AMCustomLease *previous in owner.customLeases) {
-            if (previous.streamIdentity == lease.streamIdentity ||
-                previous.byteStart >= lease.byteEnd ||
-                lease.byteStart >= previous.byteEnd ||
-                (previous.access == 0 && lease.access == 0))
-              continue;
-            return failure(10, "custom Metal buffer has a conflicting queued lease on another stream");
-          }
+      for (AMBuffer *owner in bufferLeases) {
+        const BOOL writes = [retainedOutputs containsObject:owner];
+        const int32_t access = writes ? 1 : 0;
+        for (AMBufferLease *active in owner.nativeLeases.allObjects) {
+          if (!active.active || (active.access == 0 && access == 0))
+            continue;
+          return failure(10, "Metal buffer has a conflicting Core AI borrow lease");
         }
+        for (AMCustomLease *active in owner.customLeases) {
+          if (active.streamIdentity == stream.identity ||
+              (active.access == 0 && access == 0))
+            continue;
+          return failure(10, "Metal buffer has a conflicting queued custom-kernel lease");
+        }
+      }
 
+      for (AMCustomLease *lease in customLeases) {
+        AMBuffer *owner = lease.owner;
+        for (AMCustomLease *previous in owner.customLeases) {
+          if (previous.streamIdentity == lease.streamIdentity ||
+              previous.byteStart >= lease.byteEnd ||
+              lease.byteStart >= previous.byteEnd ||
+              (previous.access == 0 && lease.access == 0))
+            continue;
+          return failure(10, "custom Metal buffer has a conflicting queued lease on another stream");
+        }
+      }
+
+      @synchronized(state) {
         for (AMBuffer *owner in bufferLeases) {
           if (!owner.inFlightLeases)
             state.inFlightBytes = saturatedAdd(state.inFlightBytes, owner.capacity);
           ++owner.inFlightLeases;
         }
-        for (AMCustomLease *lease in customLeases)
-          [lease.owner.customLeases addObject:lease];
       }
-    }
 
-    const uint64_t sequence = ++stream.acceptedSequence;
-    record.sequence = sequence;
-    for (AMBuffer *output in retainedOutputs)
-      prepareBufferProducer(output, command, invocation, evidence);
-    stream.lastAcceptedComplete = NO;
-    stream.lastAcceptedFailed = NO;
-    stream.lastAcceptedError = nil;
-    stream.pending[@(sequence)] = record;
-    [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-      @autoreleasepool {
-        (void)completed;
-        finalizeCommand(stream, record);
+      NSMutableArray<AMPendingUse *> *pendingUses =
+          [NSMutableArray arrayWithCapacity:bufferLeases.count];
+      for (AMBuffer *owner in bufferLeases) {
+        AMPendingUse *use = [AMPendingUse new];
+        use.owner = owner;
+        use.stream = stream;
+        use.record = record;
+        use.command = command;
+        use.invocation = invocation;
+        use.access = [retainedOutputs containsObject:owner] ? 1 : 0;
+        if (!owner.pendingUses) owner.pendingUses = [NSMutableArray new];
+        [owner.pendingUses addObject:use];
+        [pendingUses addObject:use];
       }
-    }];
-    if (submittedSequence) *submittedSequence = sequence;
-    [command commit];
+      record.pendingUses = [pendingUses copy];
+
+      for (AMCustomLease *lease in customLeases) {
+        if (!lease.owner.customLeases)
+          lease.owner.customLeases = [NSMutableArray new];
+        [lease.owner.customLeases addObject:lease];
+      }
+
+      const uint64_t sequence = ++stream.acceptedSequence;
+      record.sequence = sequence;
+      for (AMBuffer *output in retainedOutputs)
+        prepareBufferProducer(output, command, invocation, evidence);
+      stream.lastAcceptedComplete = NO;
+      stream.lastAcceptedFailed = NO;
+      stream.lastAcceptedError = nil;
+      stream.pending[@(sequence)] = record;
+      [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+        @autoreleasepool {
+          (void)completed;
+          finalizeCommand(stream, record);
+        }
+      }];
+      if (submittedSequence) *submittedSequence = sequence;
+      [command commit];
+    }
   }
   return ok();
 }
@@ -708,31 +818,120 @@ static void waitAndFinalize(AMStream *stream,
   }
 }
 
-static AMStatus waitForProducer(AMBuffer *owner) {
-  if (!owner) return failure(2, "null Metal buffer owner");
-  for (;;) {
-    id<MTLCommandBuffer> producer = nil;
-    uint64_t invocation = 0;
+static bool bufferAccessConflicts(int32_t left, int32_t right) {
+  return left != 0 || right != 0;
+}
+
+static AMStatus beginBufferLease(AMBuffer *owner, int32_t access,
+                                 AMBufferLease **out) {
+  if (!owner || !out || access < 0 || access > 2)
+    return failure(2, "invalid Metal buffer lease argument");
+  *out = nil;
+  ensureCustomLeaseLock();
+  AMBufferLease *lease = [AMBufferLease new];
+  if (!lease) return failure(7, "cannot allocate Metal buffer lease");
+
+  @synchronized(customLeaseLock) {
+    AMDeviceState *state = owner.state;
+    if (!state || !owner.buffer)
+      return failure(2, "invalid Metal buffer lease owner");
+    @synchronized(state) {
+      if (owner.cached || !owner.externalReferences)
+        return failure(2, "Metal buffer lease owner is not externally retained");
+      if (owner.inFlightLeases == UINT64_MAX)
+        return failure(2, "Metal buffer lease count exhausted");
+    }
+    if (!owner.nativeLeases)
+      owner.nativeLeases = [NSHashTable weakObjectsHashTable];
+    for (AMBufferLease *active in owner.nativeLeases.allObjects)
+      if (active.active && bufferAccessConflicts(access, active.access))
+        return failure(10, "Metal buffer has a conflicting active borrow lease");
+
+    NSMutableArray<AMPendingUse *> *snapshot = [NSMutableArray new];
     NSString *savedError = nil;
     @synchronized(owner) {
-      producer = owner.producer;
-      invocation = owner.producerInvocation;
       savedError = owner.producerError;
+      if (access == 0) {
+        id<MTLCommandBuffer> producer = owner.producer;
+        const uint64_t invocation = owner.producerInvocation;
+        if (producer) {
+          for (AMPendingUse *use in owner.pendingUses) {
+            if (use.invocation == invocation && use.command == producer) {
+              [snapshot addObject:use];
+              break;
+            }
+          }
+        }
+      } else {
+        [snapshot addObjectsFromArray:owner.pendingUses];
+      }
     }
-    if (!producer)
-      return savedError ? failure(5, savedError.UTF8String) : ok();
 
-    [producer waitUntilCompleted];
-    finishBufferProducer(owner, invocation, producer);
-    NSString *message = nil;
-    BOOL stillCurrent = NO;
-    @synchronized(owner) {
-      stillCurrent = owner.producerInvocation == invocation;
-      if (stillCurrent) message = owner.producerError;
+    @synchronized(state) {
+      if (owner.cached || !owner.externalReferences)
+        return failure(2, "Metal buffer lease owner is no longer retained");
+      if (owner.inFlightLeases == UINT64_MAX)
+        return failure(2, "Metal buffer lease count exhausted");
+      if (!owner.inFlightLeases)
+        state.inFlightBytes = saturatedAdd(state.inFlightBytes, owner.capacity);
+      ++owner.inFlightLeases;
     }
-    if (!stillCurrent) continue;
-    return message ? failure(5, message.UTF8String) : ok();
+    lease.owner = owner;
+    lease.access = access;
+    lease.savedError = savedError;
+    lease.uses = [snapshot copy];
+    uint64_t producerCount = 0;
+    for (AMPendingUse *use in lease.uses)
+      if (use.access != 0) ++producerCount;
+    lease.producerCount = producerCount;
+    lease.active = YES;
+    lease.externalReferences = 1;
+    [owner.nativeLeases addObject:lease];
   }
+  *out = lease;
+  return ok();
+}
+
+static AMStatus waitBufferLease(AMBufferLease *lease) {
+  if (!lease) return failure(2, "null Metal buffer lease");
+  for (AMPendingUse *use in lease.uses) {
+    id<MTLCommandBuffer> command = use.command;
+    if (!command) continue;
+    [command waitUntilCompleted];
+    AMPendingCommand *record = use.record;
+    AMStream *stream = use.stream;
+    if (record && stream) finalizeCommand(stream, record);
+    if (command.status == MTLCommandBufferStatusError)
+      return failure(5, command.error.localizedDescription.UTF8String
+          ?: "preceding Metal buffer use failed");
+  }
+  return lease.savedError
+      ? failure(5, lease.savedError.UTF8String) : ok();
+}
+
+AMStatus am_buffer_lease_begin(void *buffer, int32_t access, void **lease,
+                               uint64_t *producerCount) {
+  if (!buffer || !lease || !producerCount)
+    return failure(2, "null Metal buffer lease output");
+  *lease = nullptr;
+  *producerCount = 0;
+  id object = (__bridge id)buffer;
+  if (![object isKindOfClass:AMBuffer.class])
+    return failure(2, "invalid Metal buffer lease handle");
+  AMBufferLease *nativeLease = nil;
+  AMStatus status = beginBufferLease((AMBuffer *)object, access, &nativeLease);
+  if (status.code) return status;
+  *producerCount = nativeLease.producerCount;
+  *lease = (__bridge_retained void *)nativeLease;
+  return ok();
+}
+
+AMStatus am_buffer_lease_wait(void *leaseHandle) {
+  if (!leaseHandle) return failure(2, "null Metal buffer lease");
+  id object = (__bridge id)leaseHandle;
+  if (![object isKindOfClass:AMBufferLease.class])
+    return failure(2, "invalid Metal buffer lease handle");
+  return waitBufferLease((AMBufferLease *)object);
 }
 
 AMStatus am_buffer_evidence(void *buffer, AMEvidence *evidence) {
@@ -1056,6 +1255,8 @@ AMStatus am_buffer(void *deviceHandle, uint64_t bytes, void **buffer) {
       owner.cached = NO;
       owner.producer = nil;
       owner.customLeases = [NSMutableArray new];
+      owner.pendingUses = [NSMutableArray new];
+      owner.nativeLeases = [NSHashTable weakObjectsHashTable];
       owner.producerInvocation = 0;
       owner.producerError = nil;
       owner.evidence = {nextInvocation.fetch_add(1), dev.registryID, 0, 0, 0, 1, 1};
@@ -1096,6 +1297,81 @@ static AMStatus validate(AMBuffer *owner, AMTensorDescriptor d, uint64_t &count)
     return failure(2, "view exceeds native storage");
   return ok();
 }
+AMStatus am_buffer_info(void *buffer, AMTensorDescriptor d,
+                        void **metalBuffer, uint64_t *identity) {
+  if (!buffer || !metalBuffer || !identity)
+    return failure(2, "null Metal buffer information argument");
+  *metalBuffer = nullptr;
+  *identity = 0;
+  id object = (__bridge id)buffer;
+  if (![object isKindOfClass:AMBuffer.class])
+    return failure(2, "invalid Metal buffer information handle");
+  AMBuffer *owner = (AMBuffer *)object;
+  AMDeviceState *state = owner.state;
+  if (!state)
+    return failure(2, "Metal buffer has no device state");
+  @synchronized(state) {
+    if (owner.cached || !owner.externalReferences)
+      return failure(2, "Core AI borrowing requires an externally retained Metal buffer");
+  }
+  if (!owner.buffer || owner.buffer.storageMode != MTLStorageModeShared)
+    return failure(2, "Core AI borrowing requires shared Metal storage");
+
+  uint64_t count = 0;
+  AMStatus status = validate(owner, d, count);
+  if (status.code) return status;
+  const uint64_t width = dtypeWidth(d.dtype);
+  if (!width || owner.capacity > owner.buffer.length)
+    return failure(2, "Metal descriptor exceeds physical buffer capacity");
+
+  uint64_t axisStrides[8];
+  uint64_t axisDimensions[8];
+  uint32_t axes = 0;
+  for (int axis = 0; axis < d.rank; ++axis) {
+    const int64_t dimension = d.shape[axis];
+    const int64_t stride = d.strides[axis];
+    if (dimension <= 1) continue;
+    if (stride <= 0)
+      return failure(2, "Core AI borrowing requires positive strides");
+    uint32_t insert = axes;
+    while (insert && axisStrides[insert - 1] > (uint64_t)stride) {
+      axisStrides[insert] = axisStrides[insert - 1];
+      axisDimensions[insert] = axisDimensions[insert - 1];
+      --insert;
+    }
+    axisStrides[insert] = (uint64_t)stride;
+    axisDimensions[insert] = (uint64_t)dimension;
+    ++axes;
+  }
+  __uint128_t coveredElements = 1;
+  for (uint32_t axis = 0; axis < axes; ++axis) {
+    if ((__uint128_t)axisStrides[axis] < coveredElements)
+      return failure(2, "Core AI borrowing rejects overlapping Metal strides");
+    coveredElements +=
+        (__uint128_t)(axisDimensions[axis] - 1) * axisStrides[axis];
+  }
+
+  const __uint128_t byteOffset = (__uint128_t)(uint64_t)d.offset * width;
+  if (byteOffset > UINT64_MAX || byteOffset > owner.capacity ||
+      byteOffset > owner.buffer.length)
+    return failure(2, "Metal descriptor byte offset exceeds physical storage");
+  if (count) {
+    __int128 high = d.offset;
+    for (int axis = 0; axis < d.rank; ++axis)
+      high += (__int128)(d.shape[axis] - 1) * d.strides[axis];
+    if (high < 0)
+      return failure(2, "Metal descriptor view exceeds physical buffer bounds");
+    const __uint128_t byteEnd = ((__uint128_t)high + 1) * width;
+    if (byteEnd > owner.capacity || byteEnd > owner.buffer.length)
+      return failure(2, "Metal descriptor view exceeds physical buffer bounds");
+  }
+
+  void *native = (__bridge void *)owner.buffer;
+  *metalBuffer = native;
+  *identity = (uint64_t)(uintptr_t)native;
+  return ok();
+}
+
 
 static AMStatus validateFloatTensor(AMBuffer *owner, AMTensorDescriptor d,
                                     uint64_t &count) {
@@ -1569,45 +1845,44 @@ AMStatus am_transfer(void *buffer, AMTensorDescriptor d, void *host, int32_t upl
     if (count > UINT64_MAX / width)
       return failure(2, "host transfer byte count overflows");
     const uint64_t transferBytes = count * width;
+    AMBufferLease *lease = nil;
+    status = beginBufferLease(owner, upload ? 1 : 0, &lease);
+    if (status.code) return status;
+    status = waitBufferLease(lease);
+    if (status.code) {
+      releaseBufferLease(lease);
+      return status;
+    }
+
     auto *native = (char *)owner.buffer.contents;
     auto *cpu = (char *)host;
-    for (;;) {
-      status = waitForProducer(owner);
-      if (status.code) return status;
-      bool retry = false;
-      @synchronized(owner) {
-        if (owner.producer) {
-          retry = true;
-        } else {
-          for (uint64_t n = 0; n < count; ++n) {
-            uint64_t rest = n;
-            int64_t index = d.offset;
-            for (int axis = d.rank - 1; axis >= 0; --axis) {
-              index += (int64_t)(rest % d.shape[axis]) * d.strides[axis];
-              rest /= d.shape[axis];
-            }
-            if (upload) memcpy(native + index * width, cpu + n * width, width);
-            else memcpy(cpu + n * width, native + index * width, width);
-          }
-          AMEvidence evidence = owner.evidence;
-          if (upload) {
-            evidence.invocation_id = nextInvocation.fetch_add(1);
-            evidence.kind = 1;
-            evidence.kernel_bits = 0;
-          }
-          evidence.transfer_bytes = saturatedAdd(evidence.transfer_bytes, transferBytes);
-          evidence.completed = 1;
-          owner.evidence = evidence;
+    @synchronized(owner) {
+      for (uint64_t n = 0; n < count; ++n) {
+        uint64_t rest = n;
+        int64_t index = d.offset;
+        for (int axis = d.rank - 1; axis >= 0; --axis) {
+          index += (int64_t)(rest % d.shape[axis]) * d.strides[axis];
+          rest /= d.shape[axis];
         }
+        if (upload) memcpy(native + index * width, cpu + n * width, width);
+        else memcpy(cpu + n * width, native + index * width, width);
       }
-      if (!retry) {
-        AMDeviceState *state = owner.state;
-        @synchronized(state) {
-          state.hostCopyBytes = saturatedAdd(state.hostCopyBytes, transferBytes);
-        }
-        return ok();
+      AMEvidence evidence = owner.evidence;
+      if (upload) {
+        evidence.invocation_id = nextInvocation.fetch_add(1);
+        evidence.kind = 1;
+        evidence.kernel_bits = 0;
       }
+      evidence.transfer_bytes = saturatedAdd(evidence.transfer_bytes, transferBytes);
+      evidence.completed = 1;
+      owner.evidence = evidence;
     }
+    AMDeviceState *state = owner.state;
+    @synchronized(state) {
+      state.hostCopyBytes = saturatedAdd(state.hostCopyBytes, transferBytes);
+    }
+    releaseBufferLease(lease);
+    return ok();
   }
 }
 

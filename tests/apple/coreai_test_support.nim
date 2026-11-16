@@ -66,3 +66,9 @@ proc coreAIModelPaths*(): array[2, string] =
   if not dirExists(compiled):
     raise newException(IOError, "Missing SDK-matching compiled Core AI asset: " & compiled)
   [coreAISourceAsset, compiled]
+
+proc originalMetalBufferIdentity*(tensor: MetalTensor[float32]): uint64 =
+  ## Query the original native owner independently of its Core AI view metadata.
+  var nativeBuffer: pointer
+  checkMetal metalApi().bufferInfo(tensor.storage.owner.handle, tensor.descriptor,
+    addr nativeBuffer, addr result)

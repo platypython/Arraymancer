@@ -93,6 +93,11 @@ AMStatus am_kernel(void *library, const char *name, void **out);
 AMStatus am_dispatch(void *kernel, const AMKernelBinding *bindings,
                      uint32_t count, AMGrid grid, AMGrid group, void *stream);
 AMStatus am_transfer(void *buffer, AMTensorDescriptor descriptor, void *host, int32_t upload);
+AMStatus am_buffer_info(void *buffer, AMTensorDescriptor descriptor,
+                        void **metal_buffer, uint64_t *identity);
+AMStatus am_buffer_lease_begin(void *buffer, int32_t access,
+                               void **lease, uint64_t *producer_count);
+AMStatus am_buffer_lease_wait(void *lease);
 typedef struct {
   char *name;
   char *dtype;
@@ -104,6 +109,9 @@ typedef struct {
   int64_t strides[8];
   uint64_t minimum_bytes;
   uint64_t host_copy_bytes;
+  void *descriptor_handle;
+  uint64_t buffer_identity, byte_offset;
+  int32_t borrowed, reserved2;
 } ACArrayDescriptor;
 typedef struct {
   const char *name;
@@ -125,6 +133,7 @@ typedef struct {
   char *asset_digest;
   char *function_name;
   char *architecture;
+  uint64_t borrowed_input_count, producer_count;
 } ACEvidence;
 void ac_message_free(char *message);
 void ac_retain(void *handle);
@@ -140,8 +149,11 @@ AMStatus ac_function_load(void *model, const char *name, void **function);
 AMStatus ac_descriptor_count(void *function, int32_t kind, uint32_t *count);
 AMStatus ac_descriptor(void *function, int32_t kind, uint32_t index,
                        ACArrayDescriptor *out);
+AMStatus ac_descriptor_resolve(void *descriptor_handle, const int64_t *shape,
+                               uint32_t rank, ACArrayDescriptor *out);
 AMStatus ac_array_import(const void *host, AMTensorDescriptor descriptor,
                          void **array);
+AMStatus ac_array_view(void *buffer, AMTensorDescriptor descriptor, void **array);
 AMStatus ac_array_copy(void *array, void *host, AMTensorDescriptor descriptor);
 AMStatus ac_array_descriptor(void *array, ACArrayDescriptor *out);
 AMStatus ac_submit(void *function, const ACBinding *inputs, uint32_t count,
