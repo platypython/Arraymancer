@@ -3,6 +3,7 @@
 import std/json
 import ../../src/arraymancer
 import ./parity_support
+import ./metal_dtype_probes
 
 proc deviceDispatch(): AppleObservation =
   result.id = "apple.metal.device_dispatch"
@@ -39,3 +40,5 @@ proc deviceDispatch(): AppleObservation =
 proc runMetalRequirements*(requirementId: string): seq[AppleObservation] =
   if requirementId.len == 0 or requirementId == "apple.metal.device_dispatch":
     result.add deviceDispatch()
+  if requirementId.len == 0 or requirementId == "apple.metal.dtypes":
+    result.add metalDtypeObservation()

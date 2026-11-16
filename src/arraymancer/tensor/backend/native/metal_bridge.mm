@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
+#include <mutex>
 
 @interface AMBuffer : NSObject
 @property(nonatomic, strong) id<MTLBuffer> buffer;
@@ -64,30 +65,42 @@ AMStatus am_buffer(void *device, uint64_t bytes, void **buffer) {
     return ok();
   }
 }
+static uint64_t dtypeWidth(int32_t dtype) {
+  static const uint64_t widths[] = {0, 4, 2, 2, 1, 2, 4, 8, 1, 2, 4, 8, 1, 4, 8};
+  return dtype > 0 && dtype < 15 ? widths[dtype] : 0;
+}
+static AMStatus validate(AMBuffer *owner, AMTensorDescriptor d, uint64_t &count) {
+  const auto width = dtypeWidth(d.dtype);
+  if (!width || d.rank < 0 || d.rank > 8 || d.capacity != owner.capacity)
+    return failure(2, "invalid tensor descriptor");
+  count = 1;
+  for (int i = 0; i < d.rank; ++i) {
+    if (d.shape[i] < 0 || (d.shape[i] && count > INT64_MAX / (uint64_t)d.shape[i]))
+      return failure(2, "invalid shape or overflow");
+    count *= d.shape[i];
+  }
+  if (!count) return ok();
+  __int128 lo = d.offset, hi = d.offset;
+  for (int i = 0; i < d.rank; ++i) {
+    __int128 span = (__int128)(d.shape[i] - 1) * d.strides[i];
+    if (span < -(__int128)(d.capacity / width) || span > (__int128)(d.capacity / width))
+      return failure(2, "stride exceeds storage");
+    if (span < 0) lo += span; else hi += span;
+  }
+  if (lo < 0 || hi >= (__int128)(d.capacity / width))
+    return failure(2, "view exceeds native storage");
+  return ok();
+}
 AMStatus am_transfer(void *buffer, AMTensorDescriptor d, void *host, int32_t upload) {
   @autoreleasepool {
     if (!buffer) return failure(2, "null storage");
     AMBuffer *owner = (__bridge AMBuffer *)buffer;
-    if (d.rank < 0 || d.rank > 8 || d.dtype != 1 || d.capacity != owner.capacity)
-      return failure(2, "invalid tensor descriptor");
-    uint64_t count = 1;
-    for (int i = 0; i < d.rank; ++i) {
-      if (d.shape[i] < 0) return failure(2, "negative dimension");
-      if (d.shape[i] && count > UINT64_MAX / (uint64_t)d.shape[i])
-        return failure(2, "shape overflow");
-      count *= d.shape[i];
-    }
+    uint64_t count;
+    AMStatus status = validate(owner, d, count);
+    if (status.code) return status;
     if (!count) return ok();
-    if (!host || d.offset < 0 || count > UINT64_MAX / 4)
-      return failure(2, "invalid transfer bounds");
-    // Check every logical address before any host memory is modified.
-    __int128 lo = d.offset, hi = d.offset;
-    for (int i = 0; i < d.rank; ++i) {
-      __int128 span = (__int128)(d.shape[i] - 1) * d.strides[i];
-      if (span < 0) lo += span; else hi += span;
-    }
-    if (lo < 0 || hi >= (__int128)(d.capacity / 4))
-      return failure(2, "view exceeds native storage");
+    if (!host) return failure(2, "null host transfer pointer");
+    const uint64_t width = dtypeWidth(d.dtype);
     [owner.producer waitUntilCompleted];
     if (owner.producer.status == MTLCommandBufferStatusError)
       return failure(5, owner.producer.error.localizedDescription.UTF8String);
@@ -97,17 +110,104 @@ AMStatus am_transfer(void *buffer, AMTensorDescriptor d, void *host, int32_t upl
       uint64_t rest = n;
       int64_t index = d.offset;
       for (int axis = d.rank - 1; axis >= 0; --axis) {
-        index += (rest % d.shape[axis]) * d.strides[axis];
+        index += (int64_t)(rest % d.shape[axis]) * d.strides[axis];
         rest /= d.shape[axis];
       }
-      if (upload) memcpy(native + index * 4, cpu + n * 4, 4);
-      else memcpy(cpu + n * 4, native + index * 4, 4);
+      if (upload) memcpy(native + index * width, cpu + n * width, width);
+      else memcpy(cpu + n * width, native + index * width, width);
     }
     AMEvidence evidence = owner.evidence;
-    evidence.invocation_id = nextInvocation.fetch_add(1);
-    evidence.transfer_bytes += count * 4;
+    if (upload) {
+      evidence.invocation_id = nextInvocation.fetch_add(1);
+      evidence.kind = 1;
+      evidence.kernel_bits = 0;
+    }
+    evidence.transfer_bytes += count * width;
     evidence.completed = 1;
     owner.evidence = evidence;
+    return ok();
+  }
+}
+
+@interface AMCompute : NSObject
+@property(nonatomic, strong) id<MTLCommandQueue> queue;
+@property(nonatomic, strong) id<MTLLibrary> library;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, id<MTLComputePipelineState>> *pipelines;
+@end
+@implementation AMCompute
+@end
+
+static AMCompute *compute(id<MTLDevice> device, const char *directory, NSError **error) {
+  static NSMutableDictionary<NSNumber *, AMCompute *> *contexts = [NSMutableDictionary new];
+  @synchronized(contexts) {
+    AMCompute *context = contexts[@(device.registryID)];
+    if (!context) {
+      context = [AMCompute new];
+      context.queue = [device newCommandQueue];
+      NSURL *url = [NSURL fileURLWithPath:
+        [[NSString stringWithUTF8String:directory] stringByAppendingPathComponent:@"arraymancer.metallib"]];
+      context.library = [device newLibraryWithURL:url error:error];
+      if (!context.library || !context.queue) return nil;
+      context.pipelines = [NSMutableDictionary new];
+      contexts[@(device.registryID)] = context;
+    }
+    return context;
+  }
+}
+
+AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
+                 AMTensorDescriptor output, const char *directory) {
+  @autoreleasepool {
+    if (!source || !destination || !directory) return failure(2, "null copy argument");
+    AMBuffer *src = (__bridge AMBuffer *)source;
+    AMBuffer *dst = (__bridge AMBuffer *)destination;
+    if (src == dst || src.buffer.device.registryID != dst.buffer.device.registryID ||
+        input.dtype != output.dtype) return failure(2, "copy requires distinct same-device buffers and dtype");
+    uint64_t count, outCount;
+    AMStatus status = validate(src, input, count);
+    if (status.code) return status;
+    status = validate(dst, output, outCount);
+    if (status.code) return status;
+    if (count != outCount || count > UINT32_MAX) return failure(2, "copy element count invalid");
+    if (!count) return ok();
+    NSError *error = nil;
+    AMCompute *context = compute(src.buffer.device, directory, &error);
+    if (!context) return failure(6, error ? error.localizedDescription.UTF8String : "Metal queue unavailable");
+    NSString *name = [NSString stringWithFormat:@"copy%llu", dtypeWidth(input.dtype) * 8];
+    id<MTLComputePipelineState> pipeline;
+    @synchronized(context) {
+      pipeline = context.pipelines[name];
+      if (!pipeline) {
+        id<MTLFunction> function = [context.library newFunctionWithName:name];
+        if (!function) return failure(7, "missing copy kernel");
+        pipeline = [src.buffer.device newComputePipelineStateWithFunction:function error:&error];
+        if (!pipeline) return failure(8, error.localizedDescription.UTF8String);
+        context.pipelines[name] = pipeline;
+      }
+    }
+    [src.producer waitUntilCompleted];
+    [dst.producer waitUntilCompleted];
+    id<MTLCommandBuffer> command = [context.queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+    if (!command || !encoder) return failure(5, "cannot create Metal copy command");
+    command.label = name;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:src.buffer offset:0 atIndex:0];
+    [encoder setBuffer:dst.buffer offset:0 atIndex:1];
+    [encoder setBytes:&input length:sizeof(input) atIndex:2];
+    [encoder setBytes:&output length:sizeof(output) atIndex:3];
+    [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(MIN(count, pipeline.maxTotalThreadsPerThreadgroup), 1, 1)];
+    [encoder endEncoding];
+    dst.producer = command;
+    // The command retains buffer resources; this lease additionally retains their owners.
+    [command addCompletedHandler:^(id<MTLCommandBuffer> completed) { (void)src; (void)dst; }];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status == MTLCommandBufferStatusError)
+      return failure(5, command.error.localizedDescription.UTF8String);
+    dst.evidence = {nextInvocation.fetch_add(1), dst.buffer.device.registryID,
+      0, count * dtypeWidth(input.dtype), 0, 1, 2, (int32_t)(dtypeWidth(input.dtype) * 8)};
     return ok();
   }
 }

@@ -19,8 +19,7 @@ proc metalDevice*(index = 0): MetalDevice =
   MetalDevice(owner: ownMetal(handle), registryId: identity)
 
 proc requireMetalDtype[T]() =
-  when T isnot float32:
-    raise newException(MetalDtypeError, "Metal storage currently requires float32")
+  discard metalDtype[T]()
 
 proc newMetalTensorUninit*[T: KnownSupportsCopyMem](shape: Metadata; device: MetalDevice = nil): MetalTensor[T] =
   ## Allocate shared native storage. Empty shape is scalar; zero dimensions are empty.
@@ -47,7 +46,7 @@ proc newMetalTensorUninit*[T: KnownSupportsCopyMem](shape: varargs[int]): MetalT
 
 proc descriptor[T](t: MetalTensor[T]): AMDescriptor =
   result.rank = int32(t.rank)
-  result.dtype = 1
+  result.dtype = metalDtype[T]()
   result.capacity = t.storage.capacity
   result.offset = int64(t.offset)
   for i in 0 ..< t.rank:
@@ -71,3 +70,11 @@ proc cpu*[T](t: MetalTensor[T]): Tensor[T] =
   result = newTensorUninit[T](t.shape)
   if t.size > 0:
     checkMetal metalApi().transfer(t.storage.owner.handle, descriptor(t), result.get_offset_ptr, 0)
+
+proc clone*[T: KnownSupportsCopyMem](t: MetalTensor[T]): MetalTensor[T] =
+  ## Copy into distinct native storage on the GPU, preserving exact representations.
+  requireMetalDtype[T]()
+  if t.storage == nil: raise newException(MetalError, "Cannot clone a sentinel")
+  result = newMetalTensorUninit[T](t.shape, t.storage.device)
+  checkMetal metalApi().copy(t.storage.owner.handle, descriptor(t),
+    result.storage.owner.handle, descriptor(result), arraymancerAppleLibDir.cstring)

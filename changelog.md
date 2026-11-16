@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Support all 14 pinned Metal storage dtypes, including explicit half/bfloat16
+  bit wrappers and complex representations. Native GPU clones preserve exact bits;
+  float64 and complex128 requests fail without implicit conversion.
 - Execute compiled-in native Apple conformance observations and fail closed on
   missing, mismatching or errored requirements. Report format 2 adds native
   evidence; `--requirement=ID` selects one contract with its explicit Apple profile.

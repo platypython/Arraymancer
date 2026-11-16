@@ -26,6 +26,11 @@ when isMainModule:
   let clang = run("xcrun", ["--find", "clang++"]).strip
   let root = currentSourcePath().parentDir.parentDir
   createDir(output)
+  echo run("xcrun", ["-sdk", "macosx", "metal", "-std=metal3.2", "-mmacosx-version-min=27.0",
+    "-c", root / "src/arraymancer/tensor/backend/native/metal_kernels.metal",
+    "-o", output / "arraymancer.air"])
+  echo run("xcrun", ["-sdk", "macosx", "metallib", output / "arraymancer.air",
+    "-o", output / "arraymancer.metallib"])
   let library = absolutePath(output / "libarraymancer_metal.dylib")
   echo run(clang, ["-std=c++17", "-fobjc-arc", "-dynamiclib", "-arch", "arm64",
     "-target", "arm64-apple-macos27.0", "-isysroot", sdk, "-framework", "Metal",

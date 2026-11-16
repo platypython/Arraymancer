@@ -19,7 +19,7 @@ type
   AMEvidence* {.bycopy.} = object
     invocationId*, registryId*, transferBytes*, materializationBytes*: uint64
     cpuFallbackCount*: uint64
-    completed*, kind*: int32
+    completed*, kind*, kernelBits*: int32
   MetalApi* = object
     messageFree*: proc(message: cstring) {.cdecl, raises: [].}
     retain*, release*: proc(handle: pointer) {.cdecl, raises: [].}
@@ -29,6 +29,8 @@ type
     transfer*: proc(buffer: pointer; descriptor: AMDescriptor; host: pointer; upload: int32): AMStatus {.cdecl.}
 
     evidence*: proc(buffer: pointer; evidence: ptr AMEvidence): AMStatus {.cdecl.}
+    copy*: proc(source: pointer; input: AMDescriptor; destination: pointer;
+      output: AMDescriptor; libraryDir: cstring): AMStatus {.cdecl.}
 const arraymancerAppleLibDir* {.strdefine.} = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir / "build/apple"
 var api: MetalApi
 var library: LibHandle
@@ -55,6 +57,7 @@ proc metalApi*(): MetalApi =
       resolve(buffer, "am_buffer")
       resolve(evidence, "am_buffer_evidence")
       resolve(transfer, "am_transfer")
+      resolve(copy, "am_copy")
       library = handle
     result = api
 
