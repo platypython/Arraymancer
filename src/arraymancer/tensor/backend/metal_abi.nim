@@ -8,7 +8,12 @@ type
   MetalError* = object of CatchableError
   MetalUnavailableError* = object of MetalError
   MetalDtypeError* = object of MetalError
+  MetalRngStateError* = object of MetalError
   MetalOutOfMemoryError* = object of MetalError
+  AMRngState* {.bycopy.} = object
+    version*, reserved*: uint32
+    seed*: uint64
+    counter*: array[4, uint32]
   AMStatus* {.bycopy.} = object
     code*: int32
     message*: cstring
@@ -62,6 +67,14 @@ type
     memoryFraction*: proc(device: pointer; value: ptr cdouble; set: int32): AMStatus {.cdecl, gcsafe, raises: [].}
     captureStart*: proc(device: pointer; path: cstring; capture: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
     captureStop*: proc(capture: pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+    generator*: proc(device: pointer; seed: uint64; mode: int32;
+      outHandle: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+    rngState*: proc(generator: pointer; state: ptr AMRngState;
+      mode: int32): AMStatus {.cdecl, gcsafe, raises: [].}
+    rngSeed*: proc(generator: pointer; seed: ptr uint64;
+      entropy: int32): AMStatus {.cdecl, gcsafe, raises: [].}
+    rand*: proc(generator, output: pointer; descriptor: AMDescriptor;
+      libraryDir: cstring): AMStatus {.cdecl, gcsafe, raises: [].}
 
 const arraymancerAppleLibDir* {.strdefine.} = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir / "build/apple"
 var api: MetalApi
@@ -107,6 +120,10 @@ proc metalApi*(): MetalApi {.gcsafe.} =
       resolve(memoryFraction, "am_memory_fraction")
       resolve(captureStart, "am_capture_start")
       resolve(captureStop, "am_capture_stop")
+      resolve(generator, "am_generator")
+      resolve(rngState, "am_rng_state")
+      resolve(rngSeed, "am_rng_seed")
+      resolve(rand, "am_rand")
       library = handle
     result = api
 
@@ -116,4 +133,5 @@ proc checkMetal*(status: AMStatus) {.gcsafe.} =
     if status.message != nil: metalApi().messageFree(status.message)
     if status.code == 1: raise newException(MetalUnavailableError, message)
     if status.code == 4: raise newException(MetalOutOfMemoryError, message)
+    if status.code == 6: raise newException(MetalRngStateError, message)
     raise newException(MetalError, message)

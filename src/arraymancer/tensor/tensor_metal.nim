@@ -6,3 +6,5 @@ import ./metal_runtime
 export metal_runtime
 import ./[operators_metal, aggregate_metal]
 export operators_metal, aggregate_metal
+import ./random_metal
+export random_metal

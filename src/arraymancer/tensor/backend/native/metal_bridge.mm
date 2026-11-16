@@ -11,6 +11,7 @@
 
 @class AMDeviceState;
 @class AMCapture;
+@class AMGenerator;
 
 @interface AMBuffer : NSObject
 @property(nonatomic, strong) id<MTLBuffer> buffer;
@@ -25,6 +26,15 @@
 @property(nonatomic) BOOL cached;
 @end
 @implementation AMBuffer
+@end
+
+@interface AMGenerator : NSObject {
+ @public
+  AMRngState rng;
+}
+@property(nonatomic, strong) AMDeviceState *deviceState;
+@end
+@implementation AMGenerator
 @end
 
 @interface AMPendingCommand : NSObject
@@ -80,6 +90,7 @@ static AMCapture *activeCapture;
 
 @interface AMDeviceState : NSObject
 @property(nonatomic, strong) id<MTLDevice> device;
+@property(nonatomic, strong) AMGenerator *defaultGenerator;
 @property(nonatomic, strong) AMStream *defaultStream;
 @property(nonatomic, strong) NSHashTable<AMStream *> *streams;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray<AMBuffer *> *> *bufferCache;
@@ -301,6 +312,92 @@ static AMStatus selectedStream(id<MTLDevice> device, AMDeviceState *state,
   *result = selected ?: state.defaultStream;
   return *result ? ok() : failure(1, "Metal command queue unavailable");
 }
+static AMGenerator *newGenerator(AMDeviceState *state, uint64_t seed) {
+  AMGenerator *generator = [AMGenerator new];
+  generator.deviceState = state;
+  generator->rng = {1, 0, seed, {0, 0, 0, 0}};
+  return generator;
+}
+
+AMStatus am_generator(void *deviceHandle, uint64_t seed, int32_t mode,
+                      void **out) {
+  @autoreleasepool {
+    if (!out) return failure(2, "null Metal generator output");
+    *out = nullptr;
+    if (mode != 0 && mode != 1)
+      return failure(2, "Metal generator mode must be explicit or default");
+    id<MTLDevice> device = deviceHandle
+        ? (__bridge id<MTLDevice>)deviceHandle : MTLCopyAllDevices().firstObject;
+    NSError *error = nil;
+    AMDeviceState *state = deviceState(device, &error);
+    if (!state)
+      return failure(1, error.localizedDescription.UTF8String ?: "Metal device unavailable");
+
+    AMGenerator *generator = nil;
+    if (mode == 0) {
+      generator = newGenerator(state, seed);
+    } else {
+      @synchronized(state) {
+        generator = state.defaultGenerator;
+        if (!generator) {
+          uint64_t entropySeed = 0;
+          arc4random_buf(&entropySeed, sizeof(entropySeed));
+          generator = newGenerator(state, entropySeed);
+          state.defaultGenerator = generator;
+        }
+      }
+    }
+    *out = (__bridge_retained void *)generator;
+    return ok();
+  }
+}
+
+AMStatus am_rng_state(void *generatorHandle, AMRngState *state, int32_t mode) {
+  if (!generatorHandle || !state)
+    return failure(2, "null Metal RNG state argument");
+  if (mode != 0 && mode != 1)
+    return failure(2, "Metal RNG state mode must be get or set");
+  AMGenerator *generator = (__bridge AMGenerator *)generatorHandle;
+  if (mode == 0) {
+    @synchronized(generator) { *state = generator->rng; }
+    return ok();
+  }
+  const AMRngState requested = *state;
+  if (requested.version != 1 || requested.reserved != 0)
+    return failure(6, "incompatible Metal RNG state version or reserved field");
+  @synchronized(generator) { generator->rng = requested; }
+  return ok();
+}
+
+AMStatus am_rng_seed(void *generatorHandle, uint64_t *seed, int32_t entropy) {
+  if (!generatorHandle || !seed || (entropy != 0 && entropy != 1))
+    return failure(2, "invalid Metal RNG seed argument");
+  AMGenerator *generator = (__bridge AMGenerator *)generatorHandle;
+  uint64_t nextSeed = entropy ? 0 : *seed;
+  @synchronized(generator) {
+    if (entropy) arc4random_buf(&nextSeed, sizeof(nextSeed));
+    generator->rng = {1, 0, nextSeed, {0, 0, 0, 0}};
+    *seed = nextSeed;
+  }
+  return ok();
+}
+
+static bool addRngBlocks(const uint32_t current[4], uint64_t blocks,
+                         uint32_t next[4]) {
+  uint64_t sum = (uint64_t)current[0] + (uint32_t)blocks;
+  next[0] = (uint32_t)sum;
+  uint64_t carry = sum >> 32;
+  sum = (uint64_t)current[1] + (uint32_t)(blocks >> 32) + carry;
+  next[1] = (uint32_t)sum;
+  carry = sum >> 32;
+  for (int limb = 2; limb < 4; ++limb) {
+    sum = (uint64_t)current[limb] + carry;
+    next[limb] = (uint32_t)sum;
+    carry = sum >> 32;
+  }
+  return carry == 0;
+}
+
 
 static void prepareBufferProducer(AMBuffer *owner, id<MTLCommandBuffer> command,
                                   uint64_t invocation, AMEvidence evidence);
@@ -1038,6 +1135,105 @@ static AMStatus runMathCommand(AMCompute *context,
   (void)outputCount;
   return status;
 }
+typedef struct {
+  uint32_t counter[4];
+  uint64_t seed;
+} AMRngParameters;
+static_assert(sizeof(AMRngParameters) == 24, "RNG shader parameter ABI mismatch");
+
+
+static bool packedRandomOutput(AMTensorDescriptor descriptor,
+                               uint64_t count) {
+  if (descriptor.offset != 0) return false;
+  if (!count) return true;
+  int64_t expectedStride = 1;
+  for (int axis = descriptor.rank - 1; axis >= 0; --axis) {
+    if (descriptor.strides[axis] < 0) return false;
+    if (descriptor.shape[axis] > 1 &&
+        descriptor.strides[axis] != expectedStride) return false;
+    expectedStride *= descriptor.shape[axis];
+  }
+  return true;
+}
+
+AMStatus am_rand(void *generatorHandle, void *outputHandle,
+                 AMTensorDescriptor descriptor, const char *directory) {
+  @autoreleasepool {
+    if (!generatorHandle || !outputHandle)
+      return failure(2, "null Metal random-generation handle");
+    AMGenerator *generator = (__bridge AMGenerator *)generatorHandle;
+    AMBuffer *output = (__bridge AMBuffer *)outputHandle;
+    AMDeviceState *state = generator.deviceState;
+    if (!state || !state.device)
+      return failure(1, "Metal random generator has no device");
+    if (output.state != state ||
+        output.buffer.device.registryID != state.device.registryID)
+      return failure(2, "Metal RNG generator and output use different devices");
+
+    uint64_t count = 0;
+    AMStatus status = validateFloatTensor(output, descriptor, count);
+    if (status.code) return status;
+    if (!packedRandomOutput(descriptor, count))
+      return failure(2, "Metal random output must be a packed mutable tensor");
+    if (!count) return ok();
+    if (count > UINT32_MAX)
+      return failure(2, "Metal random output exceeds thread-grid limits");
+    if (!directory) return failure(9, "null Metal library directory");
+
+    NSError *error = nil;
+    AMCompute *context = compute(state.device, directory, &error);
+    if (!context)
+      return failure(9, error.localizedDescription.UTF8String ?: "Metal queue or library unavailable");
+    NSString *name = @"rng_philox4x32_10";
+    id<MTLComputePipelineState> pipeline = pipelineFor(context, name, &error);
+    if (!pipeline)
+      return failure(error ? 7 : 8,
+                     error.localizedDescription.UTF8String ?: "missing Philox Metal kernel");
+    const NSUInteger width = MIN((NSUInteger)256,
+                                 pipeline.maxTotalThreadsPerThreadgroup);
+    if (!width) return failure(7, "Philox Metal pipeline has no supported threads");
+
+    AMStream *stream = nil;
+    status = selectedStream(state.device, context.state, &stream);
+    if (status.code) return status;
+    id<MTLCommandBuffer> command = [stream.queue commandBuffer];
+    if (!command) return failure(5, "cannot create Metal random command");
+
+    const uint64_t blockCount = count / 4 + (count % 4 != 0);
+    @synchronized(generator) {
+      const AMRngState start = generator->rng;
+      if (start.version != 1 || start.reserved != 0)
+        return failure(6, "incompatible Metal RNG state version or reserved field");
+      uint32_t nextCounter[4];
+      if (!addRngBlocks(start.counter, blockCount, nextCounter))
+        return failure(6, "Metal RNG 128-bit counter overflow");
+      id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+      if (!encoder) return failure(5, "cannot create Metal random encoder");
+      command.label = name;
+      [encoder setComputePipelineState:pipeline];
+
+      AMRngParameters parameters = {};
+      memcpy(parameters.counter, start.counter, sizeof(parameters.counter));
+      parameters.seed = start.seed;
+      [encoder setBuffer:output.buffer offset:0 atIndex:0];
+      [encoder setBytes:&parameters length:sizeof(parameters) atIndex:1];
+      [encoder setBytes:&count length:sizeof(count) atIndex:2];
+      [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+      [encoder endEncoding];
+
+      memcpy(generator->rng.counter, nextCounter, sizeof(nextCounter));
+      const uint64_t invocation = nextInvocation.fetch_add(1);
+      AMEvidence evidence = {invocation, state.device.registryID,
+                             0, 0, 0, 0, 2, 200};
+      status = submitCommand(stream, command, @[generator, output, pipeline],
+                             output, invocation, evidence, 0, nullptr);
+      if (status.code) abandonBufferProducer(output, invocation);
+    }
+    return status;
+  }
+}
+
 
 AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
                  void *bHandle, AMTensorDescriptor bd,
@@ -1045,7 +1241,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
                  AMMathParameters parameters, const char *directory) {
   @autoreleasepool {
     if (!outputHandle) return failure(2, "null math output storage");
-    if (!directory) return failure(6, "null Metal library directory");
+    if (!directory) return failure(9, "null Metal library directory");
     if (parameters.reserved != 0 ||
         (parameters.scalar_input != 0 && parameters.scalar_input != 1))
       return failure(2, "invalid Metal math parameters");
@@ -1156,7 +1352,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     NSError *error = nil;
     AMCompute *context = compute(output.buffer.device, directory, &error);
     if (!context)
-      return failure(6, error ? error.localizedDescription.UTF8String : "Metal queue or library unavailable");
+      return failure(9, error ? error.localizedDescription.UTF8String : "Metal queue or library unavailable");
     id<MTLComputePipelineState> pipeline = pipelineFor(context, kernelName, &error);
     if (!pipeline)
       return failure(error ? 7 : 8,
@@ -1218,7 +1414,7 @@ AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,
     NSError *error = nil;
     AMCompute *context = compute(output.buffer.device, directory, &error);
     if (!context)
-      return failure(6, error ? error.localizedDescription.UTF8String : "Metal queue or library unavailable");
+      return failure(9, error ? error.localizedDescription.UTF8String : "Metal queue or library unavailable");
     NSString *name = @"math_mse_backward";
     id<MTLComputePipelineState> pipeline = pipelineFor(context, name, &error);
     if (!pipeline)
@@ -1340,7 +1536,7 @@ AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
     if (!count) return ok();
     NSError *error = nil;
     AMCompute *context = compute(src.buffer.device, directory, &error);
-    if (!context) return failure(6, error ? error.localizedDescription.UTF8String : "Metal queue unavailable");
+    if (!context) return failure(9, error ? error.localizedDescription.UTF8String : "Metal queue unavailable");
     NSString *name = [NSString stringWithFormat:@"copy%llu", dtypeWidth(input.dtype) * 8];
     id<MTLComputePipelineState> pipeline = pipelineFor(context, name, &error);
     if (!pipeline) return failure(8, error ? error.localizedDescription.UTF8String : "missing copy kernel");
@@ -1381,7 +1577,7 @@ AMStatus am_set_element(void *destination, AMTensorDescriptor output,
     if (output.rank != 0 || count != 1) return failure(2, "element mutation needs scalar descriptor");
     NSError *error = nil;
     AMCompute *context = compute(dst.buffer.device, directory, &error);
-    if (!context) return failure(6, error ? error.localizedDescription.UTF8String : "Metal queue unavailable");
+    if (!context) return failure(9, error ? error.localizedDescription.UTF8String : "Metal queue unavailable");
     NSString *name = [NSString stringWithFormat:@"set%llu", dtypeWidth(output.dtype) * 8];
     id<MTLComputePipelineState> pipeline = pipelineFor(context, name, &error);
     if (!pipeline) return failure(8, error ? error.localizedDescription.UTF8String : "missing mutation kernel");

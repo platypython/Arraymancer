@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Generate float32 uniforms with native GPU Philox4x32-10, retained generators,
+  OS-entropy seeding and versioned replay state. Atomic 128-bit block reservations
+  remain observable while GPU work is pending.
 - Report native Metal live, cached and in-flight storage separately from driver
   allocation and recommended limits. Enforce memory fractions, recycle only
   unowned completed buffers, and capture real GPU work through Metal profiling.

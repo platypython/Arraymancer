@@ -15,6 +15,14 @@ typedef struct {
   uint64_t capacity;
 } AMTensorDescriptor;
 typedef struct {
+  uint32_t version, reserved;
+  uint64_t seed;
+  uint32_t counter[4];
+} AMRngState;
+#ifdef __cplusplus
+static_assert(sizeof(AMRngState) == 32, "AMRngState ABI must be 32 bytes");
+#endif
+typedef struct {
   uint64_t invocation_id, registry_id, transfer_bytes, materialization_bytes;
   uint64_t cpu_fallback_count;
   int32_t completed, kind, kernel_bits;
@@ -68,6 +76,11 @@ AMStatus am_event_wait(void *stream, void *event, uint64_t value,
                        int32_t explicit_value);
 AMStatus am_event_signal(void *event, uint64_t value);
 AMStatus am_buffer(void *device, uint64_t bytes, void **buffer);
+AMStatus am_generator(void *device, uint64_t seed, int32_t mode, void **out);
+AMStatus am_rng_state(void *generator, AMRngState *state, int32_t mode);
+AMStatus am_rng_seed(void *generator, uint64_t *seed, int32_t entropy);
+AMStatus am_rand(void *generator, void *output, AMTensorDescriptor descriptor,
+                 const char *library_dir);
 AMStatus am_transfer(void *buffer, AMTensorDescriptor descriptor, void *host, int32_t upload);
 #ifdef __cplusplus
 }

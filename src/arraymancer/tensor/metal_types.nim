@@ -34,6 +34,15 @@ type
     owner*: MetalOwner
     device*: MetalDevice
     capacity*: uint64
+  MetalGenerator* = ref object
+    ## Retained native RNG handle and the device whose counter it advances.
+    owner*: MetalOwner
+    device*: MetalDevice
+  MetalRngState* = object
+    ## Versioned snapshot of the next Philox block; counter limbs are little-endian.
+    version*: uint32
+    seed*: uint64
+    counter*: array[4, uint32]
   MetalTensor*[T] = object
     ## Assignment shares storage; metadata remains independent.
     shape*, strides*: Metadata

@@ -30,12 +30,14 @@ proc metalEvidence*(tensor: MetalTensor[float32]): JsonNode =
   var native: AMEvidence
   checkMetal metalApi().evidence(tensor.storage.owner.handle, addr native)
   let kernel = case native.kernelBits
+    of 8, 16, 32, 64: "copy" & $native.kernelBits
     of 101..109: "math_elementwise"
     of 120: "math_matmul"
     of 121: "math_reduce"
     of 122: "math_axis_sum"
     of 123: "math_squared_difference"
     of 124: "math_mse_backward"
+    of 200: "rng_philox4x32_10"
     else: ""
   result = %*{"invocation_id": native.invocationId,
     "kind": (if native.kind == 2: "gpu_command" else: "device_storage_control"),

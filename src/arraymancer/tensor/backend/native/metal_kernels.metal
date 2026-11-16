@@ -14,6 +14,57 @@ struct MathParameters {
   float scalar;
 };
 
+struct RngParameters {
+  uint counter[4];
+  ulong seed;
+};
+
+inline uint2 multiplyWide(uint left, uint right) {
+  const ulong product = ulong(left) * ulong(right);
+  return uint2(uint(product >> 32), uint(product));
+}
+
+inline uint4 philox4x32_10(uint4 counter, uint2 key) {
+  for (uint round = 0; round < 10; ++round) {
+    const uint2 product0 = multiplyWide(0xD2511F53u, counter.x);
+    const uint2 product1 = multiplyWide(0xCD9E8D57u, counter.z);
+    counter = uint4(product1.x ^ counter.y ^ key.x, product1.y,
+                    product0.x ^ counter.w ^ key.y, product0.y);
+    key += uint2(0x9E3779B9u, 0xBB67AE85u);
+  }
+  return counter;
+}
+
+kernel void rng_philox4x32_10(
+    device float *output [[buffer(0)]],
+    constant RngParameters &parameters [[buffer(1)]],
+    constant ulong &count [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]) {
+  const ulong index = ulong(tid);
+  if (index >= count) return;
+
+  const ulong block = index >> 2;
+  uint4 counter = uint4(parameters.counter[0], parameters.counter[1],
+                        parameters.counter[2], parameters.counter[3]);
+  const uint lowBlock = uint(block);
+  const uint highBlock = uint(block >> 32);
+  ulong sum = ulong(counter.x) + ulong(lowBlock);
+  counter.x = uint(sum);
+  ulong carry = sum >> 32;
+  sum = ulong(counter.y) + ulong(highBlock) + carry;
+  counter.y = uint(sum);
+  carry = sum >> 32;
+  sum = ulong(counter.z) + carry;
+  counter.z = uint(sum);
+  carry = sum >> 32;
+  counter.w += uint(carry);
+
+  const uint2 key = uint2(uint(parameters.seed), uint(parameters.seed >> 32));
+  const uint4 words = philox4x32_10(counter, key);
+  const uint word = words[uint(index & 3ul)];
+  output[tid] = float(word >> 8) * (1.0f / 16777216.0f);
+}
+
 ulong elementCount(constant Descriptor &d) {
   ulong count = 1;
   for (int axis = 0; axis < d.rank; ++axis) count *= ulong(d.shape[axis]);
