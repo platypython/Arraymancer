@@ -1,6 +1,7 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Align trailing dimensions when broadcasting tensors of different ranks.
 - Normalize mean-MSE gradients by the number of prediction elements.
 - Restore the previous autograd tracking mode when `no_grad_mode` exits through
   an exception.

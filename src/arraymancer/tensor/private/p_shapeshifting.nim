@@ -97,29 +97,34 @@ proc broadcast2Impl*[T](a, b: AnyTensor[T], result: var tuple[a, b: AnyTensor[T]
   let rank = max(a.rank, b.rank)
 
   var shapeA, stridesA, shapeB, stridesB = Metadata(len: rank) # initialized with 0
+  let leadingA = rank - a.rank
+  let leadingB = rank - b.rank
 
   for i in 0..<rank:
-    let shape_A_iter = if i < rank: a.shape[i] else: 1
-    let shape_B_iter = if i < rank: b.shape[i] else: 1
+    # Missing leading dimensions behave like singleton axes with zero stride.
+    let axisA = i - leadingA
+    let axisB = i - leadingB
+    let shape_A_iter = if axisA >= 0: a.shape[axisA] else: 1
+    let shape_B_iter = if axisB >= 0: b.shape[axisB] else: 1
 
     if shape_A_iter == shape_B_iter:
       shapeA[i] = shape_A_iter
       shapeB[i] = shape_A_iter
 
-      stridesA[i] = a.strides[i]
-      stridesB[i] = b.strides[i]
+      stridesA[i] = if axisA >= 0: a.strides[axisA] else: 0
+      stridesB[i] = if axisB >= 0: b.strides[axisB] else: 0
 
     elif shape_A_iter == 1:
       shapeA[i] = shape_B_iter
       shapeB[i] = shape_B_iter
 
       # stridesA[i] is already 0
-      stridesB[i] = b.strides[i]
+      stridesB[i] = if axisB >= 0: b.strides[axisB] else: 0
     elif shape_B_iter == 1:
       shapeA[i] = shape_A_iter
       shapeB[i] = shape_A_iter
 
-      stridesA[i] = a.strides[i]
+      stridesA[i] = if axisA >= 0: a.strides[axisA] else: 0
       # stridesB[i] is already 0
     else:
       raise newException(ValueError, "Broadcasting error: non-singleton dimensions must be the same in both tensors. Tensors' shapes were: " &

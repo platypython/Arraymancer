@@ -210,6 +210,7 @@ proc broadcast2*[T](a, b: Tensor[T]): tuple[a, b: Tensor[T]] {.noSideEffect, noi
   ##
   ## Dimension(s) of size 1 can be expanded to arbitrary size by replicating
   ## values along that dimension.
+  ## Axes are aligned from the right; missing leading axes are treated as size 1.
   ##
   ## Warning ⚠:
   ##   This is a no-copy operation, data is shared with the input.

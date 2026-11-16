@@ -18,6 +18,10 @@ beginning with a dot:
     # |20     21      22|
     # |30     31      32|
 
+Tensor-tensor operations align dimensions from the right. A missing leading
+dimension acts like a dimension of size 1, so a tensor of shape ``[2, 3]`` can
+be added to one of shape ``[3]``. Non-singleton trailing dimensions must match.
+
 -  ``+.``,\ ``-.``,
 -  ``*.``: broadcasted element-wise matrix multiplication also called
    Hadamard product)

@@ -55,6 +55,31 @@ proc main() =
         check b == [[1,1],
                     [2,2]].toTensor()
 
+    test "Mixed-rank broadcasting preserves strided inputs and storage aliases":
+      let a = [[1,4], [2,5], [3,6]].toTensor.transpose
+      var b = [99,10,20,30].toTensor
+      let tail = b[1..3]
+      let expected = [[11,22,33], [14,25,36]].toTensor
+      check a +. tail == expected
+      check tail +. a == expected
+      let views = broadcast2(a, tail)
+      b[1] = 40
+      check views.b == [[40,20,30], [40,20,30]].toTensor
+
+    test "Mixed-rank broadcasting handles multiple leading axes and empty axes":
+      let a = [[1,2,3], [4,5,6]].toTensor.reshape(2,1,3)
+      let b = [10,20,30].toTensor
+      check a +. b == [[[11,22,33]], [[14,25,36]]].toTensor
+      let empty = newTensor[float64](2,0,3) +. [1.0,2.0,3.0].toTensor
+      check empty.shape == [2,0,3]
+      check empty.size == 0
+
+    test "Mixed-rank broadcasting rejects incompatible trailing axes":
+      let a = [[1,2,3], [4,5,6]].toTensor
+      let b = [10,20].toTensor
+      expect ValueError: discard a +. b
+      expect ValueError: discard b +. a
+
     test "Implicit tensor-tensor broadcasting - basic operations +., -., *., /., ^.":
       block: # Addition
         let a = [0, 10, 20, 30].toTensor().reshape(4,1)
