@@ -12,6 +12,13 @@ proc run(executable: string; args: openArray[string]): string =
   result = child.outputStream.readAll()
   let code = child.waitForExit()
   if code != 0: raise newException(IOError, executable & " failed: " & result)
+proc buildMetallib(source, name, output: string) =
+  ## Tests load a separately compiled library, not the runtime compiler's output.
+  echo run("xcrun", ["-sdk", "macosx", "metal", "-std=metal3.2", "-fno-fast-math",
+    "-mmacosx-version-min=27.0", "-c", source, "-o", output / (name & ".air")])
+  echo run("xcrun", ["-sdk", "macosx", "metallib", output / (name & ".air"),
+    "-o", output / (name & ".metallib")])
+
 when isMainModule:
   when not (defined(macosx) and defined(arm64)):
     quit("Apple backends require macOS arm64", 1)
@@ -26,11 +33,11 @@ when isMainModule:
   let clang = run("xcrun", ["--find", "clang++"]).strip
   let root = currentSourcePath().parentDir.parentDir
   createDir(output)
-  echo run("xcrun", ["-sdk", "macosx", "metal", "-std=metal3.2", "-fno-fast-math", "-mmacosx-version-min=27.0",
-    "-c", root / "src/arraymancer/tensor/backend/native/metal_kernels.metal",
-    "-o", output / "arraymancer.air"])
-  echo run("xcrun", ["-sdk", "macosx", "metallib", output / "arraymancer.air",
-    "-o", output / "arraymancer.metallib"])
+  buildMetallib(root / "src/arraymancer/tensor/backend/native/metal_kernels.metal",
+    "arraymancer", output)
+  let testShader = root / "tests/apple/kernels/double.metal"
+  if fileExists(testShader):
+    buildMetallib(testShader, "arraymancer_test", output)
   let library = absolutePath(output / "libarraymancer_metal.dylib")
   echo run(clang, ["-std=c++17", "-fobjc-arc", "-dynamiclib", "-arch", "arm64",
     "-target", "arm64-apple-macos27.0", "-isysroot", sdk, "-framework", "Metal",

@@ -7,4 +7,7 @@ export metal_runtime
 import ./[operators_metal, aggregate_metal]
 export operators_metal, aggregate_metal
 import ./random_metal
+import ./custom_kernels_metal
+export custom_kernels_metal
+
 export random_metal

@@ -23,6 +23,7 @@
 @property(nonatomic, weak) AMDeviceState *state;
 @property(nonatomic) uint64_t externalReferences;
 @property(nonatomic) uint64_t inFlightLeases;
+@property(nonatomic, strong) NSMutableArray *customLeases;
 @property(nonatomic) BOOL cached;
 @end
 @implementation AMBuffer
@@ -41,7 +42,8 @@
 @property(nonatomic, strong) id<MTLCommandBuffer> command;
 @property(nonatomic, copy) NSArray *retainedHandles;
 @property(nonatomic, copy) NSArray<AMBuffer *> *bufferLeases;
-@property(nonatomic, strong) AMBuffer *output;
+@property(nonatomic, copy) NSArray<AMBuffer *> *outputs;
+@property(nonatomic, copy) NSArray *customLeases;
 @property(nonatomic) uint64_t sequence;
 @property(nonatomic) uint64_t invocation;
 @property(nonatomic) uint64_t materializationBytes;
@@ -61,6 +63,7 @@
 @end
 
 static NSObject *captureLock;
+static NSObject *customLeaseLock;
 static AMCapture *activeCapture;
 
 @interface AMStream : NSObject
@@ -77,6 +80,16 @@ static AMCapture *activeCapture;
 @property(nonatomic, copy) NSString *lastAcceptedError;
 @end
 @implementation AMStream
+@end
+
+@interface AMCustomLease : NSObject
+@property(nonatomic, weak) AMBuffer *owner;
+@property(nonatomic) uint64_t byteStart;
+@property(nonatomic) uint64_t byteEnd;
+@property(nonatomic) uint64_t streamIdentity;
+@property(nonatomic) int32_t access;
+@end
+@implementation AMCustomLease
 @end
 
 @interface AMEvent : NSObject
@@ -111,6 +124,22 @@ static AMCapture *activeCapture;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, id<MTLComputePipelineState>> *pipelines;
 @end
 @implementation AMCompute
+@end
+@interface AMLibrary : NSObject
+@property(nonatomic, strong) id<MTLDevice> device;
+@property(nonatomic, strong) id<MTLLibrary> library;
+@property(nonatomic, copy) NSString *label;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, id<MTLComputePipelineState>> *pipelines;
+@end
+@implementation AMLibrary
+@end
+
+@interface AMKernel : NSObject
+@property(nonatomic, strong) AMLibrary *owner;
+@property(nonatomic, strong) id<MTLComputePipelineState> pipeline;
+@property(nonatomic, copy) NSString *name;
+@end
+@implementation AMKernel
 @end
 static AMStatus failure(int32_t code, const char *text) {
   return {code, strdup(text ? text : "native Metal operation failed")};
@@ -402,6 +431,7 @@ static bool addRngBlocks(const uint32_t current[4], uint64_t blocks,
 static void prepareBufferProducer(AMBuffer *owner, id<MTLCommandBuffer> command,
                                   uint64_t invocation, AMEvidence evidence);
 
+static void ensureCustomLeaseLock(void);
 static void finishStreamCommand(AMStream *stream, AMPendingCommand *record) {
   id<MTLCommandBuffer> command = record.command;
   const uint64_t sequence = record.sequence;
@@ -444,15 +474,27 @@ static void finalizeCommand(AMStream *stream, AMPendingCommand *record) {
         (command.status != MTLCommandBufferStatusCompleted &&
          command.status != MTLCommandBufferStatusError)) return;
     record.finalized = YES;
-    if (record.output)
-      finishBufferProducer(record.output, record.invocation, command);
+    for (AMBuffer *output in record.outputs)
+      finishBufferProducer(output, record.invocation, command);
     if (command.status == MTLCommandBufferStatusCompleted &&
-        record.output && record.materializationBytes) {
-      @synchronized(record.output) {
-        if (record.output.evidence.invocation_id == record.invocation) {
-          AMEvidence evidence = record.output.evidence;
-          evidence.materialization_bytes = record.materializationBytes;
-          record.output.evidence = evidence;
+        record.materializationBytes) {
+      for (AMBuffer *output in record.outputs) {
+        @synchronized(output) {
+          if (output.evidence.invocation_id == record.invocation) {
+            AMEvidence evidence = output.evidence;
+            evidence.materialization_bytes = record.materializationBytes;
+            output.evidence = evidence;
+          }
+        }
+      }
+    }
+
+    if (record.customLeases.count) {
+      ensureCustomLeaseLock();
+      @synchronized(customLeaseLock) {
+        for (AMCustomLease *lease in record.customLeases) {
+          AMBuffer *owner = lease.owner;
+          [owner.customLeases removeObjectIdenticalTo:lease];
         }
       }
     }
@@ -491,45 +533,84 @@ static NSArray<AMBuffer *> *uniqueBufferOwners(NSArray *handles) {
   return [owners copy];
 }
 
-static AMStatus submitCommand(AMStream *stream, id<MTLCommandBuffer> command,
-                              NSArray *leases, AMBuffer *output,
-                              uint64_t invocation, AMEvidence evidence,
-                              uint64_t materializationBytes,
-                              uint64_t *submittedSequence) {
+static void ensureCustomLeaseLock(void) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ customLeaseLock = [NSObject new]; });
+}
+
+static AMStatus submitCommandDetailed(
+    AMStream *stream, id<MTLCommandBuffer> command, NSArray *leases,
+    NSArray<AMBuffer *> *outputs, NSArray<AMCustomLease *> *customLeases,
+    uint64_t invocation, AMEvidence evidence, uint64_t materializationBytes,
+    uint64_t *submittedSequence) {
   if (!stream || !command) return failure(5, "cannot submit Metal command");
-  NSArray *retainedLeases = [leases copy] ?: @[];
-  NSArray<AMBuffer *> *bufferLeases = uniqueBufferOwners(retainedLeases);
+  NSMutableArray *retainedHandles = [leases mutableCopy] ?: [NSMutableArray new];
+  for (AMBuffer *output in outputs)
+    if (![retainedHandles containsObject:output]) [retainedHandles addObject:output];
+  NSArray *ownedHandles = [retainedHandles copy];
+  NSArray<AMBuffer *> *bufferLeases = uniqueBufferOwners(ownedHandles);
+  NSArray<AMBuffer *> *retainedOutputs = uniqueBufferOwners(outputs ?: @[]);
   AMDeviceState *state = deviceState(stream.device, nil);
   if (!state) return failure(1, "Metal device accounting state unavailable");
   for (AMBuffer *owner in bufferLeases)
-    if (owner.state != state)
+    if (owner.state != state || !owner.buffer ||
+        owner.buffer.device.registryID != stream.device.registryID)
       return failure(2, "Metal command buffers belong to different devices");
+
+  for (AMCustomLease *lease in customLeases) {
+    if (!lease.owner || ![bufferLeases containsObject:lease.owner] ||
+        lease.byteEnd < lease.byteStart || lease.access < 0 ||
+        lease.access > 2 || lease.streamIdentity != stream.identity)
+      return failure(2, "invalid custom Metal buffer lease");
+  }
 
   AMPendingCommand *record = [AMPendingCommand new];
   record.command = command;
-  record.retainedHandles = retainedLeases;
+  record.retainedHandles = ownedHandles;
   record.bufferLeases = bufferLeases;
-  record.output = output;
+  record.outputs = retainedOutputs;
+  record.customLeases = [customLeases copy] ?: @[];
   record.invocation = invocation;
   record.materializationBytes = materializationBytes;
 
+  ensureCustomLeaseLock();
   @synchronized(stream) {
     if (stream.acceptedSequence == UINT64_MAX)
       return failure(5, "Metal stream command sequence exhausted");
-    @synchronized(state) {
-      for (AMBuffer *owner in bufferLeases)
-        if (!owner.externalReferences || owner.cached ||
-            owner.inFlightLeases == UINT64_MAX)
-          return failure(2, "Metal command cannot lease an unowned buffer");
-      for (AMBuffer *owner in bufferLeases) {
-        if (!owner.inFlightLeases)
-          state.inFlightBytes = saturatedAdd(state.inFlightBytes, owner.capacity);
-        ++owner.inFlightLeases;
+    @synchronized(customLeaseLock) {
+      @synchronized(state) {
+        for (AMBuffer *owner in bufferLeases)
+          if (!owner.externalReferences || owner.cached ||
+              owner.inFlightLeases == UINT64_MAX)
+            return failure(2, "Metal command cannot lease an unowned buffer");
+
+        for (AMCustomLease *lease in customLeases) {
+          AMBuffer *owner = lease.owner;
+          if (!owner.customLeases) owner.customLeases = [NSMutableArray new];
+          for (AMCustomLease *previous in owner.customLeases) {
+            if (previous.streamIdentity == lease.streamIdentity ||
+                previous.byteStart >= lease.byteEnd ||
+                lease.byteStart >= previous.byteEnd ||
+                (previous.access == 0 && lease.access == 0))
+              continue;
+            return failure(10, "custom Metal buffer has a conflicting queued lease on another stream");
+          }
+        }
+
+        for (AMBuffer *owner in bufferLeases) {
+          if (!owner.inFlightLeases)
+            state.inFlightBytes = saturatedAdd(state.inFlightBytes, owner.capacity);
+          ++owner.inFlightLeases;
+        }
+        for (AMCustomLease *lease in customLeases)
+          [lease.owner.customLeases addObject:lease];
       }
     }
+
     const uint64_t sequence = ++stream.acceptedSequence;
     record.sequence = sequence;
-    if (output) prepareBufferProducer(output, command, invocation, evidence);
+    for (AMBuffer *output in retainedOutputs)
+      prepareBufferProducer(output, command, invocation, evidence);
     stream.lastAcceptedComplete = NO;
     stream.lastAcceptedFailed = NO;
     stream.lastAcceptedError = nil;
@@ -544,6 +625,17 @@ static AMStatus submitCommand(AMStream *stream, id<MTLCommandBuffer> command,
     [command commit];
   }
   return ok();
+}
+
+static AMStatus submitCommand(AMStream *stream, id<MTLCommandBuffer> command,
+                              NSArray *leases, AMBuffer *output,
+                              uint64_t invocation, AMEvidence evidence,
+                              uint64_t materializationBytes,
+                              uint64_t *submittedSequence) {
+  NSArray<AMBuffer *> *outputs = output ? @[output] : @[];
+  return submitCommandDetailed(stream, command, leases, outputs, @[],
+                               invocation, evidence, materializationBytes,
+                               submittedSequence);
 }
 
 static void prepareBufferProducer(AMBuffer *owner, id<MTLCommandBuffer> command,
@@ -963,6 +1055,7 @@ AMStatus am_buffer(void *deviceHandle, uint64_t bytes, void **buffer) {
       owner.inFlightLeases = 0;
       owner.cached = NO;
       owner.producer = nil;
+      owner.customLeases = [NSMutableArray new];
       owner.producerInvocation = 0;
       owner.producerError = nil;
       owner.evidence = {nextInvocation.fetch_add(1), dev.registryID, 0, 0, 0, 1, 1};
@@ -1721,5 +1814,337 @@ AMStatus am_capture_stop(void *captureHandle) {
       NSString *message = stopCaptureLocked((AMCapture *)object);
       return message ? failure(5, message.UTF8String) : ok();
     }
+  }
+}
+static AMStatus checkedMetalDevice(void *deviceHandle,
+                                   id<MTLDevice> *deviceOut) {
+  if (!deviceHandle || !deviceOut)
+    return failure(2, "null Metal device handle");
+  id object = (__bridge id)deviceHandle;
+  if (![object conformsToProtocol:@protocol(MTLDevice)])
+    return failure(2, "invalid Metal device handle");
+  *deviceOut = (id<MTLDevice>)object;
+  return ok();
+}
+
+AMStatus am_library(void *deviceHandle, const char *text, int32_t mode,
+                    void **out) {
+  @autoreleasepool {
+    if (!out) return failure(2, "null Metal library output");
+    *out = nullptr;
+    if (!deviceHandle || !text || (mode != 0 && mode != 1))
+      return failure(2, "invalid Metal library device, text, or mode");
+
+    id<MTLDevice> device = nil;
+    AMStatus status = checkedMetalDevice(deviceHandle, &device);
+    if (status.code) return status;
+    NSError *deviceError = nil;
+    if (!deviceState(device, &deviceError))
+      return failure(1, deviceError.localizedDescription.UTF8String
+          ?: "Metal device unavailable");
+
+    NSString *value = [NSString stringWithUTF8String:text];
+    if (!value)
+      return failure(mode == 0 ? 7 : 9,
+                     "Metal library source or path is not valid UTF-8");
+    if (mode == 1 && value.length == 0)
+      return failure(2, "Metal library path must not be empty");
+
+    NSError *error = nil;
+    id<MTLLibrary> library = nil;
+    NSString *label = nil;
+    if (mode == 0) {
+      MTLCompileOptions *options = [MTLCompileOptions new];
+      library = [device newLibraryWithSource:value options:options error:&error];
+      label = @"runtime source";
+      if (!library)
+        return failure(7, error.localizedDescription.UTF8String
+            ?: "Metal runtime source compilation failed");
+    } else {
+      NSString *path = [value stringByStandardizingPath];
+      NSURL *url = [NSURL fileURLWithPath:path];
+      library = [device newLibraryWithURL:url error:&error];
+      label = path;
+      if (!library)
+        return failure(9, error.localizedDescription.UTF8String
+            ?: "Metal library file could not be loaded");
+    }
+
+    AMLibrary *owner = [AMLibrary new];
+    if (!owner) return failure(9, "cannot retain Metal library");
+    owner.device = device;
+    owner.library = library;
+    owner.label = label;
+    owner.pipelines = [NSMutableDictionary new];
+    *out = (__bridge_retained void *)owner;
+    return ok();
+  }
+}
+
+AMStatus am_kernel(void *libraryHandle, const char *name, void **out) {
+  @autoreleasepool {
+    if (!out) return failure(2, "null Metal kernel output");
+    *out = nullptr;
+    if (!libraryHandle || !name)
+      return failure(2, "null Metal library or function name");
+
+    id object = (__bridge id)libraryHandle;
+    if (![object isKindOfClass:AMLibrary.class])
+      return failure(2, "invalid Metal library handle");
+    AMLibrary *owner = (AMLibrary *)object;
+    NSString *functionName = [NSString stringWithUTF8String:name];
+    if (!functionName || functionName.length == 0)
+      return failure(2, "Metal function name must not be empty");
+    if (!owner.device || !owner.library || !owner.pipelines)
+      return failure(9, "Metal library handle is incomplete");
+
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLFunction> function = nil;
+    @synchronized(owner) {
+      function = [owner.library newFunctionWithName:functionName];
+      if (!function) {
+        NSString *message = [NSString stringWithFormat:
+            @"Metal function '%@' was not found in library '%@'",
+            functionName, owner.label ?: @"<unnamed>"];
+        return failure(8, message.UTF8String);
+      }
+      pipeline = owner.pipelines[functionName];
+      if (!pipeline) {
+        NSError *error = nil;
+        pipeline = [owner.device
+            newComputePipelineStateWithFunction:function error:&error];
+        if (!pipeline)
+          return failure(7, error.localizedDescription.UTF8String
+              ?: "Metal compute pipeline compilation failed");
+        owner.pipelines[functionName] = pipeline;
+      }
+    }
+
+    AMKernel *kernel = [AMKernel new];
+    if (!kernel) return failure(7, "cannot retain Metal compute pipeline");
+    // The library owns cached pipeline states, never AMKernel objects. This
+    // keeps the cache acyclic while each retained kernel owns its dependencies.
+    kernel.owner = owner;
+    kernel.pipeline = pipeline;
+    kernel.name = function.name ?: functionName;
+    *out = (__bridge_retained void *)kernel;
+    return ok();
+  }
+}
+
+static AMStatus validateCustomBinding(const AMKernelBinding &binding,
+                                      id<MTLDevice> device,
+                                      AMBuffer **ownerOut,
+                                      uint64_t *byteOffsetOut,
+                                      uint64_t *byteStartOut,
+                                      uint64_t *byteEndOut) {
+  if (!binding.buffer || !ownerOut || !byteOffsetOut ||
+      !byteStartOut || !byteEndOut)
+    return failure(2, "null custom Metal buffer binding");
+  if (binding.access < 0 || binding.access > 2 || binding.reserved != 0)
+    return failure(2, "invalid custom Metal binding access or reserved field");
+
+  id object = (__bridge id)binding.buffer;
+  if (![object isKindOfClass:AMBuffer.class])
+    return failure(2, "invalid custom Metal buffer handle");
+  AMBuffer *owner = (AMBuffer *)object;
+  if (!owner.buffer || !owner.state ||
+      owner.buffer.device.registryID != device.registryID ||
+      owner.state.device.registryID != device.registryID)
+    return failure(2, "custom Metal buffer belongs to a different device");
+
+  uint64_t count = 0;
+  AMStatus status = validate(owner, binding.descriptor, count);
+  if (status.code) return status;
+  const uint64_t width = dtypeWidth(binding.descriptor.dtype);
+  if (!width || owner.capacity % width != 0)
+    return failure(2, "custom Metal descriptor has an invalid dtype capacity");
+  if (count == 0)
+    return failure(2, "custom Metal bindings cannot use empty tensors");
+
+  bool cContiguous = true;
+  bool fContiguous = true;
+  __int128 expected = 1;
+  for (int axis = binding.descriptor.rank - 1; axis >= 0; --axis) {
+    const int64_t stride = binding.descriptor.strides[axis];
+    const int64_t dimension = binding.descriptor.shape[axis];
+    if (stride <= 0) cContiguous = false;
+    if (dimension > 1 && (__int128)stride != expected)
+      cContiguous = false;
+    expected *= dimension;
+  }
+  expected = 1;
+  for (int axis = 0; axis < binding.descriptor.rank; ++axis) {
+    const int64_t stride = binding.descriptor.strides[axis];
+    const int64_t dimension = binding.descriptor.shape[axis];
+    if (stride <= 0) fContiguous = false;
+    if (dimension > 1 && (__int128)stride != expected)
+      fContiguous = false;
+    expected *= dimension;
+  }
+  if (!cContiguous && !fContiguous)
+    return failure(2, "custom Metal binding must be positive C- or F-contiguous");
+
+  const __uint128_t byteOffset =
+      (__uint128_t)(uint64_t)binding.descriptor.offset * width;
+  const __uint128_t byteLength = (__uint128_t)count * width;
+  if (byteOffset > UINTPTR_MAX || byteLength > UINT64_MAX ||
+      byteOffset > owner.capacity ||
+      byteLength > (__uint128_t)owner.capacity - byteOffset ||
+      byteOffset + byteLength > owner.buffer.length)
+    return failure(2, "custom Metal binding byte range exceeds buffer capacity");
+
+  *ownerOut = owner;
+  *byteOffsetOut = (uint64_t)byteOffset;
+  *byteStartOut = (uint64_t)byteOffset;
+  *byteEndOut = (uint64_t)(byteOffset + byteLength);
+  return ok();
+}
+
+static AMStatus validateCustomDispatchSize(AMKernel *kernel,
+                                           AMGrid grid, AMGrid group,
+                                           MTLSize *gridSizeOut,
+                                           MTLSize *groupSizeOut) {
+  if (!kernel || !kernel.owner.device || !kernel.pipeline ||
+      !gridSizeOut || !groupSizeOut)
+    return failure(2, "invalid custom Metal dispatch handle");
+  if (!grid.x || !grid.y || !grid.z ||
+      !group.x || !group.y || !group.z)
+    return failure(2, "custom Metal grid and group dimensions must be positive");
+  if (grid.x > UINT32_MAX || grid.y > UINT32_MAX ||
+      grid.z > UINT32_MAX || group.x > UINT32_MAX ||
+      group.y > UINT32_MAX || group.z > UINT32_MAX)
+    return failure(2, "custom Metal grid or group exceeds Metal dimension limits");
+
+  const MTLSize deviceLimit = kernel.owner.device.maxThreadsPerThreadgroup;
+  if (group.x > deviceLimit.width || group.y > deviceLimit.height ||
+      group.z > deviceLimit.depth)
+    return failure(2, "custom Metal threadgroup exceeds per-axis device limits");
+  const __uint128_t groupProduct =
+      (__uint128_t)group.x * group.y * group.z;
+  if (groupProduct > kernel.pipeline.maxTotalThreadsPerThreadgroup)
+    return failure(2, "custom Metal threadgroup exceeds pipeline thread limit");
+  const __uint128_t gridProduct = (__uint128_t)grid.x * grid.y * grid.z;
+  if (gridProduct > UINT64_MAX)
+    return failure(2, "custom Metal grid product overflows");
+
+  *gridSizeOut = MTLSizeMake((NSUInteger)grid.x, (NSUInteger)grid.y,
+                             (NSUInteger)grid.z);
+  *groupSizeOut = MTLSizeMake((NSUInteger)group.x, (NSUInteger)group.y,
+                              (NSUInteger)group.z);
+  return ok();
+}
+
+AMStatus am_dispatch(void *kernelHandle, const AMKernelBinding *bindings,
+                     uint32_t count, AMGrid grid, AMGrid group,
+                     void *streamHandle) {
+  @autoreleasepool {
+    constexpr uint32_t maximumBindings = 31;
+    if (!kernelHandle || (count && !bindings) || count > maximumBindings)
+      return failure(2, "invalid custom Metal kernel, bindings, or count");
+
+    id kernelObject = (__bridge id)kernelHandle;
+    if (![kernelObject isKindOfClass:AMKernel.class])
+      return failure(2, "invalid custom Metal kernel handle");
+    AMKernel *kernel = (AMKernel *)kernelObject;
+    AMLibrary *library = kernel.owner;
+    if (!library || !library.device || !kernel.pipeline || !kernel.name)
+      return failure(2, "custom Metal kernel handle is incomplete");
+
+    id<MTLDevice> device = library.device;
+    AMDeviceState *state = deviceState(device, nil);
+    if (!state) return failure(1, "Metal device accounting state unavailable");
+    AMStream *stream = nil;
+    if (streamHandle) {
+      id streamObject = (__bridge id)streamHandle;
+      if (![streamObject isKindOfClass:AMStream.class])
+        return failure(2, "invalid explicit Metal stream handle");
+      stream = (AMStream *)streamObject;
+      if (stream.device.registryID != device.registryID)
+        return failure(2, "custom Metal stream belongs to a different device");
+    } else {
+      AMStatus status = selectedStream(device, state, &stream);
+      if (status.code) return status;
+    }
+
+    MTLSize gridSize = MTLSizeMake(0, 0, 0);
+    MTLSize groupSize = MTLSizeMake(0, 0, 0);
+    AMStatus status = validateCustomDispatchSize(kernel, grid, group,
+                                                 &gridSize, &groupSize);
+    if (status.code) return status;
+
+    AMBuffer *owners[maximumBindings] = {};
+    uint64_t offsets[maximumBindings] = {};
+    uint64_t starts[maximumBindings] = {};
+    uint64_t ends[maximumBindings] = {};
+    NSMutableArray<AMCustomLease *> *customLeases =
+        [NSMutableArray arrayWithCapacity:count];
+    NSMutableArray *retainedHandles =
+        [NSMutableArray arrayWithCapacity:(NSUInteger)count + 1];
+    NSMutableArray<AMBuffer *> *outputs =
+        [NSMutableArray arrayWithCapacity:count];
+    [retainedHandles addObject:kernel];
+
+    for (uint32_t index = 0; index < count; ++index) {
+      AMBuffer *owner = nil;
+      status = validateCustomBinding(bindings[index], device, &owner,
+                                     &offsets[index], &starts[index],
+                                     &ends[index]);
+      if (status.code) return status;
+      owners[index] = owner;
+      [retainedHandles addObject:owners[index]];
+
+      AMCustomLease *lease = [AMCustomLease new];
+      lease.owner = owners[index];
+      lease.byteStart = starts[index];
+      lease.byteEnd = ends[index];
+      lease.streamIdentity = stream.identity;
+      lease.access = bindings[index].access;
+      [customLeases addObject:lease];
+
+      if (bindings[index].access != 0 &&
+          ![outputs containsObject:owners[index]])
+        [outputs addObject:owners[index]];
+    }
+
+    for (uint32_t right = 0; right < count; ++right) {
+      for (uint32_t left = 0; left < right; ++left) {
+        if (owners[left].buffer != owners[right].buffer ||
+            (bindings[left].access == 0 && bindings[right].access == 0) ||
+            starts[left] >= ends[right] || starts[right] >= ends[left])
+          continue;
+        return failure(10, "custom Metal dispatch has overlapping mutable buffer bindings");
+      }
+    }
+
+    id<MTLCommandBuffer> command = [stream.queue commandBuffer];
+    if (!command) return failure(5, "cannot create custom Metal command");
+    command.label = kernel.name;
+    id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+    if (!encoder) return failure(5, "cannot create custom Metal encoder");
+    BOOL ended = NO;
+    @try {
+      [encoder setComputePipelineState:kernel.pipeline];
+      for (uint32_t index = 0; index < count; ++index)
+        [encoder setBuffer:owners[index].buffer
+                    offset:(NSUInteger)offsets[index]
+                   atIndex:index];
+      [encoder dispatchThreads:gridSize threadsPerThreadgroup:groupSize];
+      [encoder endEncoding];
+      ended = YES;
+    } @catch (NSException *exception) {
+      if (!ended) {
+        @try { [encoder endEncoding]; }
+        @catch (NSException *endException) { (void)endException; }
+      }
+      return failure(2, exception.reason.UTF8String
+          ?: "custom Metal encoder rejected the dispatch");
+    }
+
+    const uint64_t invocation = nextInvocation.fetch_add(1);
+    AMEvidence evidence = {invocation, device.registryID, 0, 0, 0, 0, 2, 300};
+    status = submitCommandDetailed(stream, command, retainedHandles, outputs,
+                                   customLeases, invocation, evidence, 0, nullptr);
+    return status;
   }
 }

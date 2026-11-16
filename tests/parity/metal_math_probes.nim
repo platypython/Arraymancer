@@ -38,6 +38,7 @@ proc metalEvidence*(tensor: MetalTensor[float32]): JsonNode =
     of 123: "math_squared_difference"
     of 124: "math_mse_backward"
     of 200: "rng_philox4x32_10"
+    of 300: "custom_dispatch"
     else: ""
   result = %*{"invocation_id": native.invocationId,
     "kind": (if native.kind == 2: "gpu_command" else: "device_storage_control"),

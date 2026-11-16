@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Compile custom Metal shaders or load metallibs, cache native pipelines and
+  dispatch retained contiguous buffer bindings with byte offsets. Native errors
+  and conflicting queued mutable leases remain visible.
 - Generate float32 uniforms with native GPU Philox4x32-10, retained generators,
   OS-entropy seeding and versioned replay state. Atomic 128-bit block reservations
   remain observable while GPU work is pending.

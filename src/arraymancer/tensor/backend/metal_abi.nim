@@ -9,6 +9,11 @@ type
   MetalUnavailableError* = object of MetalError
   MetalDtypeError* = object of MetalError
   MetalRngStateError* = object of MetalError
+  MetalShaderCompileError* = object of MetalError
+  MetalMissingFunctionError* = object of MetalError
+  MetalLibraryLoadError* = object of MetalError
+  MetalBufferBusyError* = object of MetalError
+
   MetalOutOfMemoryError* = object of MetalError
   AMRngState* {.bycopy.} = object
     version*, reserved*: uint32
@@ -25,6 +30,7 @@ type
     shape*, strides*: array[8, int64]
     offset*: int64
     capacity*: uint64
+  AMTensorDescriptor* = AMDescriptor
   AMEvidence* {.bycopy.} = object
     invocationId*, registryId*, transferBytes*, materializationBytes*: uint64
     cpuFallbackCount*: uint64
@@ -32,7 +38,22 @@ type
   AMMathParameters* {.bycopy.} = object
     operation*, scalarInput*, axis*, reserved*: int32
     scalar*: float32
+  AMKernelBinding* {.bycopy.} = object
+    buffer*: pointer
+    descriptor*: AMTensorDescriptor
+    access*, reserved*: int32
+  AMGrid* {.bycopy.} = object
+    x*, y*, z*: uint64
+
+
   MetalApi* = object
+    library*: proc(device: pointer; text: cstring; mode: int32;
+      outLibrary: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+    kernel*: proc(library: pointer; name: cstring;
+      outKernel: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+    dispatch*: proc(kernel: pointer; bindings: ptr AMKernelBinding; count: uint32;
+      grid, group: AMGrid; stream: pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+
     messageFree*: proc(message: cstring) {.cdecl, gcsafe, raises: [].}
     retain*, release*: proc(handle: pointer) {.cdecl, gcsafe, raises: [].}
     deviceCount*: proc(count: ptr int32): AMStatus {.cdecl, gcsafe, raises: [].}
@@ -102,6 +123,10 @@ proc metalApi*(): MetalApi {.gcsafe.} =
       resolve(buffer, "am_buffer")
       resolve(evidence, "am_buffer_evidence")
       resolve(transfer, "am_transfer")
+      resolve(library, "am_library")
+      resolve(kernel, "am_kernel")
+      resolve(dispatch, "am_dispatch")
+
       resolve(copy, "am_copy")
       resolve(setElement, "am_set_element")
       resolve(math, "am_math")
@@ -133,5 +158,10 @@ proc checkMetal*(status: AMStatus) {.gcsafe.} =
     if status.message != nil: metalApi().messageFree(status.message)
     if status.code == 1: raise newException(MetalUnavailableError, message)
     if status.code == 4: raise newException(MetalOutOfMemoryError, message)
+    if status.code == 7: raise newException(MetalShaderCompileError, message)
+    if status.code == 8: raise newException(MetalMissingFunctionError, message)
+    if status.code == 9: raise newException(MetalLibraryLoadError, message)
+    if status.code == 10: raise newException(MetalBufferBusyError, message)
+
     if status.code == 6: raise newException(MetalRngStateError, message)
     raise newException(MetalError, message)

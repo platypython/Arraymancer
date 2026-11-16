@@ -81,6 +81,17 @@ AMStatus am_rng_state(void *generator, AMRngState *state, int32_t mode);
 AMStatus am_rng_seed(void *generator, uint64_t *seed, int32_t entropy);
 AMStatus am_rand(void *generator, void *output, AMTensorDescriptor descriptor,
                  const char *library_dir);
+typedef struct {
+  void *buffer;
+  AMTensorDescriptor descriptor;
+  int32_t access;
+  int32_t reserved;
+} AMKernelBinding;
+typedef struct { uint64_t x, y, z; } AMGrid;
+AMStatus am_library(void *device, const char *text, int32_t mode, void **out);
+AMStatus am_kernel(void *library, const char *name, void **out);
+AMStatus am_dispatch(void *kernel, const AMKernelBinding *bindings,
+                     uint32_t count, AMGrid grid, AMGrid group, void *stream);
 AMStatus am_transfer(void *buffer, AMTensorDescriptor descriptor, void *host, int32_t upload);
 #ifdef __cplusplus
 }

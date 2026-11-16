@@ -11,6 +11,7 @@ import ./metal_optimizer_probes
 import ./metal_stream_probes
 import ./metal_memory_probes
 import ./metal_rng_probes
+import ./metal_kernel_probes
 
 proc deviceDispatch(): AppleObservation =
   result.id = "apple.metal.device_dispatch"
@@ -63,3 +64,5 @@ proc runMetalRequirements*(requirementId: string): seq[AppleObservation] =
     result.add metalMemoryObservation()
   if requirementId.len == 0 or requirementId == "apple.metal.rng":
     result.add metalRngObservation()
+  if requirementId.len == 0 or requirementId == "apple.metal.custom_kernels":
+    result.add metalKernelObservation()
