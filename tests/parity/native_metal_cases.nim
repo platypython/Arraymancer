@@ -7,6 +7,7 @@ import ./metal_dtype_probes
 import ./metal_view_probes
 import ./metal_math_probes
 import ./metal_autograd_probes
+import ./metal_optimizer_probes
 
 proc deviceDispatch(): AppleObservation =
   result.id = "apple.metal.device_dispatch"
@@ -51,3 +52,5 @@ proc runMetalRequirements*(requirementId: string): seq[AppleObservation] =
     result.add metalMathObservation()
   if requirementId.len == 0 or requirementId == "apple.metal.autograd":
     result.add metalAutogradObservation()
+  if requirementId.len == 0 or requirementId == "apple.metal.optimizer_sgd":
+    result.add metalOptimizerObservation()

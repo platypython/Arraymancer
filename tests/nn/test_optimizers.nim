@@ -14,7 +14,7 @@
 
 import
   ../../src/arraymancer, aux_rosenbrock,
-  unittest, random, strformat
+  ../testutils, unittest, random, strformat
 
 # ############################################################
 #
@@ -38,6 +38,16 @@ testSuite "[Optimizer] Optimizer on the Rosenbrock function":
     let ctx = newContext Tensor[float64]
     let model = Model(x: ctx.variable(start_x.clone, requires_grad = true),
                       y: ctx.variable(start_y.clone, requires_grad = true))
+
+  test "Legacy SGD factory updates numeric weights and clears gradients":
+    model.x.grad = [2'f64].toTensor
+    model.y.grad = [4'f64].toTensor
+    let optim = optimizer(model, SGD, 0.1'f64)
+    optim.update()
+    check abs(model.x.value[0] - 1.3'f64) < 1e-12
+    check abs(model.y.value[0] - 1.1'f64) < 1e-12
+    check model.x.grad == [0'f64].toTensor
+    check model.y.grad == [0'f64].toTensor
 
   test "Stochastic gradient descent - Momentum":
     var optim = optimizerSGDMomentum[model, float64](model, learning_rate = 1e-4, momentum = 0.95)

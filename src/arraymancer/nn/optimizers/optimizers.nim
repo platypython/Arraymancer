@@ -52,6 +52,17 @@ proc update*(self: SGD) =
       # Zero the gradient
       v.grad = v.value.zeros_like # TODO "setZero" instead of a new allocation
 
+func collectSgdParams[TT](params: var seq[Variable[TT]]; layer: auto) =
+  ## Stop at variables so backend mismatches cannot disappear into model fields.
+  when layer is Variable[TT]:
+    if not layer.isNil: params.add(layer)
+  elif layer is Variable:
+    raise newException(ValueError, "SGD model contains a different tensor backend or dtype")
+  elif layer is seq or layer is array:
+    for item in layer: collectSgdParams(params, item)
+  elif layer is object or layer is tuple:
+    for field in fields(layer): collectSgdParams(params, field)
+
 func optimizer*[M, T](
         model: M,
         OptimizerKind: typedesc[SGD],
@@ -68,18 +79,46 @@ func optimizer*[M, T](
   result.params = @[]
   result.lr = learning_rate
 
-  func addLayer(result: var SGD[Tensor[T]], layer: auto) =
-    when layer is Variable:
-      if not layer.isNil:
-        result.params.add layer
-    elif layer is seq or layer is array:
-      for item in layer:
-        result.addLayer(item)
-    elif layer is object or layer is tuple: # TODO are there other kinds of variable with fields?
-      for field in fields(layer):
-        result.addLayer(field)
+  collectSgdParams(result.params, model)
 
-  result.addLayer(model)
+when defined(metal) or defined(coreai):
+  func optimizer*[M, TT](model: M; OptimizerKind: typedesc[SGD];
+                         learning_rate: float32; tensorType: typedesc[TT]): SGD[TT] =
+    ## Select native float32 Metal SGD explicitly; all collected variables must match.
+    when TT isnot MetalTensor[float32]:
+      {.error: "Explicit native SGD requires MetalTensor[float32]".}
+    else:
+      result.lr = learning_rate
+      collectSgdParams(result.params, model)
+
+  proc validateSgdParameter(v: Variable[MetalTensor[float32]]) =
+    validateMetalView(v.value)
+    validateMetalView(v.grad)
+    if v.value.shape != v.grad.shape:
+      raise newException(MetalError, "SGD parameter and gradient shapes differ")
+    if v.value.storage.device.registryId != v.grad.storage.device.registryId:
+      raise newException(MetalError, "SGD parameter and gradient devices differ")
+    if v.value.storage == v.grad.storage:
+      raise newException(MetalError, "SGD parameter and gradient must not share storage")
+
+  proc step*(self: SGD[MetalTensor[float32]]) =
+    ## Update weights in place; gradients and both native storage owners are preserved.
+    for v in self.params:
+      if v.requires_grad:
+        validateSgdParameter(v)
+        v.value.scaledSubtract(v.grad, self.lr)
+
+  proc zeroGrads*(self: SGD[MetalTensor[float32]]) =
+    ## Clear trainable gradients in place, never allocating or rebinding buffers.
+    for v in self.params:
+      if v.requires_grad:
+        validateSgdParameter(v)
+        v.grad.fill(0'f32)
+
+  proc update*(self: SGD[MetalTensor[float32]]) =
+    ## Existing compound behavior: take a step, then clear gradients.
+    self.step()
+    self.zeroGrads()
 
 func optimizerSGD*[M, T](model: M, learning_rate: T): SGD[Tensor[T]] {.deprecated: "Use optimizer(model, SGD, learning_rate) instead."} =
   return optimizer(model, SGD, learning_rate)

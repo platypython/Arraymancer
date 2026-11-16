@@ -1,6 +1,8 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add explicit Metal float32 SGD with separate native `step` and in-place
+  `zeroGrads`; `update` retains the compound step-and-reset behavior.
 - Differentiate Metal mean and mean-MSE with the existing autograd tape; scalar
   losses, broadcast gradients and fused MSE backward remain GPU-resident.
 - Execute float32 Metal broadcasting, tiled matmul, scalar arithmetic and
