@@ -26,3 +26,17 @@ proc reduce_broadcast_dims*[T](grad: Tensor[T], target_shape: Metadata): Tensor[
       result = result.sum(axis = i)
   if result.shape != target_shape:
     result = result.reshape(target_shape)
+
+when defined(metal) or defined(coreai):
+  proc reduce_broadcast_dims*(grad: MetalTensor[float32]; target_shape: Metadata): MetalTensor[float32] =
+    ## Reduce on-device, including empty broadcast axes and rank-zero targets.
+    result = grad
+    if result.rank < target_shape.len:
+      raise newException(MetalError, "Broadcast gradient rank is smaller than its target")
+    while result.rank > target_shape.len:
+      result = result.sum(axis = 0).squeeze(0)
+    for axis in 0 ..< target_shape.len:
+      if target_shape[axis] == 1 and result.shape[axis] != 1:
+        result = result.sum(axis = axis)
+    if result.shape != target_shape:
+      result = result.reshape(target_shape)

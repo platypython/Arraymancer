@@ -31,6 +31,11 @@ typedef struct {
 AMStatus am_math(void *a, AMTensorDescriptor ad, void *b, AMTensorDescriptor bd,
                  void *output, AMTensorDescriptor od, AMMathParameters parameters,
                  const char *library_dir);
+AMStatus am_mse_backward(void *upstream, AMTensorDescriptor upstream_descriptor,
+                         void *prediction, AMTensorDescriptor prediction_descriptor,
+                         void *target, AMTensorDescriptor target_descriptor,
+                         void *output, AMTensorDescriptor output_descriptor,
+                         const char *library_dir);
 void am_message_free(char *message);
 void am_retain(void *handle);
 void am_release(void *handle);

@@ -17,6 +17,12 @@ import  ../private/ast_utils,
         ./autograd_common,
         sequtils
 
+template reductionTensor(value: untyped): untyped =
+  when defined(metal) or defined(coreai):
+    when typeof(value) is MetalTensor: value
+    else: [value].toTensor
+  else:
+    [value].toTensor
 type MeanGate*[TT] {.final.} = ref object of Gate[TT]
   ## TODO: generalize to C <- alpha AB + C
   cached_input_shape: Metadata
@@ -32,7 +38,7 @@ proc mean_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] 
   let self = MeanGate[TT](self)
   let gradient = payload.variable.grad
   result = newDiffs[TT](1)
-  result[0] = gradient / getSubType(TT)(self.cached_input_shape.product) # Conversion to subtype T, oh Higher kinded-types ...
+  result[0] = gradient / getSubType(TT)(self.cached_input_shape.shapeProduct)
 
   # We create a shape of 1 dimension that we will expand with broadcast
   let z_shape = newSeqWith(self.cached_input_shape.len, 1)
@@ -87,7 +93,7 @@ proc mean*[TT](a: Variable[TT]): Variable[TT] =
   # Resulting var
   new result
   result.context = a.context
-  result.value = [a.value.mean].toTensor
+  result.value = reductionTensor(a.value.mean)
 
   # Caching for backprop
   if a.is_grad_needed:
@@ -143,7 +149,7 @@ proc sum*[TT](a: Variable[TT]): Variable[TT] =
   # Resulting var
   new result
   result.context = a.context
-  result.value = [a.value.sum].toTensor
+  result.value = reductionTensor(a.value.sum)
 
   # Caching for backprop
   if a.is_grad_needed:

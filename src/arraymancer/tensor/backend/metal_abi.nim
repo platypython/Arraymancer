@@ -39,6 +39,10 @@ type
     math*: proc(a: pointer; ad: AMDescriptor; b: pointer; bd: AMDescriptor;
       output: pointer; od: AMDescriptor; parameters: AMMathParameters;
       libraryDir: cstring): AMStatus {.cdecl.}
+    mseBackward*: proc(upstream: pointer; upstreamDescriptor: AMDescriptor;
+      prediction: pointer; predictionDescriptor: AMDescriptor;
+      target: pointer; targetDescriptor: AMDescriptor; output: pointer;
+      outputDescriptor: AMDescriptor; libraryDir: cstring): AMStatus {.cdecl.}
 const arraymancerAppleLibDir* {.strdefine.} = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir / "build/apple"
 var api: MetalApi
 var library: LibHandle
@@ -68,6 +72,7 @@ proc metalApi*(): MetalApi =
       resolve(copy, "am_copy")
       resolve(setElement, "am_set_element")
       resolve(math, "am_math")
+      resolve(mseBackward, "am_mse_backward")
       library = handle
     result = api
 

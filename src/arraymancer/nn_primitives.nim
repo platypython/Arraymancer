@@ -43,6 +43,10 @@ export  nnp_activation,
 import nn_primitives/private/p_nnp_types
 export Size2D
 
+when defined(metal) or defined(coreai):
+  import ./nn_primitives/nnp_mse_metal
+  export nnp_mse_metal
+
 when defined(cudnn) or defined(nimdoc) or defined(nimsuggest):
   import  ./nn_primitives/backend/cudnn,
           ./nn_primitives/nnp_conv2d_cudnn

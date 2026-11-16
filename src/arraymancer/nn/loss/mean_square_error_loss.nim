@@ -16,6 +16,29 @@ import  ../../tensor,
         ../../ml,
         ../../autograd
 
+when defined(metal) or defined(coreai):
+  import ../../nn_primitives/nnp_mse_metal
+
+proc mseForward[TT](prediction, target: TT): TT =
+  let loss = mean_squared_error(prediction, target)
+  result = newTensorUninit[typeof(loss)]([])
+  result.unsafe_raw_offset[0] = loss
+
+proc mseBackward[TT](upstream, prediction, target: TT): TT =
+  assert upstream.rank == 0
+  let grad = upstream.unsafe_raw_offset[0]
+  type T = typeof(grad)
+  let norm = grad * T(2) / T(prediction.size)
+  result = map2_inline(prediction, target):
+    norm * (x - y)
+
+when defined(metal) or defined(coreai):
+  proc mseForward(prediction, target: MetalTensor[float32]): MetalTensor[float32] =
+    mse_forward_metal(prediction, target)
+
+  proc mseBackward(upstream, prediction, target: MetalTensor[float32]): MetalTensor[float32] =
+    mse_backward_metal(upstream, prediction, target)
+
 type MSELoss*[TT] {.final.} = ref object of Gate[TT]
   target: TT
   cache: Variable[TT]
@@ -23,16 +46,8 @@ type MSELoss*[TT] {.final.} = ref object of Gate[TT]
 proc mse_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
   let self = MSELoss[TT](self)
   let gradient = payload.variable.grad
-  # Gradient is a rank-zero tensor.
-  assert gradient.rank == 0
-  let grad = gradient.unsafe_raw_offset[0]
-
-  type T = typeof(grad)
-  let norm = grad * T(2) / T(self.cache.value.size)
-
   result = newDiffs[TT](1)
-  result[0] = map2_inline(self.cache.value, self.target):
-    norm * (x - y)
+  result[0] = mseBackward(gradient, self.cache.value, self.target)
 
 proc mse_cache[TT](result: Variable[TT], input: Variable[TT], target: TT) =
   ## We expect input with shape [batch_size, features]
@@ -67,9 +82,7 @@ proc mse_loss*[TT](input: Variable[TT], target: TT): Variable[TT] =
   # Resulting var
   new result
   result.context = input.context
-  let loss = mean_squared_error(input.value, target)
-  result.value = newTensorUninit[typeof(loss)]([])
-  result.value.unsafe_raw_offset[0] = loss
+  result.value = mseForward(input.value, target)
 
   # Caching for backprop
   if input.is_grad_needed:

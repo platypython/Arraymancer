@@ -86,9 +86,28 @@ kernel void math_elementwise(
     case 7: value = av - parameters.scalar * bv; break;
     case 8: value = parameters.scalar - av; break;
     case 9: value = parameters.scalar / av; break;
+    case 23: value = (av - bv) * (av - bv); break;
     default: return;
   }
   output[elementAddress(tid, od)] = value;
+}
+
+kernel void math_mse_backward(
+    device const float *upstream [[buffer(0)]],
+    device const float *prediction [[buffer(1)]],
+    device const float *target [[buffer(2)]],
+    device float *output [[buffer(3)]],
+    constant Descriptor &ud [[buffer(4)]],
+    constant Descriptor &pd [[buffer(5)]],
+    constant Descriptor &td [[buffer(6)]],
+    constant Descriptor &od [[buffer(7)]],
+    uint tid [[thread_position_in_grid]]) {
+  const ulong count = elementCount(pd);
+  if (ulong(tid) >= count) return;
+  const float upstreamValue = upstream[elementAddress(0, ud)];
+  const float difference =
+      prediction[elementAddress(tid, pd)] - target[elementAddress(tid, td)];
+  output[elementAddress(tid, od)] = upstreamValue * 2.0f * difference / float(count);
 }
 
 kernel void math_matmul(

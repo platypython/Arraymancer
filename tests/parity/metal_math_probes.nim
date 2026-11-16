@@ -34,6 +34,8 @@ proc metalEvidence*(tensor: MetalTensor[float32]): JsonNode =
     of 120: "math_matmul"
     of 121: "math_reduce"
     of 122: "math_axis_sum"
+    of 123: "math_squared_difference"
+    of 124: "math_mse_backward"
     else: ""
   result = %*{"invocation_id": native.invocationId,
     "kind": (if native.kind == 2: "gpu_command" else: "device_storage_control"),

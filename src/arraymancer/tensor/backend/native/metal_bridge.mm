@@ -197,7 +197,7 @@ static AMStatus runMathCommand(AMCompute *context,
   command.label = name;
   [encoder setComputePipelineState:pipeline];
   switch (operation) {
-    case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9:
+    case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9: case 23:
       [encoder setBuffer:(a ? a.buffer : output.buffer) offset:0 atIndex:0];
       [encoder setBuffer:(b ? b.buffer : output.buffer) offset:0 atIndex:1];
       [encoder setBuffer:output.buffer offset:0 atIndex:2];
@@ -267,7 +267,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     if (status.code) return status;
 
     const int operation = parameters.operation;
-    const bool elementwise = operation >= 1 && operation <= 9;
+    const bool elementwise = (operation >= 1 && operation <= 9) || operation == 23;
     if (!elementwise && operation != 20 && operation != 21 && operation != 22)
       return failure(2, "unsupported Metal math operation");
 
@@ -292,7 +292,10 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     uint64_t dispatchCount = outputCount;
 
     if (elementwise) {
-      if (operation == 5) {
+      if (operation == 23) {
+        if (!b || parameters.scalar_input || !sameShape(ad, bd) || !sameShape(ad, od))
+          return failure(2, "squared difference requires matching tensor shapes");
+      } else if (operation == 5) {
         if (b || parameters.scalar_input || !sameShape(ad, od))
           return failure(2, "negation requires matching input and output shapes");
       } else if (operation == 6) {
@@ -385,6 +388,102 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
                           groups, threads, operation);
   }
 }
+AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,
+                         void *predictionHandle, AMTensorDescriptor pd,
+                         void *targetHandle, AMTensorDescriptor td,
+                         void *outputHandle, AMTensorDescriptor od,
+                         const char *directory) {
+  @autoreleasepool {
+    if (!upstreamHandle || !predictionHandle || !targetHandle ||
+        !outputHandle || !directory)
+      return failure(2, "null Metal MSE backward argument");
+
+    AMBuffer *upstream = (__bridge AMBuffer *)upstreamHandle;
+    AMBuffer *prediction = (__bridge AMBuffer *)predictionHandle;
+    AMBuffer *target = (__bridge AMBuffer *)targetHandle;
+    AMBuffer *output = (__bridge AMBuffer *)outputHandle;
+    uint64_t upstreamCount = 0, predictionCount = 0, targetCount = 0, outputCount = 0;
+    AMStatus status = validateFloatTensor(upstream, ud, upstreamCount);
+    if (status.code) return status;
+    status = validateFloatTensor(prediction, pd, predictionCount);
+    if (status.code) return status;
+    status = validateFloatTensor(target, td, targetCount);
+    if (status.code) return status;
+    status = validateFloatTensor(output, od, outputCount);
+    if (status.code) return status;
+
+    if (ud.rank != 0 || upstreamCount != 1)
+      return failure(2, "Metal MSE upstream gradient must be a scalar");
+    if (!sameShape(pd, td) || !sameShape(pd, od) ||
+        predictionCount != targetCount || predictionCount != outputCount)
+      return failure(2, "Metal MSE prediction, target, and output shapes must match");
+    if (!sameDevice(upstream, output) || !sameDevice(prediction, output) ||
+        !sameDevice(target, output))
+      return failure(2, "Metal MSE buffers use different devices");
+    if (!predictionCount) return ok();
+    if (predictionCount > UINT32_MAX)
+      return failure(2, "Metal MSE backward output exceeds grid limits");
+
+    NSError *error = nil;
+    AMCompute *context = compute(output.buffer.device, directory, &error);
+    if (!context)
+      return failure(6, error ? error.localizedDescription.UTF8String : "Metal queue or library unavailable");
+    NSString *name = @"math_mse_backward";
+    id<MTLComputePipelineState> pipeline = pipelineFor(context, name, &error);
+    if (!pipeline)
+      return failure(error ? 7 : 8,
+                     error ? error.localizedDescription.UTF8String : "missing Metal MSE backward kernel");
+    const NSUInteger width = MIN((NSUInteger)256, pipeline.maxTotalThreadsPerThreadgroup);
+    if (!width) return failure(7, "Metal MSE backward pipeline has no supported threads");
+    const NSUInteger groupCount = (predictionCount + width - 1) / width;
+    if (groupCount > UINT32_MAX || groupCount * width > UINT32_MAX)
+      return failure(2, "Metal MSE backward grid exceeds index limits");
+
+    status = waitForProducer(upstream);
+    if (status.code) return status;
+    status = waitForProducer(prediction);
+    if (status.code) return status;
+    if (target != prediction) {
+      status = waitForProducer(target);
+      if (status.code) return status;
+    }
+    if (output != upstream && output != prediction && output != target) {
+      status = waitForProducer(output);
+      if (status.code) return status;
+    }
+
+    id<MTLCommandBuffer> command = [context.queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+    if (!command || !encoder) return failure(5, "cannot create Metal MSE backward command");
+    command.label = name;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:upstream.buffer offset:0 atIndex:0];
+    [encoder setBuffer:prediction.buffer offset:0 atIndex:1];
+    [encoder setBuffer:target.buffer offset:0 atIndex:2];
+    [encoder setBuffer:output.buffer offset:0 atIndex:3];
+    [encoder setBytes:&ud length:sizeof(ud) atIndex:4];
+    [encoder setBytes:&pd length:sizeof(pd) atIndex:5];
+    [encoder setBytes:&td length:sizeof(td) atIndex:6];
+    [encoder setBytes:&od length:sizeof(od) atIndex:7];
+    [encoder dispatchThreadgroups:MTLSizeMake(groupCount, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+    [encoder endEncoding];
+
+    output.producer = command;
+    [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+      (void)upstream; (void)prediction; (void)target; (void)output; (void)completed;
+    }];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status == MTLCommandBufferStatusError)
+      return failure(5, command.error.localizedDescription.UTF8String);
+
+    output.evidence = {nextInvocation.fetch_add(1), output.buffer.device.registryID,
+                       0, 0, 0, 1, 2, 124};
+    return ok();
+  }
+}
+
 AMStatus am_transfer(void *buffer, AMTensorDescriptor d, void *host, int32_t upload) {
   @autoreleasepool {
     if (!buffer) return failure(2, "null storage");

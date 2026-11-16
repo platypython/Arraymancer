@@ -40,10 +40,21 @@ proc aligned[T](t: MetalTensor[T]; shape: Metadata): MetalTensor[T] =
       elif t.shape[source] != 1: raise newException(MetalError, "Incompatible Metal broadcast")
   t.metalView(shape, strides, t.offset)
 
-proc binary[T](a, b: MetalTensor[T]; operation: int32): MetalTensor[T] =
+proc binary[T](a, b: MetalTensor[T]; operation: int32; broadcastInputs = true): MetalTensor[T] =
+  ## Share one dispatch path for equal-shape arithmetic and trailing-axis broadcasting.
   requireMath(T)
   validateMetalView(a)
   validateMetalView(b)
+  if not broadcastInputs:
+    if a.shape != b.shape:
+      raise newException(MetalError, "Metal elementwise operands must have equal shapes")
+    result = newMetalTensorUninit[T](a.shape, a.storage.device)
+    dispatchMetalMath(a, b, result, operation)
+    return
+  if a.shape == b.shape:
+    result = newMetalTensorUninit[T](a.shape, a.storage.device)
+    dispatchMetalMath(a, b, result, operation)
+    return
   var shape: Metadata
   shape.len = max(a.rank, b.rank)
   for axis in 0 ..< shape.len:
@@ -68,6 +79,13 @@ proc `+.`*[T](a, b: MetalTensor[T]): MetalTensor[T] = binary(a, b, 1)
 proc `-.`*[T](a, b: MetalTensor[T]): MetalTensor[T] = binary(a, b, 2)
 proc `*.`*[T](a, b: MetalTensor[T]): MetalTensor[T] = binary(a, b, 3)
 proc `/.`*[T](a, b: MetalTensor[T]): MetalTensor[T] = binary(a, b, 4)
+proc `+`*[T](a, b: MetalTensor[T]): MetalTensor[T] =
+  ## Equal-shape elementwise addition; inputs are read directly without packing.
+  binary(a, b, 1, broadcastInputs = false)
+
+proc `-`*[T](a, b: MetalTensor[T]): MetalTensor[T] =
+  ## Equal-shape elementwise subtraction; inputs are read directly without packing.
+  binary(a, b, 2, broadcastInputs = false)
 proc `+`*[T](a: MetalTensor[T]; b: float32): MetalTensor[T] = scalarMath(a, b, 1)
 proc `-`*[T](a: MetalTensor[T]; b: float32): MetalTensor[T] = scalarMath(a, b, 2)
 proc `*`*[T](a: MetalTensor[T]; b: float32): MetalTensor[T] = scalarMath(a, b, 3)

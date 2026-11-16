@@ -13,7 +13,8 @@
 # limitations under the License.
 
 import  ../tensor,
-        ./autograd_common
+        ./autograd_common,
+        ./private/p_broadcast
 
 type HadamardGate*[TT]{.final.} = ref object of Gate[TT]
   a: Variable[TT]
@@ -25,6 +26,10 @@ proc hadamard_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[
   result = newSeq[TT](2)
   result[0] = gradient     *. self.b.value
   result[1] = self.a.value *. gradient
+  when defined(metal) or defined(coreai):
+    when TT is MetalTensor:
+      result[0] = reduce_broadcast_dims(result[0], self.a.value.shape)
+      result[1] = reduce_broadcast_dims(result[1], self.b.value.shape)
 
 proc hadamard_cache[TT](result: Variable[TT], a, b: Variable[TT]) =
   # Gate
