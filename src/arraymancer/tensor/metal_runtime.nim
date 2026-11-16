@@ -1,9 +1,10 @@
-# Copyright 2026 Arraymancer contributors. Apache-2.0.
-## Provides thread-local Metal stream selection and native event ordering.
+## Copyright 2026 Arraymancer contributors. Apache-2.0.
+## Provides thread-local Metal stream selection, memory accounting and native event ordering.
 ## Built-in Metal commands enqueue on the current stream. Independent streams have
 ## no implicit ordering; use events for cross-stream dependencies. Tensor readback
 ## waits for the tensor's producing work, not for unrelated streams. Stream sync
 ## waits only that queue; device sync waits previous work on every registered queue.
+import std/os
 import ./[metal_types, init_metal]
 export metal_types, init_metal
 
@@ -18,6 +19,79 @@ proc resolveDevice(device: MetalDevice): MetalDevice {.gcsafe.} =
     requireDevice(device)
     return device
   metalDevice()
+
+type
+  MetalMemoryStats* = object
+    ## inFlightBytes overlaps liveBytes; it measures unique allocations with pending work.
+    ## driverBytes/recommendedBytes are native MTLDevice measurements, not payload totals.
+    liveBytes*, cachedBytes*, inFlightBytes*, driverBytes*: uint64
+    recommendedBytes*, reservedBytes*, hostCopyBytes*, materializationBytes*: uint64
+
+proc metalMemoryStats*(device: MetalDevice = nil): MetalMemoryStats {.gcsafe.} =
+  ## Return payload, cache, in-flight, driver and cumulative transfer measurements.
+  let dev = resolveDevice(device)
+  var native: AMMemoryStats
+  checkMetal metalApi().memoryStats(dev.owner.handle, addr native)
+  result = MetalMemoryStats(
+    liveBytes: native.liveBytes,
+    cachedBytes: native.cachedBytes,
+    inFlightBytes: native.inFlightBytes,
+    driverBytes: native.driverBytes,
+    recommendedBytes: native.recommendedBytes,
+    reservedBytes: native.reservedBytes,
+    hostCopyBytes: native.hostCopyBytes,
+    materializationBytes: native.materializationBytes)
+
+proc metalCurrentAllocatedMemory*(device: MetalDevice = nil): uint64 {.gcsafe.} =
+  ## Return bytes held by live tensor storage, counted once per shared owner.
+  metalMemoryStats(device).liveBytes
+
+proc metalDriverAllocatedMemory*(device: MetalDevice = nil): uint64 {.gcsafe.} =
+  ## Return MTLDevice.currentAllocatedSize, distinct from tensor payload accounting.
+  metalMemoryStats(device).driverBytes
+
+proc metalRecommendedMaxMemory*(device: MetalDevice = nil): uint64 {.gcsafe.} =
+  ## Return MTLDevice.recommendedMaxWorkingSetSize.
+  metalMemoryStats(device).recommendedBytes
+
+proc metalEmptyCache*(device: MetalDevice = nil) {.gcsafe.} =
+  ## Release completed cached allocations without invalidating live or pending buffers.
+  let dev = resolveDevice(device)
+  checkMetal metalApi().memoryEmptyCache(dev.owner.handle)
+
+proc metalMemoryFraction*(device: MetalDevice = nil): float64 {.gcsafe.} =
+  ## Return the native allocation limit fraction; zero means unlimited.
+  let dev = resolveDevice(device)
+  checkMetal metalApi().memoryFraction(dev.owner.handle, addr result, 0)
+
+proc setMetalMemoryFraction*(device: MetalDevice; fraction: float64) {.gcsafe.} =
+  ## Require a finite fraction in [0, 2]; zero disables the limit.
+  ## Allocations are limited to fraction × recommended working set.
+  if fraction != fraction or fraction < 0.0 or fraction > 2.0:
+    raise newException(ValueError, "Metal memory fraction must be finite and in [0, 2]")
+  let dev = resolveDevice(device)
+  var value = fraction
+  checkMetal metalApi().memoryFraction(dev.owner.handle, addr value, 1)
+
+proc startMetalCapture*(device: MetalDevice; outputPath: string): MetalCapture {.gcsafe.} =
+  ## Start an MTLCaptureManager capture at an absolute output path.
+  if outputPath.len == 0:
+    raise newException(MetalError, "Metal capture output path must not be empty")
+  let dev = resolveDevice(device)
+  let path = absolutePath(outputPath)
+  var handle: pointer
+  checkMetal metalApi().captureStart(dev.owner.handle, path.cstring, addr handle)
+  result = MetalCapture(owner: ownMetal(handle), device: dev, active: true)
+
+proc stopMetalCapture*(capture: MetalCapture) {.gcsafe.} =
+  ## Stop a capture explicitly; its retained native handle releases with its owner.
+  if capture == nil or capture.owner == nil or capture.owner.handle == nil or
+      capture.device == nil or capture.device.owner == nil or capture.device.owner.handle == nil:
+    raise newException(MetalError, "Metal capture is unavailable")
+  if not capture.active:
+    raise newException(MetalError, "Metal capture has already been stopped")
+  checkMetal metalApi().captureStop(capture.owner.handle)
+  capture.active = false
 
 proc requireStream(stream: MetalStream) {.gcsafe.} =
   if stream == nil or stream.owner == nil or stream.owner.handle == nil:

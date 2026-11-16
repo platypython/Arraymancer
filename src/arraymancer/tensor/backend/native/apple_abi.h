@@ -28,6 +28,21 @@ typedef struct {
   int32_t operation, scalar_input, axis, reserved;
   float scalar;
 } AMMathParameters;
+typedef struct {
+  uint64_t live_bytes;
+  uint64_t cached_bytes;
+  uint64_t in_flight_bytes;
+  uint64_t driver_bytes;
+  uint64_t recommended_bytes;
+  uint64_t reserved_bytes;
+  uint64_t host_copy_bytes;
+  uint64_t materialization_bytes;
+} AMMemoryStats;
+AMStatus am_memory_stats(void *device, AMMemoryStats *out);
+AMStatus am_memory_empty_cache(void *device);
+AMStatus am_memory_fraction(void *device, double *value, int32_t set);
+AMStatus am_capture_start(void *device, const char *path, void **out);
+AMStatus am_capture_stop(void *capture);
 AMStatus am_math(void *a, AMTensorDescriptor ad, void *b, AMTensorDescriptor bd,
                  void *output, AMTensorDescriptor od, AMMathParameters parameters,
                  const char *library_dir);

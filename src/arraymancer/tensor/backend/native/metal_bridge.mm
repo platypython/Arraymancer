@@ -5,8 +5,12 @@
 #import <dispatch/dispatch.h>
 #include "apple_abi.h"
 #include <atomic>
-#include <cstring>
-#include <cstdlib>
+#include <cmath>
+#include <stdlib.h>
+#include <string.h>
+
+@class AMDeviceState;
+@class AMCapture;
 
 @interface AMBuffer : NSObject
 @property(nonatomic, strong) id<MTLBuffer> buffer;
@@ -15,15 +19,45 @@
 @property(nonatomic, copy) NSString *producerError;
 @property(nonatomic) AMEvidence evidence;
 @property(nonatomic) uint64_t capacity;
+@property(nonatomic, weak) AMDeviceState *state;
+@property(nonatomic) uint64_t externalReferences;
+@property(nonatomic) uint64_t inFlightLeases;
+@property(nonatomic) BOOL cached;
 @end
 @implementation AMBuffer
 @end
+
+@interface AMPendingCommand : NSObject
+@property(nonatomic, strong) id<MTLCommandBuffer> command;
+@property(nonatomic, copy) NSArray *retainedHandles;
+@property(nonatomic, copy) NSArray<AMBuffer *> *bufferLeases;
+@property(nonatomic, strong) AMBuffer *output;
+@property(nonatomic) uint64_t sequence;
+@property(nonatomic) uint64_t invocation;
+@property(nonatomic) uint64_t materializationBytes;
+@property(nonatomic) BOOL finalized;
+@end
+@implementation AMPendingCommand
+@end
+
+@interface AMCapture : NSObject
+@property(nonatomic, strong) id<MTLDevice> device;
+@property(nonatomic, strong) MTLCaptureManager *manager;
+@property(nonatomic, copy) NSString *path;
+@property(nonatomic) uint64_t externalReferences;
+@property(nonatomic) BOOL active;
+@end
+@implementation AMCapture
+@end
+
+static NSObject *captureLock;
+static AMCapture *activeCapture;
 
 @interface AMStream : NSObject
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLCommandQueue> queue;
 @property(nonatomic) uint64_t identity;
-@property(nonatomic, strong) NSMutableDictionary<NSNumber *, id<MTLCommandBuffer>> *pending;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, AMPendingCommand *> *pending;
 @property(nonatomic) uint64_t acceptedSequence;
 @property(nonatomic) uint64_t completedSequence;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *failures;
@@ -48,6 +82,14 @@
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) AMStream *defaultStream;
 @property(nonatomic, strong) NSHashTable<AMStream *> *streams;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray<AMBuffer *> *> *bufferCache;
+@property(nonatomic) uint64_t liveBytes;
+@property(nonatomic) uint64_t cachedBytes;
+@property(nonatomic) uint64_t inFlightBytes;
+@property(nonatomic) uint64_t reservedBytes;
+@property(nonatomic) uint64_t hostCopyBytes;
+@property(nonatomic) uint64_t materializationBytes;
+@property(nonatomic) double memoryFraction;
 @end
 @implementation AMDeviceState
 @end
@@ -65,9 +107,144 @@ static AMStatus failure(int32_t code, const char *text) {
 static AMStatus ok();
 static std::atomic<uint64_t> nextInvocation{1};
 static AMStatus ok() { return {0, nullptr}; }
+static uint64_t saturatedAdd(uint64_t left, uint64_t right) {
+  return right > UINT64_MAX - left ? UINT64_MAX : left + right;
+}
+
+static uint64_t memoryLimitBytes(AMDeviceState *state) {
+  if (state.memoryFraction == 0) return UINT64_MAX;
+  const long double bytes =
+      (long double)state.device.recommendedMaxWorkingSetSize *
+      (long double)state.memoryFraction;
+  if (bytes >= (long double)UINT64_MAX) return UINT64_MAX;
+  return (uint64_t)bytes;
+}
+
+// All cache/accounting helpers run under @synchronized(state).
+static BOOL removeCachedOwnerLocked(AMDeviceState *state, AMBuffer *owner) {
+  if (!owner.cached) return NO;
+  NSNumber *key = @(owner.buffer.length);
+  NSMutableArray<AMBuffer *> *bin = state.bufferCache[key];
+  NSUInteger index = [bin indexOfObjectIdenticalTo:owner];
+  if (index == NSNotFound) return NO;
+  [bin removeObjectAtIndex:index];
+  if (!bin.count) [state.bufferCache removeObjectForKey:key];
+  owner.cached = NO;
+  state.cachedBytes -= owner.buffer.length;
+  return YES;
+}
+
+static void cacheOwnerLocked(AMDeviceState *state, AMBuffer *owner) {
+  if (owner.cached || owner.externalReferences || owner.inFlightLeases ||
+      !owner.buffer) return;
+  NSNumber *key = @(owner.buffer.length);
+  NSMutableArray<AMBuffer *> *bin = state.bufferCache[key];
+  if (!bin) {
+    bin = [NSMutableArray new];
+    state.bufferCache[key] = bin;
+  }
+  owner.cached = YES;
+  [bin addObject:owner];
+  state.cachedBytes = saturatedAdd(state.cachedBytes, owner.buffer.length);
+}
+
+static BOOL evictOneCachedOwnerLocked(AMDeviceState *state) {
+  for (NSNumber *key in state.bufferCache.allKeys) {
+    NSMutableArray<AMBuffer *> *bin = state.bufferCache[key];
+    if (!bin.count) continue;
+    AMBuffer *owner = bin.lastObject;
+    const uint64_t length = owner.buffer.length;
+    [bin removeLastObject];
+    if (!bin.count) [state.bufferCache removeObjectForKey:key];
+    owner.cached = NO;
+    owner.buffer = nil;
+    state.cachedBytes -= length;
+    state.reservedBytes -= length;
+    return YES;
+  }
+  return NO;
+}
+
+static void ensureCaptureLock(void) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ captureLock = [NSObject new]; });
+}
+
+static NSString *stopCaptureLocked(AMCapture *capture) {
+  if (!capture || !capture.active || activeCapture != capture)
+    return @"Metal capture is not the active capture owned by this handle";
+  if (!capture.manager.isCapturing) {
+    capture.active = NO;
+    activeCapture = nil;
+    return @"Metal capture is no longer active";
+  }
+  @try {
+    [capture.manager stopCapture];
+  } @catch (NSException *exception) {
+    NSString *message = exception.reason ?: @"Metal capture stop failed";
+    capture.active = NO;
+    activeCapture = nil;
+    return message;
+  }
+  capture.active = NO;
+  activeCapture = nil;
+  return nil;
+}
+
 void am_message_free(char *message) { free(message); }
-void am_retain(void *handle) { if (handle) CFRetain(handle); }
-void am_release(void *handle) { if (handle) CFRelease(handle); }
+
+void am_retain(void *handle) {
+  if (!handle) return;
+  id object = (__bridge id)handle;
+  if ([object isKindOfClass:AMBuffer.class]) {
+    AMBuffer *owner = (AMBuffer *)object;
+    AMDeviceState *state = owner.state;
+    @synchronized(state) {
+      if (owner.cached) {
+        (void)removeCachedOwnerLocked(state, owner);
+        state.liveBytes = saturatedAdd(state.liveBytes, owner.capacity);
+      } else if (owner.externalReferences == 0) {
+        state.liveBytes = saturatedAdd(state.liveBytes, owner.capacity);
+      }
+      if (owner.externalReferences != UINT64_MAX) ++owner.externalReferences;
+    }
+  } else if ([object isKindOfClass:AMCapture.class]) {
+    AMCapture *capture = (AMCapture *)object;
+    ensureCaptureLock();
+    @synchronized(captureLock) {
+      if (capture.externalReferences != UINT64_MAX)
+        ++capture.externalReferences;
+    }
+  }
+  CFRetain((__bridge CFTypeRef)object);
+}
+
+void am_release(void *handle) {
+  if (!handle) return;
+  id object = (__bridge id)handle;
+  if ([object isKindOfClass:AMBuffer.class]) {
+    AMBuffer *owner = (AMBuffer *)object;
+    AMDeviceState *state = owner.state;
+    @synchronized(state) {
+      if (!owner.externalReferences) return;
+      --owner.externalReferences;
+      if (!owner.externalReferences) {
+        state.liveBytes -= owner.capacity;
+        cacheOwnerLocked(state, owner);
+      }
+    }
+  } else if ([object isKindOfClass:AMCapture.class]) {
+    AMCapture *capture = (AMCapture *)object;
+    ensureCaptureLock();
+    @synchronized(captureLock) {
+      if (!capture.externalReferences) return;
+      --capture.externalReferences;
+      if (!capture.externalReferences)
+        (void)stopCaptureLocked(capture);
+    }
+  }
+  CFRelease((__bridge CFTypeRef)object);
+}
 static NSString *const currentStreamKey = @"org.arraymancer.metal.currentStream";
 
 static AMStream *newStream(id<MTLDevice> device, id<MTLCommandQueue> queue) {
@@ -106,6 +283,8 @@ static AMDeviceState *deviceState(id<MTLDevice> device, NSError **error) {
     state = [AMDeviceState new];
     state.device = device;
     state.streams = [NSHashTable weakObjectsHashTable];
+    state.bufferCache = [NSMutableDictionary new];
+    state.memoryFraction = 1.0;
     state.defaultStream = newStream(device, queue);
     [state.streams addObject:state.defaultStream];
     states[key] = state;
@@ -123,8 +302,12 @@ static AMStatus selectedStream(id<MTLDevice> device, AMDeviceState *state,
   return *result ? ok() : failure(1, "Metal command queue unavailable");
 }
 
-static void finishStreamCommand(AMStream *stream, uint64_t sequence,
-                               id<MTLCommandBuffer> command) {
+static void prepareBufferProducer(AMBuffer *owner, id<MTLCommandBuffer> command,
+                                  uint64_t invocation, AMEvidence evidence);
+
+static void finishStreamCommand(AMStream *stream, AMPendingCommand *record) {
+  id<MTLCommandBuffer> command = record.command;
+  const uint64_t sequence = record.sequence;
   NSString *message = command.status == MTLCommandBufferStatusError
       ? (command.error.localizedDescription ?: @"Metal command failed") : nil;
   @synchronized(stream) {
@@ -156,29 +339,108 @@ static void finishBufferProducer(AMBuffer *owner, uint64_t invocation,
     }
   }
 }
-static void prepareBufferProducer(AMBuffer *owner, id<MTLCommandBuffer> command,
-                                  uint64_t invocation, AMEvidence evidence);
+
+static void finalizeCommand(AMStream *stream, AMPendingCommand *record) {
+  @synchronized(record) {
+    id<MTLCommandBuffer> command = record.command;
+    if (record.finalized ||
+        (command.status != MTLCommandBufferStatusCompleted &&
+         command.status != MTLCommandBufferStatusError)) return;
+    record.finalized = YES;
+    if (record.output)
+      finishBufferProducer(record.output, record.invocation, command);
+    if (command.status == MTLCommandBufferStatusCompleted &&
+        record.output && record.materializationBytes) {
+      @synchronized(record.output) {
+        if (record.output.evidence.invocation_id == record.invocation) {
+          AMEvidence evidence = record.output.evidence;
+          evidence.materialization_bytes = record.materializationBytes;
+          record.output.evidence = evidence;
+        }
+      }
+    }
+
+    AMDeviceState *state = deviceState(stream.device, nil);
+    if (state) {
+      @synchronized(state) {
+        for (AMBuffer *owner in record.bufferLeases) {
+          if (!owner.inFlightLeases) continue;
+          --owner.inFlightLeases;
+          if (!owner.inFlightLeases) state.inFlightBytes -= owner.capacity;
+          if (!owner.externalReferences && !owner.inFlightLeases)
+            cacheOwnerLocked(state, owner);
+        }
+        if (command.status == MTLCommandBufferStatusCompleted &&
+            record.materializationBytes)
+          state.materializationBytes = saturatedAdd(
+              state.materializationBytes, record.materializationBytes);
+      }
+    }
+  }
+  finishStreamCommand(stream, record);
+}
+
+static NSArray<AMBuffer *> *uniqueBufferOwners(NSArray *handles) {
+  NSMutableArray<AMBuffer *> *owners = [NSMutableArray new];
+  for (id handle in handles) {
+    if (![handle isKindOfClass:AMBuffer.class]) continue;
+    AMBuffer *owner = (AMBuffer *)handle;
+    BOOL found = NO;
+    for (AMBuffer *previous in owners) {
+      if (previous == owner) { found = YES; break; }
+    }
+    if (!found) [owners addObject:owner];
+  }
+  return [owners copy];
+}
 
 static AMStatus submitCommand(AMStream *stream, id<MTLCommandBuffer> command,
                               NSArray *leases, AMBuffer *output,
                               uint64_t invocation, AMEvidence evidence,
+                              uint64_t materializationBytes,
                               uint64_t *submittedSequence) {
   if (!stream || !command) return failure(5, "cannot submit Metal command");
   NSArray *retainedLeases = [leases copy] ?: @[];
+  NSArray<AMBuffer *> *bufferLeases = uniqueBufferOwners(retainedLeases);
+  AMDeviceState *state = deviceState(stream.device, nil);
+  if (!state) return failure(1, "Metal device accounting state unavailable");
+  for (AMBuffer *owner in bufferLeases)
+    if (owner.state != state)
+      return failure(2, "Metal command buffers belong to different devices");
+
+  AMPendingCommand *record = [AMPendingCommand new];
+  record.command = command;
+  record.retainedHandles = retainedLeases;
+  record.bufferLeases = bufferLeases;
+  record.output = output;
+  record.invocation = invocation;
+  record.materializationBytes = materializationBytes;
+
   @synchronized(stream) {
     if (stream.acceptedSequence == UINT64_MAX)
       return failure(5, "Metal stream command sequence exhausted");
+    @synchronized(state) {
+      for (AMBuffer *owner in bufferLeases)
+        if (!owner.externalReferences || owner.cached ||
+            owner.inFlightLeases == UINT64_MAX)
+          return failure(2, "Metal command cannot lease an unowned buffer");
+      for (AMBuffer *owner in bufferLeases) {
+        if (!owner.inFlightLeases)
+          state.inFlightBytes = saturatedAdd(state.inFlightBytes, owner.capacity);
+        ++owner.inFlightLeases;
+      }
+    }
     const uint64_t sequence = ++stream.acceptedSequence;
+    record.sequence = sequence;
     if (output) prepareBufferProducer(output, command, invocation, evidence);
     stream.lastAcceptedComplete = NO;
     stream.lastAcceptedFailed = NO;
     stream.lastAcceptedError = nil;
-    stream.pending[@(sequence)] = command;
+    stream.pending[@(sequence)] = record;
     [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
       @autoreleasepool {
-        finishStreamCommand(stream, sequence, completed);
-        if (output) finishBufferProducer(output, invocation, completed);
-        (void)retainedLeases;
+        (void)completed;
+        finalizeCommand(stream, record);
       }
     }];
     if (submittedSequence) *submittedSequence = sequence;
@@ -215,14 +477,6 @@ static AMStatus streamFailureThrough(AMStream *stream, uint64_t target) {
   NSMutableArray<NSString *> *messages = nil;
   NSMutableArray<NSNumber *> *handled = nil;
   @synchronized(stream) {
-    for (NSNumber *key in stream.pending) {
-      const uint64_t sequence = key.unsignedLongLongValue;
-      if (sequence > target || sequence <= stream.synchronizedSequence) continue;
-      id<MTLCommandBuffer> command = stream.pending[key];
-      if (command.status == MTLCommandBufferStatusError)
-        stream.failures[key] =
-            command.error.localizedDescription ?: @"Metal command failed";
-    }
     for (NSNumber *key in stream.failures) {
       if (key.unsignedLongLongValue > target) continue;
       if (!messages) {
@@ -239,6 +493,30 @@ static AMStatus streamFailureThrough(AMStream *stream, uint64_t target) {
   }
   return messages
       ? failure(5, [[messages componentsJoinedByString:@"; "] UTF8String]) : ok();
+}
+
+static NSArray<AMPendingCommand *> *pendingThrough(AMStream *stream,
+                                                   uint64_t target) {
+  NSMutableArray<AMPendingCommand *> *snapshot = [NSMutableArray new];
+  @synchronized(stream) {
+    for (AMPendingCommand *record in stream.pending.allValues)
+      if (record.sequence <= target) [snapshot addObject:record];
+  }
+  [snapshot sortUsingComparator:^NSComparisonResult(AMPendingCommand *left,
+                                                      AMPendingCommand *right) {
+    if (left.sequence < right.sequence) return NSOrderedAscending;
+    if (left.sequence > right.sequence) return NSOrderedDescending;
+    return NSOrderedSame;
+  }];
+  return snapshot;
+}
+
+static void waitAndFinalize(AMStream *stream,
+                            NSArray<AMPendingCommand *> *snapshot) {
+  for (AMPendingCommand *record in snapshot) {
+    [record.command waitUntilCompleted];
+    finalizeCommand(stream, record);
+  }
 }
 
 static AMStatus waitForProducer(AMBuffer *owner) {
@@ -303,7 +581,7 @@ static AMStatus enqueueMarker(AMStream *stream, id<MTLCommandBuffer> *marker,
   id<MTLCommandBuffer> command = [stream.queue commandBuffer];
   if (!command) return failure(5, "cannot create Metal stream marker");
   command.label = @"arraymancer.stream.marker";
-  AMStatus status = submitCommand(stream, command, @[], nil, 0, {}, sequence);
+  AMStatus status = submitCommand(stream, command, @[], nil, 0, {}, 0, sequence);
   if (status.code) return status;
   if (marker) *marker = command;
   return ok();
@@ -369,11 +647,13 @@ AMStatus am_stream_sync(void *streamHandle) {
   @autoreleasepool {
     if (!streamHandle) return failure(2, "null Metal stream");
     AMStream *stream = (__bridge AMStream *)streamHandle;
-    id<MTLCommandBuffer> marker = nil;
     uint64_t sequence = 0;
-    AMStatus status = enqueueMarker(stream, &marker, &sequence);
+    AMStatus status = enqueueMarker(stream, nil, &sequence);
     if (status.code) return status;
-    [marker waitUntilCompleted];
+    // Waiting only the marker's status is insufficient: publish every prior
+    // command's native lease/accounting completion before returning.
+    NSArray<AMPendingCommand *> *snapshot = pendingThrough(stream, sequence);
+    waitAndFinalize(stream, snapshot);
     return streamFailureThrough(stream, sequence);
   }
 }
@@ -389,19 +669,21 @@ AMStatus am_device_sync(void *deviceHandle) {
 
     NSArray<AMStream *> *streams = nil;
     @synchronized(state) { streams = state.streams.allObjects; }
-    NSMutableArray<id<MTLCommandBuffer>> *markers = [NSMutableArray new];
     NSMutableArray<NSNumber *> *sequences = [NSMutableArray new];
     for (AMStream *stream in streams) {
-      id<MTLCommandBuffer> marker = nil;
       uint64_t sequence = 0;
-      AMStatus status = enqueueMarker(stream, &marker, &sequence);
+      AMStatus status = enqueueMarker(stream, nil, &sequence);
       if (status.code) return status;
-      [markers addObject:marker];
       [sequences addObject:@(sequence)];
     }
-    // All queue snapshots are submitted before any queue is waited.
-    for (id<MTLCommandBuffer> marker in markers)
-      [marker waitUntilCompleted];
+    // Snapshot all queues before waiting, then explicitly wait each prior
+    // command so its lease/accounting handler is complete on return.
+    NSMutableArray<NSArray<AMPendingCommand *> *> *snapshots = [NSMutableArray new];
+    for (NSUInteger index = 0; index < streams.count; ++index)
+      [snapshots addObject:pendingThrough(
+          streams[index], sequences[index].unsignedLongLongValue)];
+    for (NSUInteger index = 0; index < streams.count; ++index)
+      waitAndFinalize(streams[index], snapshots[index]);
 
     AMStatus first = ok();
     for (NSUInteger index = 0; index < streams.count; ++index) {
@@ -414,28 +696,22 @@ AMStatus am_device_sync(void *deviceHandle) {
   }
 }
 
+
 AMStatus am_stream_complete(void *streamHandle, int32_t *complete) {
   if (!streamHandle || !complete)
     return failure(2, "null Metal stream completion argument");
   AMStream *stream = (__bridge AMStream *)streamHandle;
+  AMPendingCommand *latest = nil;
+  @synchronized(stream) {
+    if (!stream.lastAcceptedComplete && stream.acceptedSequence)
+      latest = stream.pending[@(stream.acceptedSequence)];
+  }
+  if (latest &&
+      (latest.command.status == MTLCommandBufferStatusCompleted ||
+       latest.command.status == MTLCommandBufferStatusError))
+    finalizeCommand(stream, latest);
   NSString *message = nil;
   @synchronized(stream) {
-    if (!stream.lastAcceptedComplete && stream.acceptedSequence) {
-      id<MTLCommandBuffer> latest = stream.pending[@(stream.acceptedSequence)];
-      if (latest &&
-          (latest.status == MTLCommandBufferStatusCompleted ||
-           latest.status == MTLCommandBufferStatusError)) {
-        NSString *error = latest.status == MTLCommandBufferStatusError
-            ? (latest.error.localizedDescription ?: @"Metal command failed") : nil;
-        stream.lastAcceptedComplete = YES;
-        stream.lastAcceptedFailed = error != nil;
-        stream.lastAcceptedError = error;
-        stream.completedSequence = MAX(stream.completedSequence,
-                                       stream.acceptedSequence);
-          if (stream.acceptedSequence > stream.synchronizedSequence)
-            stream.failures[@(stream.acceptedSequence)] = error;
-      }
-    }
     *complete = stream.acceptedSequence == 0 || stream.lastAcceptedComplete ? 1 : 0;
     if (*complete && stream.lastAcceptedFailed)
       message = stream.lastAcceptedError;
@@ -480,7 +756,7 @@ AMStatus am_event_record(void *eventHandle, void *streamHandle,
       if (!command) return failure(5, "cannot create Metal event signal command");
       command.label = @"arraymancer.event.record";
       [command encodeSignalEvent:event.shared value:value];
-      AMStatus status = submitCommand(stream, command, @[event], nil, 0, {}, nullptr);
+      AMStatus status = submitCommand(stream, command, @[event], nil, 0, {}, 0, nullptr);
       if (status.code) return status;
       event.lastRecordedValue = value;
     }
@@ -508,7 +784,7 @@ AMStatus am_event_wait(void *streamHandle, void *eventHandle, uint64_t value,
     if (!command) return failure(5, "cannot create Metal event wait command");
     command.label = @"arraymancer.event.wait";
     [command encodeWaitForEvent:event.shared value:target];
-    return submitCommand(stream, command, @[event], nil, 0, {}, nullptr);
+    return submitCommand(stream, command, @[event], nil, 0, {}, 0, nullptr);
   }
 }
 
@@ -524,16 +800,77 @@ AMStatus am_event_signal(void *eventHandle, uint64_t value) {
   }
   return ok();
 }
-AMStatus am_buffer(void *device, uint64_t bytes, void **buffer) {
+static BOOL wouldExceed(uint64_t current, uint64_t addition, uint64_t limit) {
+  return current > limit || addition > limit - current;
+}
+
+static AMBuffer *cachedOwnerForRequestLocked(AMDeviceState *state,
+                                             uint64_t bytes,
+                                             uint64_t nativeLength) {
+  NSMutableArray<AMBuffer *> *bin = state.bufferCache[@(nativeLength)];
+  for (AMBuffer *owner in [bin copy])
+    if (owner.capacity == bytes && removeCachedOwnerLocked(state, owner))
+      return owner;
+  return nil;
+}
+
+AMStatus am_buffer(void *deviceHandle, uint64_t bytes, void **buffer) {
   @autoreleasepool {
-    if (!device || !buffer) return failure(2, "null allocation handle");
-    id<MTLDevice> dev = (__bridge id<MTLDevice>)device;
-    if (bytes > dev.maxBufferLength) return failure(4, "Metal allocation exceeds maxBufferLength");
-    AMBuffer *owner = [AMBuffer new];
-    owner.evidence = {nextInvocation.fetch_add(1), dev.registryID, 0, 0, 0, 1, 1};
-    owner.buffer = [dev newBufferWithLength:MAX(bytes, 1) options:MTLResourceStorageModeShared];
-    if (!owner.buffer) return failure(4, "Metal allocation failed");
-    owner.capacity = bytes;
+    if (!deviceHandle || !buffer) return failure(2, "null allocation handle");
+    *buffer = nullptr;
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)deviceHandle;
+    const uint64_t requestedLength = MAX(bytes, 1);
+    if (bytes > dev.maxBufferLength || requestedLength > dev.maxBufferLength)
+      return failure(4, "Metal allocation exceeds maxBufferLength");
+
+    NSError *error = nil;
+    AMDeviceState *state = deviceState(dev, &error);
+    if (!state)
+      return failure(1, error.localizedDescription.UTF8String ?: "Metal device unavailable");
+    AMBuffer *owner = nil;
+    @synchronized(state) {
+      const uint64_t limit = memoryLimitBytes(state);
+      const uint64_t liveReserved = state.reservedBytes - state.cachedBytes;
+      // A cache hit is still subject to the requested limit. In particular,
+      // a fraction smaller than this allocation cannot be bypassed by reuse.
+      if (requestedLength > limit ||
+          wouldExceed(liveReserved, requestedLength, limit))
+        return failure(4, "Metal allocation exceeds the configured memory fraction");
+
+      owner = cachedOwnerForRequestLocked(state, bytes, requestedLength);
+      if (owner) {
+        while (state.reservedBytes > limit)
+          if (!evictOneCachedOwnerLocked(state))
+            return failure(4, "Metal reserved memory exceeds the configured limit");
+      } else {
+        while (wouldExceed(state.reservedBytes, requestedLength, limit))
+          if (!evictOneCachedOwnerLocked(state))
+            return failure(4, "Metal allocation exceeds the configured memory fraction");
+        id<MTLBuffer> native =
+            [dev newBufferWithLength:requestedLength options:MTLResourceStorageModeShared];
+        if (!native) return failure(4, "Metal allocation failed");
+        const uint64_t actualLength = native.length;
+        while (wouldExceed(state.reservedBytes, actualLength, limit))
+          if (!evictOneCachedOwnerLocked(state)) {
+            native = nil;
+            return failure(4, "Metal allocation exceeds the configured memory fraction");
+          }
+        owner = [AMBuffer new];
+        owner.buffer = native;
+        state.reservedBytes = saturatedAdd(state.reservedBytes, actualLength);
+      }
+
+      owner.state = state;
+      owner.capacity = bytes;
+      owner.externalReferences = 1;
+      owner.inFlightLeases = 0;
+      owner.cached = NO;
+      owner.producer = nil;
+      owner.producerInvocation = 0;
+      owner.producerError = nil;
+      owner.evidence = {nextInvocation.fetch_add(1), dev.registryID, 0, 0, 0, 1, 1};
+      state.liveBytes = saturatedAdd(state.liveBytes, bytes);
+    }
     *buffer = (__bridge_retained void *)owner;
     return ok();
   }
@@ -696,7 +1033,7 @@ static AMStatus runMathCommand(AMCompute *context,
   if (b && b != a) [leases addObject:b];
   if (output != a && output != b) [leases addObject:output];
   [leases addObject:pipeline];
-  status = submitCommand(stream, command, leases, output, invocation, evidence, nullptr);
+  status = submitCommand(stream, command, leases, output, invocation, evidence, 0, nullptr);
   if (status.code) abandonBufferProducer(output, invocation);
   (void)outputCount;
   return status;
@@ -924,7 +1261,7 @@ AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,
     if (output != upstream && output != prediction && output != target)
       [leases addObject:output];
     [leases addObject:pipeline];
-    status = submitCommand(stream, command, leases, output, invocation, evidence, nullptr);
+    status = submitCommand(stream, command, leases, output, invocation, evidence, 0, nullptr);
     if (status.code) abandonBufferProducer(output, invocation);
     return status;
   }
@@ -940,6 +1277,9 @@ AMStatus am_transfer(void *buffer, AMTensorDescriptor d, void *host, int32_t upl
     if (!count) return ok();
     if (!host) return failure(2, "null host transfer pointer");
     const uint64_t width = dtypeWidth(d.dtype);
+    if (count > UINT64_MAX / width)
+      return failure(2, "host transfer byte count overflows");
+    const uint64_t transferBytes = count * width;
     auto *native = (char *)owner.buffer.contents;
     auto *cpu = (char *)host;
     for (;;) {
@@ -966,12 +1306,18 @@ AMStatus am_transfer(void *buffer, AMTensorDescriptor d, void *host, int32_t upl
             evidence.kind = 1;
             evidence.kernel_bits = 0;
           }
-          evidence.transfer_bytes += count * width;
+          evidence.transfer_bytes = saturatedAdd(evidence.transfer_bytes, transferBytes);
           evidence.completed = 1;
           owner.evidence = evidence;
         }
       }
-      if (!retry) return ok();
+      if (!retry) {
+        AMDeviceState *state = owner.state;
+        @synchronized(state) {
+          state.hostCopyBytes = saturatedAdd(state.hostCopyBytes, transferBytes);
+        }
+        return ok();
+      }
     }
   }
 }
@@ -1016,9 +1362,9 @@ AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
     [encoder endEncoding];
     const uint64_t invocation = nextInvocation.fetch_add(1);
     AMEvidence evidence = {invocation, dst.buffer.device.registryID, 0,
-      count * dtypeWidth(input.dtype), 0, 0, 2, (int32_t)(dtypeWidth(input.dtype) * 8)};
+      0, 0, 0, 2, (int32_t)(dtypeWidth(input.dtype) * 8)};
     status = submitCommand(stream, command, @[src, dst, pipeline], dst,
-                           invocation, evidence, nullptr);
+                           invocation, evidence, count * dtypeWidth(input.dtype), nullptr);
     if (status.code) abandonBufferProducer(dst, invocation);
     return status;
   }
@@ -1057,8 +1403,127 @@ AMStatus am_set_element(void *destination, AMTensorDescriptor output,
     AMEvidence evidence = {invocation, dst.buffer.device.registryID,
                            0, 0, 0, 0, 2, -(int32_t)(dtypeWidth(output.dtype) * 8)};
     status = submitCommand(stream, command, @[dst, pipeline], dst,
-                           invocation, evidence, nullptr);
+                           invocation, evidence, 0, nullptr);
     if (status.code) abandonBufferProducer(dst, invocation);
     return status;
+  }
+}
+static AMDeviceState *memoryDeviceState(void *deviceHandle, AMStatus *status) {
+  id<MTLDevice> device = deviceHandle
+      ? (__bridge id<MTLDevice>)deviceHandle : MTLCopyAllDevices().firstObject;
+  NSError *error = nil;
+  AMDeviceState *state = deviceState(device, &error);
+  if (!state && status)
+    *status = failure(1, error.localizedDescription.UTF8String ?: "Metal device unavailable");
+  return state;
+}
+
+AMStatus am_memory_stats(void *device, AMMemoryStats *out) {
+  @autoreleasepool {
+    if (!out) return failure(2, "null Metal memory statistics output");
+    AMStatus status = ok();
+    AMDeviceState *state = memoryDeviceState(device, &status);
+    if (!state) return status;
+    @synchronized(state) {
+      out->live_bytes = state.liveBytes;
+      out->cached_bytes = state.cachedBytes;
+      out->in_flight_bytes = state.inFlightBytes;
+      out->reserved_bytes = state.reservedBytes;
+      out->host_copy_bytes = state.hostCopyBytes;
+      out->materialization_bytes = state.materializationBytes;
+      out->driver_bytes = state.device.currentAllocatedSize;
+      out->recommended_bytes = state.device.recommendedMaxWorkingSetSize;
+    }
+    return ok();
+  }
+}
+
+AMStatus am_memory_empty_cache(void *device) {
+  @autoreleasepool {
+    AMStatus status = ok();
+    AMDeviceState *state = memoryDeviceState(device, &status);
+    if (!state) return status;
+    @synchronized(state) {
+      while (evictOneCachedOwnerLocked(state)) {}
+    }
+    return ok();
+  }
+}
+
+AMStatus am_memory_fraction(void *device, double *value, int32_t set) {
+  @autoreleasepool {
+    if (!value || (set != 0 && set != 1))
+      return failure(2, "invalid Metal memory-fraction argument");
+    const double requested = *value;
+    if (set && (!std::isfinite(requested) || requested < 0.0 || requested > 2.0))
+      return failure(2, "Metal memory fraction must be finite and in [0, 2]");
+    AMStatus status = ok();
+    AMDeviceState *state = memoryDeviceState(device, &status);
+    if (!state) return status;
+    @synchronized(state) {
+      if (set) state.memoryFraction = requested;
+      *value = state.memoryFraction;
+    }
+    return ok();
+  }
+}
+
+AMStatus am_capture_start(void *deviceHandle, const char *path, void **out) {
+  @autoreleasepool {
+    if (!path || !out) return failure(5, "null Metal capture path or output");
+    *out = nullptr;
+    id<MTLDevice> device = deviceHandle
+        ? (__bridge id<MTLDevice>)deviceHandle : MTLCopyAllDevices().firstObject;
+    if (!device) return failure(5, "Metal capture device unavailable");
+    NSString *outputPath = [NSString stringWithUTF8String:path];
+    if (!outputPath || !outputPath.isAbsolutePath)
+      return failure(5, "Metal GPU trace output path must be absolute");
+
+    MTLCaptureManager *manager = [MTLCaptureManager sharedCaptureManager];
+    ensureCaptureLock();
+    @synchronized(captureLock) {
+      if (activeCapture || manager.isCapturing)
+        return failure(5, "another Metal capture is already active");
+      if (![manager supportsDestination:MTLCaptureDestinationGPUTraceDocument])
+        return failure(5, "Metal GPU trace capture destination is unsupported");
+
+      MTLCaptureDescriptor *descriptor = [MTLCaptureDescriptor new];
+      descriptor.captureObject = device;
+      descriptor.destination = MTLCaptureDestinationGPUTraceDocument;
+      descriptor.outputURL = [NSURL fileURLWithPath:outputPath];
+      NSError *error = nil;
+      BOOL started = NO;
+      @try {
+        started = [manager startCaptureWithDescriptor:descriptor error:&error];
+      } @catch (NSException *exception) {
+        return failure(5, exception.reason.UTF8String ?: "Metal capture start failed");
+      }
+      if (!started)
+        return failure(5, error.localizedDescription.UTF8String ?: "Metal capture start failed");
+
+      AMCapture *capture = [AMCapture new];
+      capture.device = device;
+      capture.manager = manager;
+      capture.path = outputPath;
+      capture.externalReferences = 1;
+      capture.active = YES;
+      activeCapture = capture;
+      *out = (__bridge_retained void *)capture;
+      return ok();
+    }
+  }
+}
+
+AMStatus am_capture_stop(void *captureHandle) {
+  @autoreleasepool {
+    if (!captureHandle) return failure(5, "null Metal capture handle");
+    id object = (__bridge id)captureHandle;
+    if (![object isKindOfClass:AMCapture.class])
+      return failure(5, "invalid Metal capture handle");
+    ensureCaptureLock();
+    @synchronized(captureLock) {
+      NSString *message = stopCaptureLocked((AMCapture *)object);
+      return message ? failure(5, message.UTF8String) : ok();
+    }
   }
 }

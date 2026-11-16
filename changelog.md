@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Report native Metal live, cached and in-flight storage separately from driver
+  allocation and recommended limits. Enforce memory fractions, recycle only
+  unowned completed buffers, and capture real GPU work through Metal profiling.
 - Enqueue Metal kernels asynchronously on retained thread-local streams. Native
   shared events order queues; stream/device fences and producer-scoped readback
   preserve pending tensor owners without entering the Nim GC.

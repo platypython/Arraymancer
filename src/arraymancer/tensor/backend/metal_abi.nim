@@ -8,9 +8,13 @@ type
   MetalError* = object of CatchableError
   MetalUnavailableError* = object of MetalError
   MetalDtypeError* = object of MetalError
+  MetalOutOfMemoryError* = object of MetalError
   AMStatus* {.bycopy.} = object
     code*: int32
     message*: cstring
+  AMMemoryStats* {.bycopy.} = object
+    liveBytes*, cachedBytes*, inFlightBytes*, driverBytes*: uint64
+    recommendedBytes*, reservedBytes*, hostCopyBytes*, materializationBytes*: uint64
   AMDescriptor* {.bycopy.} = object
     rank*, dtype*: int32
     shape*, strides*: array[8, int64]
@@ -53,6 +57,11 @@ type
     eventWait*: proc(stream, event: pointer; value: uint64;
       explicitValue: int32): AMStatus {.cdecl, gcsafe, raises: [].}
     eventSignal*: proc(event: pointer; value: uint64): AMStatus {.cdecl, gcsafe, raises: [].}
+    memoryStats*: proc(device: pointer; stats: ptr AMMemoryStats): AMStatus {.cdecl, gcsafe, raises: [].}
+    memoryEmptyCache*: proc(device: pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+    memoryFraction*: proc(device: pointer; value: ptr cdouble; set: int32): AMStatus {.cdecl, gcsafe, raises: [].}
+    captureStart*: proc(device: pointer; path: cstring; capture: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+    captureStop*: proc(capture: pointer): AMStatus {.cdecl, gcsafe, raises: [].}
 
 const arraymancerAppleLibDir* {.strdefine.} = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir / "build/apple"
 var api: MetalApi
@@ -93,6 +102,11 @@ proc metalApi*(): MetalApi {.gcsafe.} =
       resolve(eventRecord, "am_event_record")
       resolve(eventWait, "am_event_wait")
       resolve(eventSignal, "am_event_signal")
+      resolve(memoryStats, "am_memory_stats")
+      resolve(memoryEmptyCache, "am_memory_empty_cache")
+      resolve(memoryFraction, "am_memory_fraction")
+      resolve(captureStart, "am_capture_start")
+      resolve(captureStop, "am_capture_stop")
       library = handle
     result = api
 
@@ -101,4 +115,5 @@ proc checkMetal*(status: AMStatus) {.gcsafe.} =
     let message = if status.message == nil: "Native Metal error" else: $status.message
     if status.message != nil: metalApi().messageFree(status.message)
     if status.code == 1: raise newException(MetalUnavailableError, message)
+    if status.code == 4: raise newException(MetalOutOfMemoryError, message)
     raise newException(MetalError, message)

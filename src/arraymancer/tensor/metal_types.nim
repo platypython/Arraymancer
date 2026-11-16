@@ -25,6 +25,11 @@ type
   MetalEvent* = ref object
     owner*: MetalOwner
     device*: MetalDevice
+  MetalCapture* = ref object
+    ## Retained capture object; active becomes false after native stop succeeds.
+    owner*: MetalOwner
+    device*: MetalDevice
+    active*: bool
   MetalStorage* = ref object
     owner*: MetalOwner
     device*: MetalDevice
