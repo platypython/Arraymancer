@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Enqueue Metal kernels asynchronously on retained thread-local streams. Native
+  shared events order queues; stream/device fences and producer-scoped readback
+  preserve pending tensor owners without entering the Nim GC.
 - Add explicit Metal float32 SGD with separate native `step` and in-place
   `zeroGrads`; `update` retains the compound step-and-reset behavior.
 - Differentiate Metal mean and mean-MSE with the existing autograd tape; scalar

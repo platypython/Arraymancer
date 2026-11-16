@@ -21,14 +21,14 @@ proc metalOptimizerObservation*(): AppleObservation =
       loss.backprop
       let valueOwner = weights.value.storage
       let gradOwner = weights.grad.storage
-      var invocations = %*[metalEvidence(prediction.value), metalEvidence(loss.value), metalEvidence(weights.grad)]
       var actual = %*{"prediction": observeMetal(prediction.value), "loss": observeMetal(loss.value),
         "grad": observeMetal(weights.grad)}
+      var invocations = %*[metalEvidence(prediction.value), metalEvidence(loss.value), metalEvidence(weights.grad)]
       let optim = optimizer((weights: weights, frozen: frozen), SGD,
         float32(inputs["learning_rate"].getFloat), MetalTensor[float32])
       optim.step
-      invocations.add(metalEvidence(weights.value))
       actual["weights_after_step"] = observeMetal(weights.value)
+      invocations.add(metalEvidence(weights.value))
       actual["grad_after_step"] = observeMetal(weights.grad)
       optim.zeroGrads
       actual["grad_after_zero"] = observeMetal(weights.grad)

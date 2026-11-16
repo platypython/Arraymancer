@@ -13,12 +13,16 @@ type
     re*, im*: MetalFloat16
   MetalOwnerObj = object
     handle*: pointer
-    release: proc(handle: pointer) {.cdecl, raises: [].}
+    release: proc(handle: pointer) {.cdecl, gcsafe, raises: [].}
   MetalOwner* = ref MetalOwnerObj
   MetalDevice* = ref object
     owner*: MetalOwner
     registryId*: uint64
   MetalStream* = ref object
+    owner*: MetalOwner
+    device*: MetalDevice
+    identity*: uint64
+  MetalEvent* = ref object
     owner*: MetalOwner
     device*: MetalDevice
   MetalStorage* = ref object
@@ -40,7 +44,7 @@ when defined(gcDestructors):
 else:
   proc finalize(owner: MetalOwner) = dispose(owner[])
 
-proc ownMetal*(handle: pointer): MetalOwner =
+proc ownMetal*(handle: pointer): MetalOwner {.gcsafe.} =
   if handle == nil: raise newException(MetalError, "Native Metal returned a nil handle")
   when defined(gcDestructors): new(result)
   else: new(result, finalize)

@@ -2,36 +2,312 @@
 // Provides native shared storage; producers belong to storage, not metadata aliases.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <dispatch/dispatch.h>
 #include "apple_abi.h"
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
-#include <mutex>
 
 @interface AMBuffer : NSObject
 @property(nonatomic, strong) id<MTLBuffer> buffer;
 @property(nonatomic, strong) id<MTLCommandBuffer> producer;
+@property(nonatomic) uint64_t producerInvocation;
+@property(nonatomic, copy) NSString *producerError;
 @property(nonatomic) AMEvidence evidence;
 @property(nonatomic) uint64_t capacity;
 @end
 @implementation AMBuffer
 @end
 
+@interface AMStream : NSObject
+@property(nonatomic, strong) id<MTLDevice> device;
+@property(nonatomic, strong) id<MTLCommandQueue> queue;
+@property(nonatomic) uint64_t identity;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, id<MTLCommandBuffer>> *pending;
+@property(nonatomic) uint64_t acceptedSequence;
+@property(nonatomic) uint64_t completedSequence;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *failures;
+@property(nonatomic) uint64_t synchronizedSequence;
+@property(nonatomic) BOOL lastAcceptedComplete;
+@property(nonatomic) BOOL lastAcceptedFailed;
+@property(nonatomic, copy) NSString *lastAcceptedError;
+@end
+@implementation AMStream
+@end
+
+@interface AMEvent : NSObject
+@property(nonatomic, strong) id<MTLDevice> device;
+@property(nonatomic, strong) id<MTLSharedEvent> shared;
+@property(nonatomic) uint64_t lastScheduledValue;
+@property(nonatomic) uint64_t lastRecordedValue;
+@end
+@implementation AMEvent
+@end
+
+@interface AMDeviceState : NSObject
+@property(nonatomic, strong) id<MTLDevice> device;
+@property(nonatomic, strong) AMStream *defaultStream;
+@property(nonatomic, strong) NSHashTable<AMStream *> *streams;
+@end
+@implementation AMDeviceState
+@end
+
+@interface AMCompute : NSObject
+@property(nonatomic, strong) AMDeviceState *state;
+@property(nonatomic, strong) id<MTLLibrary> library;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, id<MTLComputePipelineState>> *pipelines;
+@end
+@implementation AMCompute
+@end
 static AMStatus failure(int32_t code, const char *text) {
-  return {code, strdup(text)};
+  return {code, strdup(text ? text : "native Metal operation failed")};
 }
 static AMStatus ok();
 static std::atomic<uint64_t> nextInvocation{1};
-AMStatus am_buffer_evidence(void *buffer, AMEvidence *evidence) {
-  if (!buffer || !evidence) return failure(2, "null evidence handle");
-  AMBuffer *owner = (__bridge AMBuffer *)buffer;
-  *evidence = owner.evidence;
-  return ok();
-}
 static AMStatus ok() { return {0, nullptr}; }
 void am_message_free(char *message) { free(message); }
 void am_retain(void *handle) { if (handle) CFRetain(handle); }
 void am_release(void *handle) { if (handle) CFRelease(handle); }
+static NSString *const currentStreamKey = @"org.arraymancer.metal.currentStream";
+
+static AMStream *newStream(id<MTLDevice> device, id<MTLCommandQueue> queue) {
+  if (!device || !queue) return nil;
+  AMStream *stream = [AMStream new];
+  stream.device = device;
+  stream.queue = queue;
+  stream.identity = (uint64_t)(uintptr_t)(__bridge void *)queue;
+  stream.pending = [NSMutableDictionary new];
+  stream.failures = [NSMutableDictionary new];
+  stream.lastAcceptedComplete = YES;
+  return stream;
+}
+
+static AMDeviceState *deviceState(id<MTLDevice> device, NSError **error) {
+  if (!device) {
+    NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+    device = devices.firstObject;
+  }
+  if (!device) return nil;
+
+  static NSMutableDictionary<NSNumber *, AMDeviceState *> *states;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ states = [NSMutableDictionary new]; });
+  @synchronized(states) {
+    NSNumber *key = @(device.registryID);
+    AMDeviceState *state = states[key];
+    if (state) return state;
+
+    id<MTLCommandQueue> queue = [device newCommandQueue];
+    if (!queue) {
+      if (error) *error = [NSError errorWithDomain:@"Arraymancer.Metal"
+          code:1 userInfo:@{NSLocalizedDescriptionKey: @"cannot create default Metal command queue"}];
+      return nil;
+    }
+    state = [AMDeviceState new];
+    state.device = device;
+    state.streams = [NSHashTable weakObjectsHashTable];
+    state.defaultStream = newStream(device, queue);
+    [state.streams addObject:state.defaultStream];
+    states[key] = state;
+    return state;
+  }
+}
+
+static AMStatus selectedStream(id<MTLDevice> device, AMDeviceState *state,
+                               AMStream **result) {
+  if (!device || !state || !result) return failure(2, "invalid Metal stream request");
+  AMStream *selected = NSThread.currentThread.threadDictionary[currentStreamKey];
+  if (selected && selected.device.registryID != device.registryID)
+    return failure(2, "selected Metal stream belongs to a different device");
+  *result = selected ?: state.defaultStream;
+  return *result ? ok() : failure(1, "Metal command queue unavailable");
+}
+
+static void finishStreamCommand(AMStream *stream, uint64_t sequence,
+                               id<MTLCommandBuffer> command) {
+  NSString *message = command.status == MTLCommandBufferStatusError
+      ? (command.error.localizedDescription ?: @"Metal command failed") : nil;
+  @synchronized(stream) {
+    if (sequence > stream.completedSequence) stream.completedSequence = sequence;
+    [stream.pending removeObjectForKey:@(sequence)];
+    if (sequence == stream.acceptedSequence) {
+      stream.lastAcceptedComplete = YES;
+      stream.lastAcceptedFailed = message != nil;
+      stream.lastAcceptedError = message;
+    }
+    if (message && sequence > stream.synchronizedSequence)
+      stream.failures[@(sequence)] = message;
+  }
+}
+
+static void finishBufferProducer(AMBuffer *owner, uint64_t invocation,
+                                 id<MTLCommandBuffer> command) {
+  NSString *message = command.status == MTLCommandBufferStatusError
+      ? (command.error.localizedDescription ?: @"Metal command failed") : nil;
+  @synchronized(owner) {
+    if (owner.producerInvocation == invocation) {
+      owner.producer = nil;
+      owner.producerError = message;
+    }
+    if (owner.evidence.invocation_id == invocation && owner.evidence.kind == 2) {
+      AMEvidence evidence = owner.evidence;
+      evidence.completed = message ? 0 : 1;
+      owner.evidence = evidence;
+    }
+  }
+}
+static void prepareBufferProducer(AMBuffer *owner, id<MTLCommandBuffer> command,
+                                  uint64_t invocation, AMEvidence evidence);
+
+static AMStatus submitCommand(AMStream *stream, id<MTLCommandBuffer> command,
+                              NSArray *leases, AMBuffer *output,
+                              uint64_t invocation, AMEvidence evidence,
+                              uint64_t *submittedSequence) {
+  if (!stream || !command) return failure(5, "cannot submit Metal command");
+  NSArray *retainedLeases = [leases copy] ?: @[];
+  @synchronized(stream) {
+    if (stream.acceptedSequence == UINT64_MAX)
+      return failure(5, "Metal stream command sequence exhausted");
+    const uint64_t sequence = ++stream.acceptedSequence;
+    if (output) prepareBufferProducer(output, command, invocation, evidence);
+    stream.lastAcceptedComplete = NO;
+    stream.lastAcceptedFailed = NO;
+    stream.lastAcceptedError = nil;
+    stream.pending[@(sequence)] = command;
+    [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+      @autoreleasepool {
+        finishStreamCommand(stream, sequence, completed);
+        if (output) finishBufferProducer(output, invocation, completed);
+        (void)retainedLeases;
+      }
+    }];
+    if (submittedSequence) *submittedSequence = sequence;
+    [command commit];
+  }
+  return ok();
+}
+
+static void prepareBufferProducer(AMBuffer *owner, id<MTLCommandBuffer> command,
+                                  uint64_t invocation, AMEvidence evidence) {
+  @synchronized(owner) {
+    owner.producer = command;
+    owner.producerInvocation = invocation;
+    owner.producerError = nil;
+    owner.evidence = evidence;
+  }
+}
+
+static void abandonBufferProducer(AMBuffer *owner, uint64_t invocation) {
+  @synchronized(owner) {
+    if (owner.producerInvocation == invocation) {
+      owner.producer = nil;
+      owner.producerError = @"Metal command was not submitted";
+      if (owner.evidence.invocation_id == invocation) {
+        AMEvidence evidence = owner.evidence;
+        evidence.completed = 0;
+        owner.evidence = evidence;
+      }
+    }
+  }
+}
+
+static AMStatus streamFailureThrough(AMStream *stream, uint64_t target) {
+  NSMutableArray<NSString *> *messages = nil;
+  NSMutableArray<NSNumber *> *handled = nil;
+  @synchronized(stream) {
+    for (NSNumber *key in stream.pending) {
+      const uint64_t sequence = key.unsignedLongLongValue;
+      if (sequence > target || sequence <= stream.synchronizedSequence) continue;
+      id<MTLCommandBuffer> command = stream.pending[key];
+      if (command.status == MTLCommandBufferStatusError)
+        stream.failures[key] =
+            command.error.localizedDescription ?: @"Metal command failed";
+    }
+    for (NSNumber *key in stream.failures) {
+      if (key.unsignedLongLongValue > target) continue;
+      if (!messages) {
+        messages = [NSMutableArray new];
+        handled = [NSMutableArray new];
+      }
+      [messages addObject:[NSString stringWithFormat:@"Metal command %llu failed: %@",
+        key.unsignedLongLongValue, stream.failures[key]]];
+      [handled addObject:key];
+    }
+    if (handled) [stream.failures removeObjectsForKeys:handled];
+    if (target > stream.synchronizedSequence)
+      stream.synchronizedSequence = target;
+  }
+  return messages
+      ? failure(5, [[messages componentsJoinedByString:@"; "] UTF8String]) : ok();
+}
+
+static AMStatus waitForProducer(AMBuffer *owner) {
+  if (!owner) return failure(2, "null Metal buffer owner");
+  for (;;) {
+    id<MTLCommandBuffer> producer = nil;
+    uint64_t invocation = 0;
+    NSString *savedError = nil;
+    @synchronized(owner) {
+      producer = owner.producer;
+      invocation = owner.producerInvocation;
+      savedError = owner.producerError;
+    }
+    if (!producer)
+      return savedError ? failure(5, savedError.UTF8String) : ok();
+
+    [producer waitUntilCompleted];
+    finishBufferProducer(owner, invocation, producer);
+    NSString *message = nil;
+    BOOL stillCurrent = NO;
+    @synchronized(owner) {
+      stillCurrent = owner.producerInvocation == invocation;
+      if (stillCurrent) message = owner.producerError;
+    }
+    if (!stillCurrent) continue;
+    return message ? failure(5, message.UTF8String) : ok();
+  }
+}
+
+AMStatus am_buffer_evidence(void *buffer, AMEvidence *evidence) {
+  if (!buffer || !evidence) return failure(2, "null evidence handle");
+  AMBuffer *owner = (__bridge AMBuffer *)buffer;
+  NSString *message = nil;
+  @synchronized(owner) {
+    id<MTLCommandBuffer> producer = owner.producer;
+    if (producer &&
+        (producer.status == MTLCommandBufferStatusCompleted ||
+         producer.status == MTLCommandBufferStatusError)) {
+      const uint64_t invocation = owner.producerInvocation;
+      if (owner.evidence.invocation_id == invocation &&
+          owner.evidence.kind == 2) {
+        AMEvidence current = owner.evidence;
+        current.completed = producer.status == MTLCommandBufferStatusCompleted ? 1 : 0;
+        owner.evidence = current;
+        if (producer.status == MTLCommandBufferStatusError)
+          owner.producerError =
+              producer.error.localizedDescription ?: @"Metal command failed";
+      }
+      owner.producer = nil;
+    }
+    *evidence = owner.evidence;
+    if (owner.producerError &&
+        owner.producerInvocation == owner.evidence.invocation_id)
+      message = owner.producerError;
+  }
+  return message ? failure(5, message.UTF8String) : ok();
+}
+
+static AMStatus enqueueMarker(AMStream *stream, id<MTLCommandBuffer> *marker,
+                              uint64_t *sequence) {
+  if (!stream) return failure(2, "null Metal stream");
+  id<MTLCommandBuffer> command = [stream.queue commandBuffer];
+  if (!command) return failure(5, "cannot create Metal stream marker");
+  command.label = @"arraymancer.stream.marker";
+  AMStatus status = submitCommand(stream, command, @[], nil, 0, {}, sequence);
+  if (status.code) return status;
+  if (marker) *marker = command;
+  return ok();
+}
 AMStatus am_device_count(int32_t *count) {
   @autoreleasepool {
     if (!count) return failure(2, "null count");
@@ -50,6 +326,202 @@ AMStatus am_device(int32_t index, void **device, uint64_t *identity) {
     *device = (__bridge_retained void *)selected;
     return ok();
   }
+}
+AMStatus am_stream(void *deviceHandle, int32_t mode, void **out,
+                   uint64_t *identity) {
+  @autoreleasepool {
+    if (!out || !identity) return failure(2, "null Metal stream output");
+    *out = nullptr;
+    *identity = 0;
+    if (mode != 0 && mode != 1)
+      return failure(2, "Metal stream mode must be new or default");
+    id<MTLDevice> device = deviceHandle
+        ? (__bridge id<MTLDevice>)deviceHandle : MTLCopyAllDevices().firstObject;
+    NSError *error = nil;
+    AMDeviceState *state = deviceState(device, &error);
+    if (!state)
+      return failure(1, error.localizedDescription.UTF8String ?: "Metal device unavailable");
+    AMStream *stream = state.defaultStream;
+    if (mode == 0) {
+      id<MTLCommandQueue> queue = [device newCommandQueue];
+      if (!queue) return failure(1, "cannot create Metal command queue");
+      stream = newStream(device, queue);
+      @synchronized(state) { [state.streams addObject:stream]; }
+    }
+    *identity = stream.identity;
+    *out = (__bridge_retained void *)stream;
+    return ok();
+  }
+}
+
+void am_stream_set(void *streamHandle) {
+  @autoreleasepool {
+    NSMutableDictionary *dictionary = NSThread.currentThread.threadDictionary;
+    if (streamHandle)
+      dictionary[currentStreamKey] = (__bridge AMStream *)streamHandle;
+    else
+      [dictionary removeObjectForKey:currentStreamKey];
+  }
+}
+
+AMStatus am_stream_sync(void *streamHandle) {
+  @autoreleasepool {
+    if (!streamHandle) return failure(2, "null Metal stream");
+    AMStream *stream = (__bridge AMStream *)streamHandle;
+    id<MTLCommandBuffer> marker = nil;
+    uint64_t sequence = 0;
+    AMStatus status = enqueueMarker(stream, &marker, &sequence);
+    if (status.code) return status;
+    [marker waitUntilCompleted];
+    return streamFailureThrough(stream, sequence);
+  }
+}
+
+AMStatus am_device_sync(void *deviceHandle) {
+  @autoreleasepool {
+    id<MTLDevice> device = deviceHandle
+        ? (__bridge id<MTLDevice>)deviceHandle : MTLCopyAllDevices().firstObject;
+    NSError *error = nil;
+    AMDeviceState *state = deviceState(device, &error);
+    if (!state)
+      return failure(1, error.localizedDescription.UTF8String ?: "Metal device unavailable");
+
+    NSArray<AMStream *> *streams = nil;
+    @synchronized(state) { streams = state.streams.allObjects; }
+    NSMutableArray<id<MTLCommandBuffer>> *markers = [NSMutableArray new];
+    NSMutableArray<NSNumber *> *sequences = [NSMutableArray new];
+    for (AMStream *stream in streams) {
+      id<MTLCommandBuffer> marker = nil;
+      uint64_t sequence = 0;
+      AMStatus status = enqueueMarker(stream, &marker, &sequence);
+      if (status.code) return status;
+      [markers addObject:marker];
+      [sequences addObject:@(sequence)];
+    }
+    // All queue snapshots are submitted before any queue is waited.
+    for (id<MTLCommandBuffer> marker in markers)
+      [marker waitUntilCompleted];
+
+    AMStatus first = ok();
+    for (NSUInteger index = 0; index < streams.count; ++index) {
+      AMStatus status = streamFailureThrough(streams[index],
+                                              sequences[index].unsignedLongLongValue);
+      if (status.code && !first.code) first = status;
+      else if (status.message) free(status.message);
+    }
+    return first;
+  }
+}
+
+AMStatus am_stream_complete(void *streamHandle, int32_t *complete) {
+  if (!streamHandle || !complete)
+    return failure(2, "null Metal stream completion argument");
+  AMStream *stream = (__bridge AMStream *)streamHandle;
+  NSString *message = nil;
+  @synchronized(stream) {
+    if (!stream.lastAcceptedComplete && stream.acceptedSequence) {
+      id<MTLCommandBuffer> latest = stream.pending[@(stream.acceptedSequence)];
+      if (latest &&
+          (latest.status == MTLCommandBufferStatusCompleted ||
+           latest.status == MTLCommandBufferStatusError)) {
+        NSString *error = latest.status == MTLCommandBufferStatusError
+            ? (latest.error.localizedDescription ?: @"Metal command failed") : nil;
+        stream.lastAcceptedComplete = YES;
+        stream.lastAcceptedFailed = error != nil;
+        stream.lastAcceptedError = error;
+        stream.completedSequence = MAX(stream.completedSequence,
+                                       stream.acceptedSequence);
+          if (stream.acceptedSequence > stream.synchronizedSequence)
+            stream.failures[@(stream.acceptedSequence)] = error;
+      }
+    }
+    *complete = stream.acceptedSequence == 0 || stream.lastAcceptedComplete ? 1 : 0;
+    if (*complete && stream.lastAcceptedFailed)
+      message = stream.lastAcceptedError;
+  }
+  return message ? failure(5, message.UTF8String) : ok();
+}
+
+AMStatus am_event(void *deviceHandle, void **out) {
+  @autoreleasepool {
+    if (!out) return failure(2, "null Metal event output");
+    *out = nullptr;
+    id<MTLDevice> device = deviceHandle
+        ? (__bridge id<MTLDevice>)deviceHandle : MTLCopyAllDevices().firstObject;
+    if (!device) return failure(1, "Metal device unavailable");
+    id<MTLSharedEvent> shared = [device newSharedEvent];
+    if (!shared) return failure(1, "Metal shared events are unavailable");
+    AMEvent *event = [AMEvent new];
+    event.device = device;
+    event.shared = shared;
+    *out = (__bridge_retained void *)event;
+    return ok();
+  }
+}
+
+AMStatus am_event_record(void *eventHandle, void *streamHandle,
+                         uint64_t *recordedValue) {
+  @autoreleasepool {
+    if (!eventHandle || !streamHandle || !recordedValue)
+      return failure(2, "null Metal event record argument");
+    AMEvent *event = (__bridge AMEvent *)eventHandle;
+    AMStream *stream = (__bridge AMStream *)streamHandle;
+    if (event.device.registryID != stream.device.registryID)
+      return failure(2, "Metal event and stream use different devices");
+
+    uint64_t value = 0;
+    @synchronized(event) {
+      const uint64_t current = MAX(event.lastScheduledValue, event.shared.signaledValue);
+      if (current == UINT64_MAX) return failure(2, "Metal event timeline exhausted");
+      value = current + 1;
+      event.lastScheduledValue = value;
+      id<MTLCommandBuffer> command = [stream.queue commandBuffer];
+      if (!command) return failure(5, "cannot create Metal event signal command");
+      command.label = @"arraymancer.event.record";
+      [command encodeSignalEvent:event.shared value:value];
+      AMStatus status = submitCommand(stream, command, @[event], nil, 0, {}, nullptr);
+      if (status.code) return status;
+      event.lastRecordedValue = value;
+    }
+    *recordedValue = value;
+    return ok();
+  }
+}
+
+AMStatus am_event_wait(void *streamHandle, void *eventHandle, uint64_t value,
+                       int32_t explicitValue) {
+  @autoreleasepool {
+    if (!streamHandle || !eventHandle ||
+        (explicitValue != 0 && explicitValue != 1))
+      return failure(2, "invalid Metal event wait argument");
+    AMStream *stream = (__bridge AMStream *)streamHandle;
+    AMEvent *event = (__bridge AMEvent *)eventHandle;
+    if (event.device.registryID != stream.device.registryID)
+      return failure(2, "Metal event and stream use different devices");
+    uint64_t target = value;
+    if (!explicitValue) {
+      @synchronized(event) { target = event.lastRecordedValue; }
+      if (!target) return failure(2, "cannot wait for an unrecorded Metal event");
+    }
+    id<MTLCommandBuffer> command = [stream.queue commandBuffer];
+    if (!command) return failure(5, "cannot create Metal event wait command");
+    command.label = @"arraymancer.event.wait";
+    [command encodeWaitForEvent:event.shared value:target];
+    return submitCommand(stream, command, @[event], nil, 0, {}, nullptr);
+  }
+}
+
+AMStatus am_event_signal(void *eventHandle, uint64_t value) {
+  if (!eventHandle) return failure(2, "null Metal event");
+  AMEvent *event = (__bridge AMEvent *)eventHandle;
+  @synchronized(event) {
+    const uint64_t current = MAX(event.lastScheduledValue, event.shared.signaledValue);
+    if (value <= current)
+      return failure(2, "Metal event signal must advance its timeline monotonically");
+    event.lastScheduledValue = value;
+    event.shared.signaledValue = value;
+  }
+  return ok();
 }
 AMStatus am_buffer(void *device, uint64_t bytes, void **buffer) {
   @autoreleasepool {
@@ -126,33 +598,19 @@ static bool broadcastAligned(AMTensorDescriptor input, AMTensorDescriptor output
   return true;
 }
 
-static AMStatus waitForProducer(AMBuffer *owner) {
-  if (!owner || !owner.producer) return ok();
-  [owner.producer waitUntilCompleted];
-  if (owner.producer.status == MTLCommandBufferStatusError)
-    return failure(5, owner.producer.error.localizedDescription.UTF8String);
-  return ok();
-}
-
-@interface AMCompute : NSObject
-@property(nonatomic, strong) id<MTLCommandQueue> queue;
-@property(nonatomic, strong) id<MTLLibrary> library;
-@property(nonatomic, strong) NSMutableDictionary<NSString *, id<MTLComputePipelineState>> *pipelines;
-@end
-@implementation AMCompute
-@end
-
 static AMCompute *compute(id<MTLDevice> device, const char *directory, NSError **error) {
   static NSMutableDictionary<NSNumber *, AMCompute *> *contexts = [NSMutableDictionary new];
+  if (!device || !directory) return nil;
   @synchronized(contexts) {
     AMCompute *context = contexts[@(device.registryID)];
     if (!context) {
       context = [AMCompute new];
-      context.queue = [device newCommandQueue];
+      context.state = deviceState(device, error);
       NSURL *url = [NSURL fileURLWithPath:
         [[NSString stringWithUTF8String:directory] stringByAppendingPathComponent:@"arraymancer.metallib"]];
+      if (!context.state) return nil;
       context.library = [device newLibraryWithURL:url error:error];
-      if (!context.library || !context.queue) return nil;
+      if (!context.library) return nil;
       context.pipelines = [NSMutableDictionary new];
       contexts[@(device.registryID)] = context;
     }
@@ -166,12 +624,13 @@ static id<MTLComputePipelineState> pipelineFor(AMCompute *context, NSString *nam
     if (!pipeline) {
       id<MTLFunction> function = [context.library newFunctionWithName:name];
       if (!function) return nil;
-      pipeline = [context.queue.device newComputePipelineStateWithFunction:function error:error];
+      pipeline = [context.state.device newComputePipelineStateWithFunction:function error:error];
       if (pipeline) context.pipelines[name] = pipeline;
     }
     return pipeline;
   }
 }
+
 static AMStatus runMathCommand(AMCompute *context,
                                id<MTLComputePipelineState> pipeline,
                                NSString *name, AMBuffer *a, AMBuffer *b,
@@ -180,20 +639,13 @@ static AMStatus runMathCommand(AMCompute *context,
                                AMMathParameters parameters,
                                uint64_t outputCount, MTLSize groups,
                                MTLSize threads, int32_t operation) {
-  AMStatus status = waitForProducer(a);
+  AMStream *stream = nil;
+  AMStatus status = selectedStream(output.buffer.device, context.state, &stream);
   if (status.code) return status;
-  if (b && b != a) {
-    status = waitForProducer(b);
-    if (status.code) return status;
-  }
-  if (output != a && output != b) {
-    status = waitForProducer(output);
-    if (status.code) return status;
-  }
-
-  id<MTLCommandBuffer> command = [context.queue commandBuffer];
+  id<MTLCommandBuffer> command = [stream.queue commandBuffer];
+  if (!command) return failure(5, "cannot create Metal math command");
   id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-  if (!command || !encoder) return failure(5, "cannot create Metal math command");
+  if (!encoder) return failure(5, "cannot create Metal math encoder");
   command.label = name;
   [encoder setComputePipelineState:pipeline];
   switch (operation) {
@@ -235,17 +687,18 @@ static AMStatus runMathCommand(AMCompute *context,
   [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
   [encoder endEncoding];
 
-  output.producer = command;
-  // This synchronous boundary keeps every storage owner alive through completion.
-  [command commit];
-  [command waitUntilCompleted];
-  if (command.status == MTLCommandBufferStatusError)
-    return failure(5, command.error.localizedDescription.UTF8String);
-
-  output.evidence = {nextInvocation.fetch_add(1), output.buffer.device.registryID,
-                     0, 0, 0, 1, 2, 100 + operation};
+  const uint64_t invocation = nextInvocation.fetch_add(1);
+  AMEvidence evidence = {invocation, output.buffer.device.registryID,
+                         0, 0, 0, 0, 2, 100 + operation};
+  NSMutableArray *leases = [NSMutableArray new];
+  if (a) [leases addObject:a];
+  if (b && b != a) [leases addObject:b];
+  if (output != a && output != b) [leases addObject:output];
+  [leases addObject:pipeline];
+  status = submitCommand(stream, command, leases, output, invocation, evidence, nullptr);
+  if (status.code) abandonBufferProducer(output, invocation);
   (void)outputCount;
-  return ok();
+  return status;
 }
 
 AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
@@ -439,22 +892,13 @@ AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,
     if (groupCount > UINT32_MAX || groupCount * width > UINT32_MAX)
       return failure(2, "Metal MSE backward grid exceeds index limits");
 
-    status = waitForProducer(upstream);
+    AMStream *stream = nil;
+    status = selectedStream(output.buffer.device, context.state, &stream);
     if (status.code) return status;
-    status = waitForProducer(prediction);
-    if (status.code) return status;
-    if (target != prediction) {
-      status = waitForProducer(target);
-      if (status.code) return status;
-    }
-    if (output != upstream && output != prediction && output != target) {
-      status = waitForProducer(output);
-      if (status.code) return status;
-    }
-
-    id<MTLCommandBuffer> command = [context.queue commandBuffer];
+    id<MTLCommandBuffer> command = [stream.queue commandBuffer];
+    if (!command) return failure(5, "cannot create Metal MSE backward command");
     id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-    if (!command || !encoder) return failure(5, "cannot create Metal MSE backward command");
+    if (!encoder) return failure(5, "cannot create Metal MSE backward encoder");
     command.label = name;
     [encoder setComputePipelineState:pipeline];
     [encoder setBuffer:upstream.buffer offset:0 atIndex:0];
@@ -469,18 +913,19 @@ AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,
         threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
     [encoder endEncoding];
 
-    output.producer = command;
-    [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-      (void)upstream; (void)prediction; (void)target; (void)output; (void)completed;
-    }];
-    [command commit];
-    [command waitUntilCompleted];
-    if (command.status == MTLCommandBufferStatusError)
-      return failure(5, command.error.localizedDescription.UTF8String);
-
-    output.evidence = {nextInvocation.fetch_add(1), output.buffer.device.registryID,
-                       0, 0, 0, 1, 2, 124};
-    return ok();
+    const uint64_t invocation = nextInvocation.fetch_add(1);
+    AMEvidence evidence = {invocation, output.buffer.device.registryID,
+                           0, 0, 0, 0, 2, 124};
+    NSMutableArray *leases = [NSMutableArray new];
+    [leases addObject:upstream];
+    [leases addObject:prediction];
+    if (target != prediction) [leases addObject:target];
+    if (output != upstream && output != prediction && output != target)
+      [leases addObject:output];
+    [leases addObject:pipeline];
+    status = submitCommand(stream, command, leases, output, invocation, evidence, nullptr);
+    if (status.code) abandonBufferProducer(output, invocation);
+    return status;
   }
 }
 
@@ -494,31 +939,39 @@ AMStatus am_transfer(void *buffer, AMTensorDescriptor d, void *host, int32_t upl
     if (!count) return ok();
     if (!host) return failure(2, "null host transfer pointer");
     const uint64_t width = dtypeWidth(d.dtype);
-    [owner.producer waitUntilCompleted];
-    if (owner.producer.status == MTLCommandBufferStatusError)
-      return failure(5, owner.producer.error.localizedDescription.UTF8String);
     auto *native = (char *)owner.buffer.contents;
     auto *cpu = (char *)host;
-    for (uint64_t n = 0; n < count; ++n) {
-      uint64_t rest = n;
-      int64_t index = d.offset;
-      for (int axis = d.rank - 1; axis >= 0; --axis) {
-        index += (int64_t)(rest % d.shape[axis]) * d.strides[axis];
-        rest /= d.shape[axis];
+    for (;;) {
+      status = waitForProducer(owner);
+      if (status.code) return status;
+      bool retry = false;
+      @synchronized(owner) {
+        if (owner.producer) {
+          retry = true;
+        } else {
+          for (uint64_t n = 0; n < count; ++n) {
+            uint64_t rest = n;
+            int64_t index = d.offset;
+            for (int axis = d.rank - 1; axis >= 0; --axis) {
+              index += (int64_t)(rest % d.shape[axis]) * d.strides[axis];
+              rest /= d.shape[axis];
+            }
+            if (upload) memcpy(native + index * width, cpu + n * width, width);
+            else memcpy(cpu + n * width, native + index * width, width);
+          }
+          AMEvidence evidence = owner.evidence;
+          if (upload) {
+            evidence.invocation_id = nextInvocation.fetch_add(1);
+            evidence.kind = 1;
+            evidence.kernel_bits = 0;
+          }
+          evidence.transfer_bytes += count * width;
+          evidence.completed = 1;
+          owner.evidence = evidence;
+        }
       }
-      if (upload) memcpy(native + index * width, cpu + n * width, width);
-      else memcpy(cpu + n * width, native + index * width, width);
+      if (!retry) return ok();
     }
-    AMEvidence evidence = owner.evidence;
-    if (upload) {
-      evidence.invocation_id = nextInvocation.fetch_add(1);
-      evidence.kind = 1;
-      evidence.kernel_bits = 0;
-    }
-    evidence.transfer_bytes += count * width;
-    evidence.completed = 1;
-    owner.evidence = evidence;
-    return ok();
   }
 }
 
@@ -544,11 +997,13 @@ AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
     NSString *name = [NSString stringWithFormat:@"copy%llu", dtypeWidth(input.dtype) * 8];
     id<MTLComputePipelineState> pipeline = pipelineFor(context, name, &error);
     if (!pipeline) return failure(8, error ? error.localizedDescription.UTF8String : "missing copy kernel");
-    [src.producer waitUntilCompleted];
-    [dst.producer waitUntilCompleted];
-    id<MTLCommandBuffer> command = [context.queue commandBuffer];
+    AMStream *stream = nil;
+    status = selectedStream(src.buffer.device, context.state, &stream);
+    if (status.code) return status;
+    id<MTLCommandBuffer> command = [stream.queue commandBuffer];
+    if (!command) return failure(5, "cannot create Metal copy command");
     id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-    if (!command || !encoder) return failure(5, "cannot create Metal copy command");
+    if (!encoder) return failure(5, "cannot create Metal copy encoder");
     command.label = name;
     [encoder setComputePipelineState:pipeline];
     [encoder setBuffer:src.buffer offset:0 atIndex:0];
@@ -558,16 +1013,13 @@ AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
     [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(MIN(count, pipeline.maxTotalThreadsPerThreadgroup), 1, 1)];
     [encoder endEncoding];
-    dst.producer = command;
-    // The command retains buffer resources; this lease additionally retains their owners.
-    [command addCompletedHandler:^(id<MTLCommandBuffer> completed) { (void)src; (void)dst; }];
-    [command commit];
-    [command waitUntilCompleted];
-    if (command.status == MTLCommandBufferStatusError)
-      return failure(5, command.error.localizedDescription.UTF8String);
-    dst.evidence = {nextInvocation.fetch_add(1), dst.buffer.device.registryID,
-      0, count * dtypeWidth(input.dtype), 0, 1, 2, (int32_t)(dtypeWidth(input.dtype) * 8)};
-    return ok();
+    const uint64_t invocation = nextInvocation.fetch_add(1);
+    AMEvidence evidence = {invocation, dst.buffer.device.registryID, 0,
+      count * dtypeWidth(input.dtype), 0, 0, 2, (int32_t)(dtypeWidth(input.dtype) * 8)};
+    status = submitCommand(stream, command, @[src, dst, pipeline], dst,
+                           invocation, evidence, nullptr);
+    if (status.code) abandonBufferProducer(dst, invocation);
+    return status;
   }
 }
 
@@ -586,10 +1038,13 @@ AMStatus am_set_element(void *destination, AMTensorDescriptor output,
     NSString *name = [NSString stringWithFormat:@"set%llu", dtypeWidth(output.dtype) * 8];
     id<MTLComputePipelineState> pipeline = pipelineFor(context, name, &error);
     if (!pipeline) return failure(8, error ? error.localizedDescription.UTF8String : "missing mutation kernel");
-    [dst.producer waitUntilCompleted];
-    id<MTLCommandBuffer> command = [context.queue commandBuffer];
+    AMStream *stream = nil;
+    status = selectedStream(dst.buffer.device, context.state, &stream);
+    if (status.code) return status;
+    id<MTLCommandBuffer> command = [stream.queue commandBuffer];
+    if (!command) return failure(5, "cannot create Metal mutation command");
     id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-    if (!command || !encoder) return failure(5, "cannot create Metal mutation command");
+    if (!encoder) return failure(5, "cannot create Metal mutation encoder");
     command.label = name;
     [encoder setComputePipelineState:pipeline];
     [encoder setBuffer:dst.buffer offset:0 atIndex:0];
@@ -597,18 +1052,12 @@ AMStatus am_set_element(void *destination, AMTensorDescriptor output,
     [encoder setBytes:&output length:sizeof(output) atIndex:2];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    dst.producer = command;
-    [command addCompletedHandler:^(id<MTLCommandBuffer> completed) { (void)dst; }];
-    [command commit];
-    [command waitUntilCompleted];
-    if (command.status == MTLCommandBufferStatusError)
-      return failure(5, command.error.localizedDescription.UTF8String);
-    AMEvidence evidence = dst.evidence;
-    evidence.invocation_id = nextInvocation.fetch_add(1);
-    evidence.completed = 1;
-    evidence.kind = 2;
-    evidence.kernel_bits = -(int32_t)(dtypeWidth(output.dtype) * 8);
-    dst.evidence = evidence;
-    return ok();
+    const uint64_t invocation = nextInvocation.fetch_add(1);
+    AMEvidence evidence = {invocation, dst.buffer.device.registryID,
+                           0, 0, 0, 0, 2, -(int32_t)(dtypeWidth(output.dtype) * 8)};
+    status = submitCommand(stream, command, @[dst, pipeline], dst,
+                           invocation, evidence, nullptr);
+    if (status.code) abandonBufferProducer(dst, invocation);
+    return status;
   }
 }
