@@ -1,0 +1,154 @@
+{
+  "format": 1,
+  "asset": {
+    "path": "parity.aimodel",
+    "kind": "directory",
+    "sha256": "816de430d498c845b11ebe4e9b1d3385f1f52f33ec9cbb7d59a854891358de58",
+    "hash_algorithm": "sha256(relative_posix_path + NUL + lowercase_file_sha256 + LF, sorted by relative path)",
+    "files": [
+      {
+        "path": "main.hash",
+        "sha256": "b599811a4b60f1770b258551909bcd7ab3bf39fb73913a2d16b7fe1657704c03",
+        "bytes": 32
+      },
+      {
+        "path": "main.mlirb",
+        "sha256": "3b1148f6d89eadd2ef4f16ff86a9cf1d47cb11b706ecd504a86d44876db2aa1f",
+        "bytes": 851
+      },
+      {
+        "path": "metadata.json",
+        "sha256": "e14fd3b90416e10f30708c2c945e316b6f2e45aa7db7be4c531292aff00173eb",
+        "bytes": 105
+      }
+    ]
+  },
+  "versions": {
+    "python": "3.13.18",
+    "torch": "2.15.0",
+    "torch_git_commit": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+    "coreai_torch": "0.4.3",
+    "coreai_core": "1.0.0b3"
+  },
+  "source_models": {
+    "identity": {
+      "class": "Identity",
+      "forward": "return x.clone()",
+      "example": {
+        "dtype": "float32",
+        "shape": [
+          2
+        ],
+        "values": [
+          1.25,
+          -2.0
+        ]
+      },
+      "graph_signature": {
+        "user_inputs": [
+          "x"
+        ],
+        "user_outputs": [
+          "clone"
+        ],
+        "registered_inputs": [
+          "x"
+        ],
+        "registered_outputs": [
+          "y"
+        ]
+      },
+      "inputs": [
+        {
+          "name": "x",
+          "dtype": "float32",
+          "shape": [
+            2
+          ],
+          "dynamic_dimensions": []
+        }
+      ],
+      "outputs": [
+        {
+          "name": "y",
+          "dtype": "float32",
+          "shape": [
+            2
+          ],
+          "dynamic_dimensions": []
+        }
+      ]
+    },
+    "identity_matrix": {
+      "class": "IdentityMatrix",
+      "forward": "return x.clone()",
+      "example": {
+        "dtype": "float32",
+        "shape": [
+          2,
+          3
+        ],
+        "values": [
+          [
+            1.0,
+            2.0,
+            3.0
+          ],
+          [
+            4.0,
+            5.0,
+            6.0
+          ]
+        ]
+      },
+      "graph_signature": {
+        "user_inputs": [
+          "x"
+        ],
+        "user_outputs": [
+          "clone"
+        ],
+        "registered_inputs": [
+          "x"
+        ],
+        "registered_outputs": [
+          "y"
+        ]
+      },
+      "inputs": [
+        {
+          "name": "x",
+          "dtype": "float32",
+          "shape": [
+            "rows",
+            3
+          ],
+          "dynamic_dimensions": [
+            {
+              "name": "rows",
+              "min": 1,
+              "max": 8
+            }
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "y",
+          "dtype": "float32",
+          "shape": [
+            "rows",
+            3
+          ],
+          "dynamic_dimensions": [
+            {
+              "name": "rows",
+              "min": 1,
+              "max": 8
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
