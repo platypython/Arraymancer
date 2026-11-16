@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Execute float32 Metal broadcasting, tiled matmul, scalar arithmetic and
+  deterministic reductions on the GPU, including strided inputs and alias-safe
+  in-place updates. Separate pinned MPS fixtures verify native arithmetic.
 - Preserve Metal aliasing across transposes, offsets and negative strides. Checked
   GPU element mutation rejects overlapping destinations; `clone` and ordered
   `asContiguous` materialize into independent native storage when required.

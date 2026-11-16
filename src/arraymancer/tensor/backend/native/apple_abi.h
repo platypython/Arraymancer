@@ -24,6 +24,13 @@ AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
                  AMTensorDescriptor output, const char *library_dir);
 AMStatus am_set_element(void *destination, AMTensorDescriptor output,
                         const void *value, const char *library_dir);
+typedef struct {
+  int32_t operation, scalar_input, axis, reserved;
+  float scalar;
+} AMMathParameters;
+AMStatus am_math(void *a, AMTensorDescriptor ad, void *b, AMTensorDescriptor bd,
+                 void *output, AMTensorDescriptor od, AMMathParameters parameters,
+                 const char *library_dir);
 void am_message_free(char *message);
 void am_retain(void *handle);
 void am_release(void *handle);

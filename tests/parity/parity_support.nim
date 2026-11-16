@@ -345,6 +345,63 @@ proc loadFixtures*(path: string): JsonNode =
     invalid("cannot read fixtures " & path & ": " & e.msg)
   validateFixtureData(result, loadReference())
 
+proc validateMetalTensor(node: JsonNode) =
+  let shape = field(node, "shape")
+  require(shape.kind == JArray, "Metal fixture shape must be an array")
+  var size = 1
+  for dimension in shape:
+    require(dimension.kind == JInt and dimension.getInt >= 0, "Invalid Metal dimension")
+    let dim = dimension.getInt
+    require(dim == 0 or size <= high(int) div dim, "Metal fixture shape overflow")
+    size *= dim
+  require(field(node, "numel").kind == JInt and node["numel"].getInt == size,
+    "Metal fixture numel mismatch")
+  require(field(node, "dtype").getStr == "float32" and field(node, "device").getStr in ["mps", "mps:0"],
+    "Metal reference observations must be float32 on MPS")
+  let values = field(node, "values")
+  require(values.kind == JArray and values.len == size, "Metal fixture values mismatch")
+  for value in values:
+    require((value.kind in {JInt, JFloat} and classify(value.getFloat) notin {fcNan, fcInf, fcNegInf}) or
+      (value.kind == JString and value.getStr in ["nan", "+inf", "-inf"]), "Invalid Metal fixture value")
+
+proc validateMetalFixtures*(data: JsonNode) =
+  require(field(data, "format") == %1, "Unsupported Metal fixture format")
+  let reference = loadReference()
+  requireSameReference(data, reference, "Metal fixtures")
+  let oracle = field(data, "oracle")
+  require(field(oracle, "torch").getStr.split('+')[0] == reference["torch"].getStr and
+    field(oracle, "python").getStr == reference["python"].getStr and
+    field(oracle, "device").getStr == "mps", "Metal oracle provenance mismatch")
+  let ids = ["tensor.transpose_alias", "tensor.broadcast_same_rank", "tensor.broadcast_leading_dims",
+    "tensor.matmul_2d", "autograd.mean_gradient", "loss.mse_mean", "optim.sgd_step"]
+  let cases = field(data, "cases")
+  require(cases.kind == JArray and cases.len == ids.len, "Exactly seven Metal reference cases required")
+  var seen = initHashSet[string]()
+  for item in cases:
+    let id = text(field(item, "id"), "Metal case id")
+    require(id in ids and id notin seen, "Unknown or duplicate Metal case " & id)
+    seen.incl(id)
+    for key in ["atol", "rtol"]:
+      let tolerance = field(item, key)
+      require(tolerance.kind in {JInt, JFloat} and tolerance.getFloat >= 0 and
+        classify(tolerance.getFloat) notin {fcNan, fcInf, fcNegInf}, "Invalid Metal tolerance")
+    let inputs = field(item, "inputs")
+    for key, value in inputs:
+      if value.kind == JObject and value.hasKey("shape"): expectInputTensor(value)
+    let expected = field(item, "expected")
+    let outputs = case id
+      of "tensor.transpose_alias": @["base", "view"]
+      of "autograd.mean_gradient", "loss.mse_mean": @["loss", "grad"]
+      of "optim.sgd_step": @["prediction", "loss", "grad", "weights_after_step", "grad_after_step", "grad_after_zero"]
+      else: @["result"]
+    require(expected.kind == JObject and expected.len == outputs.len, "Metal expected outputs incomplete")
+    for key in outputs: validateMetalTensor(field(expected, key))
+
+proc loadMetalFixtures*(path = "tests/parity/metal_fixtures.json"): JsonNode =
+  try: result = parseFile(path)
+  except CatchableError as error: invalid("Cannot read Metal fixtures: " & error.msg)
+  validateMetalFixtures(result)
+
 proc compareValue(expected, actual: JsonNode, path: string, atol, rtol: float64, diffs: var seq[Difference]) =
   template addDiff(e, a: JsonNode) = diffs.add Difference(path: path, expected: e, actual: a)
   if expected.kind != actual.kind:

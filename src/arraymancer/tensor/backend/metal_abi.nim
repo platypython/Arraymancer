@@ -20,6 +20,9 @@ type
     invocationId*, registryId*, transferBytes*, materializationBytes*: uint64
     cpuFallbackCount*: uint64
     completed*, kind*, kernelBits*: int32
+  AMMathParameters* {.bycopy.} = object
+    operation*, scalarInput*, axis*, reserved*: int32
+    scalar*: float32
   MetalApi* = object
     messageFree*: proc(message: cstring) {.cdecl, raises: [].}
     retain*, release*: proc(handle: pointer) {.cdecl, raises: [].}
@@ -32,6 +35,9 @@ type
     copy*: proc(source: pointer; input: AMDescriptor; destination: pointer;
       output: AMDescriptor; libraryDir: cstring): AMStatus {.cdecl.}
     setElement*: proc(destination: pointer; output: AMDescriptor; value: pointer;
+      libraryDir: cstring): AMStatus {.cdecl.}
+    math*: proc(a: pointer; ad: AMDescriptor; b: pointer; bd: AMDescriptor;
+      output: pointer; od: AMDescriptor; parameters: AMMathParameters;
       libraryDir: cstring): AMStatus {.cdecl.}
 const arraymancerAppleLibDir* {.strdefine.} = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir / "build/apple"
 var api: MetalApi
@@ -61,6 +67,7 @@ proc metalApi*(): MetalApi =
       resolve(transfer, "am_transfer")
       resolve(copy, "am_copy")
       resolve(setElement, "am_set_element")
+      resolve(math, "am_math")
       library = handle
     result = api
 

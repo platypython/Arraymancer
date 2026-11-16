@@ -1,0 +1,453 @@
+{
+  "format": 1,
+  "reference": {
+    "format": 1,
+    "torch": "2.15.0",
+    "source_commit": "31a77fc9c0a7c6fff15a1ff58c743f53b1a9d457",
+    "python": "3.13.18",
+    "apple": {
+      "xcode": "27.1",
+      "xcode_build": "27A9275",
+      "macos_sdk": "27.0",
+      "swift": "6.4",
+      "minimum_macos": "27.0",
+      "architecture": "arm64",
+      "metal_api": "4"
+    }
+  },
+  "oracle": {
+    "torch": "2.15.0",
+    "python": "3.13.18",
+    "git_commit": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+    "torch_config": "PyTorch built with:\n  - GCC 4.2\n  - C++ Version: 202002\n  - clang 21.0.0\n  - OpenMP 202011\n  - LAPACK is enabled (usually provided by MKL)\n  - NNPACK is enabled\n  - CPU capability usage: DEFAULT\n  - Build settings: BLAS_INFO=accelerate, BUILD_TYPE=Release, COMMIT_SHA=d0f2af8b66b20da4baa50644c0cd3f887a2eae2e, CUDA_FLAGS= -DLIBCUDACXX_ENABLE_SIMPLIFIED_COMPLEX_OPERATIONS -Xfatbin -compress-all  -Wno-deprecated-gpu-targets --expt-extended-lambda -DCUB_WRAPPED_NAMESPACE=at_cuda_detail -DDISABLE_CUSPARSE_DEPRECATED -DCUDA_HAS_FP16=1 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -DC10_NODEPRECATED, CXX_COMPILER=/usr/bin/c++, CXX_FLAGS= -fvisibility-inlines-hidden -DUSE_PTHREADPOOL -DNDEBUG -DUSE_KINETO -DUSE_PYTORCH_QNNPACK -DAT_BUILD_ARM_VEC256_WITH_SLEEF -DUSE_PYTORCH_METAL_EXPORT -DSYMBOLICATE_MOBILE_DEBUG_HANDLE -DUSE_COREML_DELEGATE -O2 -fPIC -DC10_NODEPRECATED -Wall -Wextra -Werror=return-type -Werror=non-virtual-dtor -Werror=braced-scalar-init -Werror=range-loop-construct -Werror=bool-operation -Wnarrowing -Wno-missing-field-initializers -Wno-unknown-pragmas -Wno-unused-parameter -Wno-strict-overflow -Wno-strict-aliasing -Wvla-extension -Wsuggest-override -Wnewline-eof -Winconsistent-missing-override -Winconsistent-missing-destructor-override -Wno-pass-failed -Wno-error=old-style-cast -Wconstant-conversion -Qunused-arguments -faligned-new -fno-math-errno -fno-trapping-math -Werror=format -fclang-abi-compat=17 -DUSE_MPS -Wno-missing-braces, LAPACK_INFO=accelerate, TORCH_VERSION=2.15.0, USE_CUDA=OFF, USE_CUDNN=OFF, USE_CUSPARSELT=OFF, USE_EIGEN_FOR_BLAS=ON, USE_GFLAGS=OFF, USE_GLOG=OFF, USE_GLOO=ON, USE_HIPSPARSELT=OFF, USE_MKL=OFF, USE_MKLDNN=OFF, USE_MPI=OFF, USE_NCCL=OFF, USE_NNPACK=ON, USE_OPENMP=ON, USE_ROCM=OFF, USE_ROCM_KERNEL_ASSERT=OFF, USE_XCCL=OFF, USE_XPU=OFF, \n",
+    "device": "mps",
+    "device_name": null,
+    "mps_built": true,
+    "mps_available": true,
+    "platform": {
+      "system": "Darwin",
+      "release": "27.0.0",
+      "machine": "arm64"
+    },
+    "mps_fallback": "0"
+  },
+  "cases": [
+    {
+      "id": "tensor.transpose_alias",
+      "inputs": {
+        "a": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "mutation": {
+          "index": [
+            0,
+            1
+          ],
+          "value": 9
+        }
+      },
+      "expected": {
+        "base": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            1.0,
+            2.0,
+            3.0,
+            9.0,
+            5.0,
+            6.0
+          ]
+        },
+        "view": {
+          "shape": [
+            3,
+            2
+          ],
+          "numel": 6,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            1.0,
+            9.0,
+            2.0,
+            5.0,
+            3.0,
+            6.0
+          ]
+        }
+      },
+      "atol": 1e-06,
+      "rtol": 1e-06
+    },
+    {
+      "id": "tensor.broadcast_same_rank",
+      "inputs": {
+        "a": {
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            0,
+            10
+          ]
+        },
+        "b": {
+          "shape": [
+            1,
+            3
+          ],
+          "values": [
+            0,
+            1,
+            2
+          ]
+        }
+      },
+      "expected": {
+        "result": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            0.0,
+            1.0,
+            2.0,
+            10.0,
+            11.0,
+            12.0
+          ]
+        }
+      },
+      "atol": 1e-06,
+      "rtol": 1e-06
+    },
+    {
+      "id": "tensor.broadcast_leading_dims",
+      "inputs": {
+        "a": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        "b": {
+          "shape": [
+            3
+          ],
+          "values": [
+            10,
+            20,
+            30
+          ]
+        }
+      },
+      "expected": {
+        "result": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            10.0,
+            21.0,
+            32.0,
+            13.0,
+            24.0,
+            35.0
+          ]
+        }
+      },
+      "atol": 1e-06,
+      "rtol": 1e-06
+    },
+    {
+      "id": "tensor.matmul_2d",
+      "inputs": {
+        "a": {
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "b": {
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            5,
+            6,
+            7,
+            8
+          ]
+        }
+      },
+      "expected": {
+        "result": {
+          "shape": [
+            2,
+            2
+          ],
+          "numel": 4,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            19.0,
+            22.0,
+            43.0,
+            50.0
+          ]
+        }
+      },
+      "atol": 1e-06,
+      "rtol": 1e-06
+    },
+    {
+      "id": "autograd.mean_gradient",
+      "inputs": {
+        "x": {
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4
+          ]
+        }
+      },
+      "expected": {
+        "loss": {
+          "shape": [],
+          "numel": 1,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            2.5
+          ]
+        },
+        "grad": {
+          "shape": [
+            2,
+            2
+          ],
+          "numel": 4,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            0.25,
+            0.25,
+            0.25,
+            0.25
+          ]
+        }
+      },
+      "atol": 1e-06,
+      "rtol": 1e-06
+    },
+    {
+      "id": "loss.mse_mean",
+      "inputs": {
+        "prediction": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "target": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "expected": {
+        "loss": {
+          "shape": [],
+          "numel": 1,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            15.166666984558105
+          ]
+        },
+        "grad": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            0.3333333432674408,
+            0.6666666865348816,
+            1.0,
+            1.3333333730697632,
+            1.6666667461395264,
+            2.0
+          ]
+        }
+      },
+      "atol": 1e-06,
+      "rtol": 1e-06
+    },
+    {
+      "id": "optim.sgd_step",
+      "inputs": {
+        "weights": {
+          "shape": [
+            2
+          ],
+          "values": [
+            1,
+            2
+          ]
+        },
+        "input": {
+          "shape": [
+            2
+          ],
+          "values": [
+            3,
+            4
+          ]
+        },
+        "target": {
+          "shape": [],
+          "values": [
+            0
+          ]
+        },
+        "learning_rate": 0.01
+      },
+      "expected": {
+        "prediction": {
+          "shape": [],
+          "numel": 1,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            11.0
+          ]
+        },
+        "loss": {
+          "shape": [],
+          "numel": 1,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            121.0
+          ]
+        },
+        "grad": {
+          "shape": [
+            2
+          ],
+          "numel": 2,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            66.0,
+            88.0
+          ]
+        },
+        "weights_after_step": {
+          "shape": [
+            2
+          ],
+          "numel": 2,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            0.3400000333786011,
+            1.1200000047683716
+          ]
+        },
+        "grad_after_step": {
+          "shape": [
+            2
+          ],
+          "numel": 2,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            66.0,
+            88.0
+          ]
+        },
+        "grad_after_zero": {
+          "shape": [
+            2
+          ],
+          "numel": 2,
+          "dtype": "float32",
+          "device": "mps:0",
+          "values": [
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "atol": 1e-06,
+      "rtol": 1e-06
+    }
+  ]
+}

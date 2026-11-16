@@ -67,6 +67,24 @@ suite "Pinned PyTorch conformance foundation":
     malformed["oracle"]["python"] = %"3.13.0"
     expect ValueError: validateFixtureData(malformed, reference)
 
+  test "Metal reference data requires every subcase and exact tensor metadata":
+    let fixtures = loadMetalFixtures(parityRoot & "metal_fixtures.json")
+    var malformed = duplicate(fixtures)
+    malformed["cases"] = withoutFirst(malformed["cases"])
+    expect ValueError: validateMetalFixtures(malformed)
+    malformed = duplicate(fixtures)
+    malformed["cases"][1]["id"] = malformed["cases"][0]["id"]
+    expect ValueError: validateMetalFixtures(malformed)
+    malformed = duplicate(fixtures)
+    malformed["cases"][0]["atol"] = %(-1.0)
+    expect ValueError: validateMetalFixtures(malformed)
+    malformed = duplicate(fixtures)
+    malformed["cases"][0]["expected"]["base"]["dtype"] = %"float64"
+    expect ValueError: validateMetalFixtures(malformed)
+    malformed = duplicate(fixtures)
+    malformed["cases"][0]["expected"]["base"]["numel"] = %7
+    expect ValueError: validateMetalFixtures(malformed)
+
   test "Invalid selectors fail before execution":
     expect ValueError: discard parseSelection(@["--profile=unknown"])
     expect ValueError: discard parseSelection(@["--case=tensor.matmul_2d"])
