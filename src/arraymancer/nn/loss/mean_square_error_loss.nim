@@ -23,8 +23,8 @@ type MSELoss*[TT] {.final.} = ref object of Gate[TT]
 proc mse_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
   let self = MSELoss[TT](self)
   let gradient = payload.variable.grad
-  # Gradient is a tensor of shape 1
-  assert gradient.shape == [1]
+  # Gradient is a rank-zero tensor.
+  assert gradient.rank == 0
   let grad = gradient.unsafe_raw_offset[0]
 
   type T = typeof(grad)
@@ -61,13 +61,15 @@ proc mse_loss*[TT](input: Variable[TT], target: TT): Variable[TT] =
   ## Input:
   ##   - An input variable of predicted values of shape [batch_size, features]
   ##   - The ground truth of the same shape
+  ## The returned value is an initialized rank-zero tensor (shape `[]`) containing one scalar.
   ## The loss averages over every input element; backward uses the same divisor.
 
   # Resulting var
   new result
   result.context = input.context
-  # TODO: implement a Scalar[T] concept instead of rewrapping the result into a Tensor
-  result.value = [mean_squared_error(input.value, target)].toTensor
+  let loss = mean_squared_error(input.value, target)
+  result.value = newTensorUninit[typeof(loss)]([])
+  result.value.unsafe_raw_offset[0] = loss
 
   # Caching for backprop
   if input.is_grad_needed:

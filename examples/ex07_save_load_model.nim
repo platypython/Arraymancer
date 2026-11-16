@@ -81,7 +81,7 @@ for t in 0 ..< 250:
     y_pred = model.forward(x)
     loss = y_pred.mse_loss(y)
 
-  echo &"Epoch {t}: loss {loss.value[0]}"
+  echo &"Epoch {t}: loss {loss.value.atContiguousIndex(0)}"
 
   loss.backprop()
   optim.update()

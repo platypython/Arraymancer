@@ -51,6 +51,24 @@ proc main() =
 
       check: va.grad == constantTensor
 
+    test "MSE returns a scalar and backpropagates the mean gradient":
+      let
+        prediction = [1'f32, 2, 3, 4].toTensor.reshape(2, 2)
+        target = zeros[float32](2, 2)
+        ctx = newContext Tensor[float32]
+      let vprediction = ctx.variable(prediction, requires_grad = true)
+      let loss = vprediction.mse_loss(target)
+
+      check: loss.value.rank == 0
+      check: loss.value.size == 1
+      check: loss.value.atContiguousIndex(0) == 7.5'f32
+
+      loss.backprop()
+
+      check: loss.grad.rank == 0
+      check: vprediction.grad == [0.5'f32, 1, 1.5, 2].toTensor.reshape(2, 2)
+
+
     test "Gradient of mean along one axis":
 
       let a = toSeq(1..8).toTensor.reshape(2,4).asType(float32)
