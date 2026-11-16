@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Verify concurrent calls on shared Core AI functions with isolated writable
+  outputs and state, including deterministic same-state rejection and owner
+  retention while an unrelated inference completes.
 - Execute authentic Core AI declared mutable state and caller-provided outputs
   through both run and stream encoding. Owned arrays and shared Metal views
   retain state updates and exclude conflicting access until completion.
