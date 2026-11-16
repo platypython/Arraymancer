@@ -274,15 +274,15 @@ Detailed API is available at Arraymancer official [documentation](https://mratsi
 `nimble parity` compares nine native CPU cases with checked-in PyTorch 2.15.0
 observations and writes `build/pytorch-parity.json`. It also reports ten required
 Metal training contracts and eight required Core AI inference contracts.
-These Apple contracts have no native execution observations yet, so the strict
-command exits nonzero even if every CPU case matches. Full feature parity is
-not established.
+Apple observations run only when the corresponding native backend is compiled
+in; unobserved contracts fail the strict gate even when every CPU case matches.
+Passing the selected contracts does not establish full feature parity.
 
 After building, use `build/pytorch_parity --profile=cpu --case=tensor.matmul_2d`
 for a single CPU case, or `build/pytorch_parity --profile=apple` for the dedicated
 Apple coverage gate. Exit codes are 0 for a passing selection, 1 for observed
 differences or unobserved required coverage, and 2 for invalid input or I/O errors.
-Normal checks need no Python, reference checkout, Apple SDK, or accelerator.
+CPU-only checks need no Python, reference checkout, Apple SDK, or accelerator.
 
 The version pins and source provenance live in `tests/parity/`. Capability
 annotations describe inspected implementation evidence, not passing tests.
@@ -292,6 +292,20 @@ Developers can regenerate it with `tools/pytorch_inventory.nim` against the pinn
 commit in `ref/pytorch`; `--check` detects stale inventory without rewriting it.
 The separate `tests/parity/references/generate_fixtures.py` oracle requires
 CPython 3.13.18 and Torch 2.15.0. Neither is an Arraymancer runtime dependency.
+
+On macOS 27 arm64, build the optional native adapters and the architecture-specific
+Core AI test model with `nim c -r tools/build_apple.nim`. Use `--backend=metal` to
+build only Metal. Enable `-d:metal` or `-d:coreai` when compiling the parity runner;
+the latter also includes the Metal adapter used for interop. Run Metal profiling
+checks with `MTL_CAPTURE_ENABLED=1`.
+
+Core AI loads real `.aimodel` and SDK-matching `.aimodelc` assets through Swift.
+Its compute preferences are not proof of GPU or Neural Engine execution.
+Regenerating `tests/apple/models/parity.aimodel` is a separate developer step:
+`tests/parity/references/generate_coreai_models.py` requires CPython 3.13.18,
+Torch 2.15.0, `coreai-torch==0.4.3` and `coreai-core==1.0.0b3` in
+`build/coreai-oracle`. Checked-in assets and their SHA-256 manifest let native
+checks run without Python or network access.
 
 ## Features
 

@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Load authentic Core AI source and architecture-matched compiled models through
+  a native Swift adapter. Named descriptors enforce dtype, shape and rank;
+  retained asynchronous jobs preserve inputs across waits and timeouts.
+  Float32/int32 host transfers copy logical values without implicit conversion.
 - Compile custom Metal shaders or load metallibs, cache native pipelines and
   dispatch retained contiguous buffer bindings with byte offsets. Native errors
   and conflicting queued mutable leases remain visible.

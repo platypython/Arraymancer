@@ -93,6 +93,62 @@ AMStatus am_kernel(void *library, const char *name, void **out);
 AMStatus am_dispatch(void *kernel, const AMKernelBinding *bindings,
                      uint32_t count, AMGrid grid, AMGrid group, void *stream);
 AMStatus am_transfer(void *buffer, AMTensorDescriptor descriptor, void *host, int32_t upload);
+typedef struct {
+  char *name;
+  char *dtype;
+  int32_t rank;
+  int32_t dynamic_shape;
+  int32_t resolved;
+  int32_t reserved;
+  int64_t shape[8];
+  int64_t strides[8];
+  uint64_t minimum_bytes;
+  uint64_t host_copy_bytes;
+} ACArrayDescriptor;
+typedef struct {
+  const char *name;
+  void *array;
+} ACBinding;
+typedef struct {
+  uint64_t invocation_id;
+  int32_t completed;
+  int32_t kind;
+  int32_t requested_policy;
+  int32_t actual_placement;
+  uint32_t available_mask;
+  uint32_t allowed_mask;
+  int32_t preferred_unit;
+  int32_t reserved;
+  uint64_t host_copy_bytes;
+  uint64_t materialization_bytes;
+  uint64_t cpu_fallback_count;
+  char *asset_digest;
+  char *function_name;
+  char *architecture;
+} ACEvidence;
+void ac_message_free(char *message);
+void ac_retain(void *handle);
+void ac_release(void *handle);
+AMStatus ac_architecture(char **out);
+AMStatus ac_available_units(uint32_t *mask);
+AMStatus ac_model_open(const char *path, int32_t policy, void **job);
+AMStatus ac_job_wait(void *job, uint32_t timeout_ms);
+AMStatus ac_job_model(void *job, void **model);
+AMStatus ac_function_count(void *model, uint32_t *count);
+AMStatus ac_function_name(void *model, uint32_t index, char **name);
+AMStatus ac_function_load(void *model, const char *name, void **function);
+AMStatus ac_descriptor_count(void *function, int32_t kind, uint32_t *count);
+AMStatus ac_descriptor(void *function, int32_t kind, uint32_t index,
+                       ACArrayDescriptor *out);
+AMStatus ac_array_import(const void *host, AMTensorDescriptor descriptor,
+                         void **array);
+AMStatus ac_array_copy(void *array, void *host, AMTensorDescriptor descriptor);
+AMStatus ac_array_descriptor(void *array, ACArrayDescriptor *out);
+AMStatus ac_submit(void *function, const ACBinding *inputs, uint32_t count,
+                   void **job);
+AMStatus ac_job_output_count(void *job, uint32_t *count);
+AMStatus ac_job_output(void *job, uint32_t index, char **name, void **array);
+AMStatus ac_job_evidence(void *job, ACEvidence *out);
 #ifdef __cplusplus
 }
 #endif

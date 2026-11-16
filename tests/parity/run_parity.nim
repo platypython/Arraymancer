@@ -17,6 +17,8 @@ import std/[json, os, parseopt]
 import ./[parity_support, native_cases]
 when defined(metal) or defined(coreai):
   import ./native_metal_cases
+when defined(coreai):
+  import ./native_coreai_cases
 
 const parityRoot* = "tests/parity/"
 const usage = "Usage: pytorch_parity [--profile=all|cpu|apple|apple-metal|apple-coreai] [--case=ID | --requirement=ID] [--fixtures=PATH] [--output=PATH] [--help]"
@@ -121,6 +123,9 @@ proc collectReport*(selection: Selection): JsonNode =
   when defined(metal) or defined(coreai):
     if "apple-metal" in selection.profiles:
       observations = runMetalRequirements(selection.requirementId)
+  when defined(coreai):
+    if "apple-coreai" in selection.profiles:
+      observations.add runCoreAIRequirements(selection.requirementId)
   let appleCoverage = collectAppleCoverage(requirements, capabilities, selection.profiles,
     observations, selection.requirementId)
   var appleCounts = %*{"required": appleCoverage.len, "partial": 0, "missing": 0,
