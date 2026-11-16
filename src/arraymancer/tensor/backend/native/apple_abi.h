@@ -43,7 +43,7 @@ AMStatus am_device_count(int32_t *count);
 AMStatus am_device(int32_t index, void **device, uint64_t *identity);
 /* A returned stream/event is a retained native handle; use am_release. */
 AMStatus am_stream(void *device, int32_t mode, void **out, uint64_t *identity);
-void am_stream_set(void *stream);
+AMStatus am_stream_set(void *stream);
 AMStatus am_stream_sync(void *stream);
 AMStatus am_device_sync(void *device);
 AMStatus am_stream_complete(void *stream, int32_t *complete);

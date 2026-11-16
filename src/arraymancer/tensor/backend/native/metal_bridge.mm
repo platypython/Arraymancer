@@ -354,7 +354,7 @@ AMStatus am_stream(void *deviceHandle, int32_t mode, void **out,
   }
 }
 
-void am_stream_set(void *streamHandle) {
+AMStatus am_stream_set(void *streamHandle) {
   @autoreleasepool {
     NSMutableDictionary *dictionary = NSThread.currentThread.threadDictionary;
     if (streamHandle)
@@ -362,6 +362,7 @@ void am_stream_set(void *streamHandle) {
     else
       [dictionary removeObjectForKey:currentStreamKey];
   }
+  return ok();
 }
 
 AMStatus am_stream_sync(void *streamHandle) {
