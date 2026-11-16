@@ -56,7 +56,11 @@ func checkedMetalSize*(shape: Metadata): int =
     if dim != 0 and suffix > high(int) div dim:
       raise newException(MetalError, "Metal shape overflow")
     suffix *= dim
-  discard suffix
+  var prefix = 1
+  for dim in shape:
+    if dim != 0 and prefix > high(int) div dim:
+      raise newException(MetalError, "Metal shape overflow")
+    prefix *= dim
   shape.shapeProduct
 
 func rank*[T](t: MetalTensor[T]): int = t.shape.len

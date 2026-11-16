@@ -22,6 +22,8 @@ typedef struct {
 AMStatus am_buffer_evidence(void *buffer, AMEvidence *evidence);
 AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
                  AMTensorDescriptor output, const char *library_dir);
+AMStatus am_set_element(void *destination, AMTensorDescriptor output,
+                        const void *value, const char *library_dir);
 void am_message_free(char *message);
 void am_retain(void *handle);
 void am_release(void *handle);

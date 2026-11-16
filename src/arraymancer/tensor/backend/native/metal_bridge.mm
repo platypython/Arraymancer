@@ -155,6 +155,19 @@ static AMCompute *compute(id<MTLDevice> device, const char *directory, NSError *
   }
 }
 
+static id<MTLComputePipelineState> pipelineFor(AMCompute *context, NSString *name, NSError **error) {
+  @synchronized(context) {
+    id<MTLComputePipelineState> pipeline = context.pipelines[name];
+    if (!pipeline) {
+      id<MTLFunction> function = [context.library newFunctionWithName:name];
+      if (!function) return nil;
+      pipeline = [context.queue.device newComputePipelineStateWithFunction:function error:error];
+      if (pipeline) context.pipelines[name] = pipeline;
+    }
+    return pipeline;
+  }
+}
+
 AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
                  AMTensorDescriptor output, const char *directory) {
   @autoreleasepool {
@@ -174,17 +187,8 @@ AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
     AMCompute *context = compute(src.buffer.device, directory, &error);
     if (!context) return failure(6, error ? error.localizedDescription.UTF8String : "Metal queue unavailable");
     NSString *name = [NSString stringWithFormat:@"copy%llu", dtypeWidth(input.dtype) * 8];
-    id<MTLComputePipelineState> pipeline;
-    @synchronized(context) {
-      pipeline = context.pipelines[name];
-      if (!pipeline) {
-        id<MTLFunction> function = [context.library newFunctionWithName:name];
-        if (!function) return failure(7, "missing copy kernel");
-        pipeline = [src.buffer.device newComputePipelineStateWithFunction:function error:&error];
-        if (!pipeline) return failure(8, error.localizedDescription.UTF8String);
-        context.pipelines[name] = pipeline;
-      }
-    }
+    id<MTLComputePipelineState> pipeline = pipelineFor(context, name, &error);
+    if (!pipeline) return failure(8, error ? error.localizedDescription.UTF8String : "missing copy kernel");
     [src.producer waitUntilCompleted];
     [dst.producer waitUntilCompleted];
     id<MTLCommandBuffer> command = [context.queue commandBuffer];
@@ -208,6 +212,48 @@ AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
       return failure(5, command.error.localizedDescription.UTF8String);
     dst.evidence = {nextInvocation.fetch_add(1), dst.buffer.device.registryID,
       0, count * dtypeWidth(input.dtype), 0, 1, 2, (int32_t)(dtypeWidth(input.dtype) * 8)};
+    return ok();
+  }
+}
+
+AMStatus am_set_element(void *destination, AMTensorDescriptor output,
+                        const void *value, const char *directory) {
+  @autoreleasepool {
+    if (!destination || !value || !directory) return failure(2, "null mutation argument");
+    AMBuffer *dst = (__bridge AMBuffer *)destination;
+    uint64_t count;
+    AMStatus status = validate(dst, output, count);
+    if (status.code) return status;
+    if (output.rank != 0 || count != 1) return failure(2, "element mutation needs scalar descriptor");
+    NSError *error = nil;
+    AMCompute *context = compute(dst.buffer.device, directory, &error);
+    if (!context) return failure(6, error ? error.localizedDescription.UTF8String : "Metal queue unavailable");
+    NSString *name = [NSString stringWithFormat:@"set%llu", dtypeWidth(output.dtype) * 8];
+    id<MTLComputePipelineState> pipeline = pipelineFor(context, name, &error);
+    if (!pipeline) return failure(8, error ? error.localizedDescription.UTF8String : "missing mutation kernel");
+    [dst.producer waitUntilCompleted];
+    id<MTLCommandBuffer> command = [context.queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+    if (!command || !encoder) return failure(5, "cannot create Metal mutation command");
+    command.label = name;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:dst.buffer offset:0 atIndex:0];
+    [encoder setBytes:value length:dtypeWidth(output.dtype) atIndex:1];
+    [encoder setBytes:&output length:sizeof(output) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [encoder endEncoding];
+    dst.producer = command;
+    [command addCompletedHandler:^(id<MTLCommandBuffer> completed) { (void)dst; }];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status == MTLCommandBufferStatusError)
+      return failure(5, command.error.localizedDescription.UTF8String);
+    AMEvidence evidence = dst.evidence;
+    evidence.invocation_id = nextInvocation.fetch_add(1);
+    evidence.completed = 1;
+    evidence.kind = 2;
+    evidence.kernel_bits = -(int32_t)(dtypeWidth(output.dtype) * 8);
+    dst.evidence = evidence;
     return ok();
   }
 }

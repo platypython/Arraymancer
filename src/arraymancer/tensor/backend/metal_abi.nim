@@ -31,6 +31,8 @@ type
     evidence*: proc(buffer: pointer; evidence: ptr AMEvidence): AMStatus {.cdecl.}
     copy*: proc(source: pointer; input: AMDescriptor; destination: pointer;
       output: AMDescriptor; libraryDir: cstring): AMStatus {.cdecl.}
+    setElement*: proc(destination: pointer; output: AMDescriptor; value: pointer;
+      libraryDir: cstring): AMStatus {.cdecl.}
 const arraymancerAppleLibDir* {.strdefine.} = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir / "build/apple"
 var api: MetalApi
 var library: LibHandle
@@ -58,6 +60,7 @@ proc metalApi*(): MetalApi =
       resolve(evidence, "am_buffer_evidence")
       resolve(transfer, "am_transfer")
       resolve(copy, "am_copy")
+      resolve(setElement, "am_set_element")
       library = handle
     result = api
 

@@ -30,3 +30,14 @@ COPY_KERNEL(copy8, uchar)
 COPY_KERNEL(copy16, ushort)
 COPY_KERNEL(copy32, uint)
 COPY_KERNEL(copy64, ulong)
+
+#define SET_KERNEL(NAME, TYPE) \
+kernel void NAME(device TYPE *destination [[buffer(0)]], \
+                 constant TYPE &value [[buffer(1)]], \
+                 constant Descriptor &output [[buffer(2)]]) { \
+  destination[output.offset] = value; \
+}
+SET_KERNEL(set8, uchar)
+SET_KERNEL(set16, ushort)
+SET_KERNEL(set32, uint)
+SET_KERNEL(set64, ulong)

@@ -44,7 +44,7 @@ proc newMetalTensorUninit*[T: KnownSupportsCopyMem](shape: varargs[int]; device:
 proc newMetalTensorUninit*[T: KnownSupportsCopyMem](shape: varargs[int]): MetalTensor[T] =
   newMetalTensorUninit[T](shape, nil)
 
-proc descriptor[T](t: MetalTensor[T]): AMDescriptor =
+proc descriptor*[T](t: MetalTensor[T]): AMDescriptor =
   result.rank = int32(t.rank)
   result.dtype = metalDtype[T]()
   result.capacity = t.storage.capacity
