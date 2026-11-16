@@ -3,22 +3,22 @@
   "asset": {
     "path": "parity.aimodel",
     "kind": "directory",
-    "sha256": "816de430d498c845b11ebe4e9b1d3385f1f52f33ec9cbb7d59a854891358de58",
+    "sha256": "e91527ccfb9f670b715a7ec5abf95b6845795767bfb4d878b272d263de7fa739",
     "hash_algorithm": "sha256(relative_posix_path + NUL + lowercase_file_sha256 + LF, sorted by relative path)",
     "files": [
       {
         "path": "main.hash",
-        "sha256": "b599811a4b60f1770b258551909bcd7ab3bf39fb73913a2d16b7fe1657704c03",
+        "sha256": "2f1adca76a46edfca820751057a10fb141fde060441cf785434ce441c2b67bab",
         "bytes": 32
       },
       {
         "path": "main.mlirb",
-        "sha256": "3b1148f6d89eadd2ef4f16ff86a9cf1d47cb11b706ecd504a86d44876db2aa1f",
-        "bytes": 851
+        "sha256": "021027e77edb04292626d9c60e506d79b60ff7199416160ca1addfcc5848a961",
+        "bytes": 1718
       },
       {
         "path": "metadata.json",
-        "sha256": "e14fd3b90416e10f30708c2c945e316b6f2e45aa7db7be4c531292aff00173eb",
+        "sha256": "15fb267123ce6f96ba3f4edf2caf580f95626ddfc9b724093f85de7f8b0cbe8d",
         "bytes": 105
       }
     ]
@@ -147,6 +147,82 @@
               "max": 8
             }
           ]
+        }
+      ]
+    },
+    "increment": {
+      "class": "Increment",
+      "forward": "self.counter.add_(delta); return self.counter.clone()",
+      "example": {
+        "initial_state": {
+          "dtype": "float32",
+          "shape": [],
+          "value": 0.0
+        },
+        "inputs": {
+          "delta": {
+            "dtype": "float32",
+            "shape": [],
+            "value": 1.0
+          }
+        },
+        "outputs": {
+          "y": {
+            "dtype": "float32",
+            "shape": [],
+            "value": 1.0
+          }
+        },
+        "state_after": {
+          "counter": {
+            "dtype": "float32",
+            "shape": [],
+            "value": 1.0
+          }
+        }
+      },
+      "graph_signature": {
+        "user_inputs": [
+          "delta"
+        ],
+        "user_outputs": [
+          "clone"
+        ],
+        "buffers_to_mutate": {
+          "add": "counter"
+        },
+        "registered_inputs": [
+          "delta"
+        ],
+        "registered_outputs": [
+          "y"
+        ],
+        "registered_states": [
+          "counter"
+        ]
+      },
+      "inputs": [
+        {
+          "name": "delta",
+          "dtype": "float32",
+          "shape": [],
+          "dynamic_dimensions": []
+        }
+      ],
+      "outputs": [
+        {
+          "name": "y",
+          "dtype": "float32",
+          "shape": [],
+          "dynamic_dimensions": []
+        }
+      ],
+      "states": [
+        {
+          "name": "counter",
+          "dtype": "float32",
+          "shape": [],
+          "dynamic_dimensions": []
         }
       ]
     }

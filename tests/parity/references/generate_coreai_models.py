@@ -93,6 +93,42 @@ def _remove_path(path: Path) -> None:
         path.unlink()
 
 
+def _increment_entrypoint_manifest(exported_program: Any) -> dict[str, Any]:
+    """Validate and describe the exported mutable scalar counter contract."""
+    graph_signature = exported_program.graph_signature
+    user_inputs = list(graph_signature.user_inputs)
+    user_outputs = list(graph_signature.user_outputs)
+    buffers_to_mutate = dict(graph_signature.buffers_to_mutate)
+    if len(user_inputs) != 1 or user_inputs[0] != "delta":
+        raise ValueError(f"increment export must have only the delta input; got {user_inputs!r}")
+    if len(user_outputs) != 1:
+        raise ValueError(f"increment export must have one user output; got {user_outputs!r}")
+    if len(buffers_to_mutate) != 1 or "counter" not in buffers_to_mutate.values():
+        raise ValueError(
+            "increment export must mutate exactly the registered counter buffer; "
+            f"got {buffers_to_mutate!r}"
+        )
+    return {
+        "graph_signature": {
+            "user_inputs": user_inputs,
+            "user_outputs": user_outputs,
+            "buffers_to_mutate": buffers_to_mutate,
+            "registered_inputs": ["delta"],
+            "registered_outputs": ["y"],
+            "registered_states": ["counter"],
+        },
+        "inputs": [
+            {"name": "delta", "dtype": "float32", "shape": [], "dynamic_dimensions": []}
+        ],
+        "outputs": [
+            {"name": "y", "dtype": "float32", "shape": [], "dynamic_dimensions": []}
+        ],
+        "states": [
+            {"name": "counter", "dtype": "float32", "shape": [], "dynamic_dimensions": []}
+        ],
+    }
+
+
 def _entrypoint_manifest(
     exported_program: Any,
     *,
@@ -146,6 +182,16 @@ def _build_asset(torch: Any, asset_path: Path) -> tuple[dict[str, Any], dict[str
         def forward(self, x: Any) -> Any:
             return x.clone()
 
+    class Increment(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.register_buffer("counter", torch.zeros((), dtype=torch.float32))
+
+        def forward(self, delta: Any) -> Any:
+            self.counter.add_(delta)
+            return self.counter.clone()
+
+
     torch.set_num_threads(1)
     identity_input = torch.tensor([1.25, -2.0], dtype=torch.float32)
     identity_export = torch_export.export(Identity(), (identity_input,)).run_decompositions(
@@ -161,6 +207,21 @@ def _build_asset(torch: Any, asset_path: Path) -> tuple[dict[str, Any], dict[str
         (matrix_input,),
         dynamic_shapes={"x": {0: rows_dimension}},
     ).run_decompositions(coreai_torch.get_decomp_table())
+    increment_delta = torch.tensor(1.0, dtype=torch.float32)
+    increment_export = torch_export.export(Increment(), (increment_delta,)).run_decompositions(
+        coreai_torch.get_decomp_table()
+    )
+    increment_state = increment_export.state_dict.get("counter")
+    if (
+        increment_state is None
+        or increment_state.dtype != torch.float32
+        or tuple(increment_state.shape) != ()
+    ):
+        raise ValueError(
+            "increment export must retain a scalar float32 counter buffer; "
+            f"got {increment_state!r}"
+        )
+
 
     converter = coreai_torch.TorchConverter()
     converter.add_exported_program(
@@ -175,6 +236,14 @@ def _build_asset(torch: Any, asset_path: Path) -> tuple[dict[str, Any], dict[str
         output_names=["y"],
         entrypoint_name="identity_matrix",
     )
+    converter.add_exported_program(
+        increment_export,
+        input_names=["delta"],
+        output_names=["y"],
+        state_names=["counter"],
+        entrypoint_name="increment",
+    )
+
     converter.to_coreai().save_asset(asset_path)
 
     files, asset_sha256 = _asset_hashes(asset_path)
@@ -212,6 +281,21 @@ def _build_asset(torch: Any, asset_path: Path) -> tuple[dict[str, Any], dict[str
                     input_shape=["rows", 3],
                     dynamic_dimensions=[{"name": "rows", "min": 1, "max": 8}],
                 ),
+            },
+            "increment": {
+                "class": "Increment",
+                "forward": "self.counter.add_(delta); return self.counter.clone()",
+                "example": {
+                    "initial_state": {"dtype": "float32", "shape": [], "value": 0.0},
+                    "inputs": {
+                        "delta": {"dtype": "float32", "shape": [], "value": 1.0}
+                    },
+                    "outputs": {"y": {"dtype": "float32", "shape": [], "value": 1.0}},
+                    "state_after": {
+                        "counter": {"dtype": "float32", "shape": [], "value": 1.0}
+                    },
+                },
+                **_increment_entrypoint_manifest(increment_export),
             },
         },
     }

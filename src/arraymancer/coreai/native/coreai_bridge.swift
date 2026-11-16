@@ -231,8 +231,86 @@ private final class BorrowedMetalStorage: @unchecked Sendable {
 }
 
 @available(macOS 27.0, *)
+private final class CoreOwnedAccessLease: @unchecked Sendable {
+  private let storage: CoreOwnedStorage
+  private let write: Bool
+  private let released = Mutex<Bool>(false)
+
+  init(storage: CoreOwnedStorage, write: Bool) {
+    self.storage = storage
+    self.write = write
+  }
+
+  func release() {
+    let shouldRelease = released.withLock { value -> Bool in
+      guard !value else { return false }
+      value = true
+      return true
+    }
+    if shouldRelease { storage.endAccess(write: write) }
+  }
+
+  deinit {
+    release()
+  }
+}
+
+@available(macOS 27.0, *)
+private final class CoreOwnedStorage: @unchecked Sendable {
+  private let arrayLock = NSLock()
+  private var array: NDArray
+  private let admissionLock = NSLock()
+  private var activeReaders = 0
+  private var activeWriter = false
+
+  init(_ array: NDArray) {
+    self.array = array
+  }
+
+  func snapshot() -> NDArray {
+    arrayLock.lock()
+    defer { arrayLock.unlock() }
+    return array
+  }
+
+  func replace(_ array: NDArray) {
+    arrayLock.lock()
+    self.array = array
+    arrayLock.unlock()
+  }
+
+  func beginAccess(write: Bool) throws -> CoreOwnedAccessLease {
+    admissionLock.lock()
+    defer { admissionLock.unlock() }
+    if write {
+      guard !activeWriter && activeReaders == 0 else {
+        throw abiError(105, "buffer_busy: Core AI owned array is already in use")
+      }
+      activeWriter = true
+    } else {
+      guard !activeWriter else {
+        throw abiError(105, "buffer_busy: Core AI owned array has an active writer")
+      }
+      activeReaders += 1
+    }
+    return CoreOwnedAccessLease(storage: self, write: write)
+  }
+
+  fileprivate func endAccess(write: Bool) {
+    admissionLock.lock()
+    if write {
+      activeWriter = false
+    } else {
+      precondition(activeReaders > 0, "Core AI owned array read admission underflow")
+      activeReaders -= 1
+    }
+    admissionLock.unlock()
+  }
+}
+
+@available(macOS 27.0, *)
 private enum CoreArrayStorage {
-  case owned(NDArray)
+  case owned(CoreOwnedStorage)
   case borrowed(BorrowedMetalStorage)
 }
 
@@ -250,7 +328,7 @@ private final class CoreArrayHandle: @unchecked Sendable {
     minimumBytes: UInt64,
     retaining borrowedOwners: [BorrowedMetalStorage] = []
   ) {
-    self.storage = .owned(array)
+    self.storage = .owned(CoreOwnedStorage(array))
     self.name = name
     self.minimumBytes = minimumBytes
     self.retainedBorrowedOwners = borrowedOwners
@@ -265,21 +343,21 @@ private final class CoreArrayHandle: @unchecked Sendable {
 
   var shape: [Int] {
     switch storage {
-    case let .owned(array): array.shape
+    case let .owned(value): value.snapshot().shape
     case let .borrowed(value): value.shape
     }
   }
 
   var strides: [Int] {
     switch storage {
-    case let .owned(array): array.strides
+    case let .owned(value): value.snapshot().strides
     case let .borrowed(value): value.strides
     }
   }
 
   var scalarType: NDArray.ScalarType {
     switch storage {
-    case let .owned(array): array.scalarType
+    case let .owned(value): value.snapshot().scalarType
     case let .borrowed(value): value.scalarType
     }
   }
@@ -357,6 +435,118 @@ private final class CoreBufferReadLease: @unchecked Sendable {
   }
 }
 
+@available(macOS 27.0, *)
+private enum CoreArrayLeaseBacking: Sendable {
+  case owned(CoreOwnedAccessLease)
+  case borrowed(CoreBufferReadLease)
+}
+
+@available(macOS 27.0, *)
+private final class CoreArrayAccessLease: @unchecked Sendable {
+  private let backing: CoreArrayLeaseBacking
+  let producerCount: UInt64
+
+  init(handle: CoreArrayHandle, write: Bool) throws {
+    switch handle.storage {
+    case let .owned(storage):
+      self.backing = .owned(try storage.beginAccess(write: write))
+      self.producerCount = 0
+    case let .borrowed(storage):
+      let lease = try CoreBufferReadLease(ownerHandle: storage.ownerHandle, access: write ? 1 : 0)
+      self.backing = .borrowed(lease)
+      self.producerCount = lease.producerCount
+    }
+  }
+
+  func waitForProducers() async throws {
+    if case let .borrowed(lease) = backing {
+      try await lease.waitForProducers()
+    }
+  }
+
+  func waitSynchronously() throws {
+    if case let .borrowed(lease) = backing {
+      try checkMetalStatus(am_buffer_lease_wait(lease.nativeHandle), fallback: 103)
+    }
+  }
+
+  func release() {
+    switch backing {
+    case let .owned(lease): lease.release()
+    case let .borrowed(lease): lease.release()
+    }
+  }
+}
+
+@available(macOS 27.0, *)
+private enum CoreArrayStorageKey: Hashable {
+  case owned(ObjectIdentifier)
+  case borrowed(UInt64)
+}
+
+@available(macOS 27.0, *)
+private func storageKey(_ handle: CoreArrayHandle) -> CoreArrayStorageKey {
+  switch handle.storage {
+  case let .owned(storage): .owned(ObjectIdentifier(storage))
+  case let .borrowed(storage): .borrowed(storage.identity)
+  }
+}
+
+@available(macOS 27.0, *)
+private func acquireInferenceLeases(
+  inputNames: [String],
+  inputs: [String: CoreArrayHandle],
+  stateNames: [String],
+  states: [String: CoreArrayHandle],
+  outputNames: [String],
+  outputViews: [String: CoreArrayHandle]
+) throws -> [CoreArrayAccessLease] {
+  var accessByStorage: [CoreArrayStorageKey: Bool] = [:]
+  var leases: [CoreArrayAccessLease] = []
+  leases.reserveCapacity(inputNames.count + stateNames.count + outputNames.count)
+
+  func acquire(_ name: String, from bindings: [String: CoreArrayHandle], write: Bool) throws {
+    guard let handle = bindings[name] else {
+      throw abiError(102, "missing Core AI \(write ? "mutable" : "input") binding \(name)")
+    }
+    let key = storageKey(handle)
+    if let existingWrite = accessByStorage[key] {
+      if write || existingWrite {
+        throw abiError(105, "buffer_busy: Core AI call aliases a mutable array with another binding")
+      }
+      return
+    }
+    leases.append(try CoreArrayAccessLease(handle: handle, write: write))
+    accessByStorage[key] = write
+  }
+
+  for name in inputNames { try acquire(name, from: inputs, write: false) }
+  for name in stateNames { try acquire(name, from: states, write: true) }
+  for name in outputNames { try acquire(name, from: outputViews, write: true) }
+  return leases
+}
+@available(macOS 27.0, *)
+private func validateBorrowedInferenceDevices(
+  bindings: [[String: CoreArrayHandle]],
+  expectedRegistryID: UInt64? = nil
+) throws {
+  var registryID = expectedRegistryID
+  for group in bindings {
+    for handle in group.values {
+      guard case let .borrowed(storage) = handle.storage else { continue }
+      guard storage.metalBuffer.storageMode == .shared else {
+        throw abiError(102, "Core AI borrowed arrays require shared Metal-buffer storage")
+      }
+      let actualID = storage.metalBuffer.device.registryID
+      if let registryID, registryID != actualID {
+        throw abiError(102, "Core AI borrowed arrays and stream use different Metal devices")
+      }
+      registryID = actualID
+    }
+  }
+}
+
+
 
 @available(macOS 27.0, *)
 private enum JobOutcome: Sendable {
@@ -425,9 +615,12 @@ private final class CoreJobHandle: @unchecked Sendable {
 @available(macOS 27.0, *)
 private final class CoreAIStreamExecutor: Sendable {
   private enum Request: Sendable {
-    case encode(CoreFunctionHandle, [String], [String: CoreArrayHandle],
-                [(name: String, storage: BorrowedMetalStorage)], CoreJobHandle,
-                CheckedContinuation<[String: CoreArrayHandle], Error>)
+    case encode(
+      CoreFunctionHandle, [String], [String: CoreArrayHandle],
+      [String: CoreArrayHandle], [String: CoreArrayHandle],
+      [BorrowedMetalStorage], CoreJobHandle,
+      CheckedContinuation<[String: CoreArrayHandle], Error>
+    )
     case completion(CheckedContinuation<Void, Never>)
   }
   private struct QueueReference: @unchecked Sendable {
@@ -444,12 +637,13 @@ private final class CoreAIStreamExecutor: Sendable {
       let computeStream = ComputeStream(commandQueue: queue.queue)
       for await request in requests.stream {
         switch request {
-        case let .encode(function, names, bindings, outputs, job, completion):
+        case let .encode(function, names, bindings, states, outputs, borrowedOwners, job, completion):
           do {
             let result = try await Self.performEncode(
               computeStream: computeStream, commandQueue: queue.queue,
               function: function, inputNames: names, bindings: bindings,
-              outputBindings: outputs, job: job)
+              stateBindings: states, outputBindings: outputs,
+              borrowedOwners: borrowedOwners, job: job)
             completion.resume(returning: result)
           } catch {
             completion.resume(throwing: error)
@@ -467,11 +661,15 @@ private final class CoreAIStreamExecutor: Sendable {
   func encode(
     function: CoreFunctionHandle, inputNames: [String],
     bindings: [String: CoreArrayHandle],
-    outputBindings: [(name: String, storage: BorrowedMetalStorage)],
+    stateBindings: [String: CoreArrayHandle],
+    outputBindings: [String: CoreArrayHandle],
+    borrowedOwners: [BorrowedMetalStorage],
     job: CoreJobHandle
   ) async throws -> [String: CoreArrayHandle] {
     try await withCheckedThrowingContinuation { completion in
-      continuation.yield(.encode(function, inputNames, bindings, outputBindings, job, completion))
+      continuation.yield(.encode(
+        function, inputNames, bindings, stateBindings, outputBindings, borrowedOwners, job, completion
+      ))
     }
   }
 
@@ -1010,9 +1208,10 @@ private func copySdkArray(
       layout: layout
     )
   }
-  guard case let .owned(array) = handle.storage else {
+  guard case let .owned(storage) = handle.storage else {
     throw abiError(103, "unknown Core AI NDArray storage")
   }
+  let array = storage.snapshot()
   let actualShape = array.shape
   let actualStrides = array.strides
   guard actualShape.map(Int64.init) == layout.shape else {
@@ -1210,9 +1409,6 @@ private func validateFunctionInputs(
   bindings: [String: CoreArrayHandle]
 ) throws -> [String] {
   let descriptor = function.function.descriptor
-  guard descriptor.stateNames.isEmpty else {
-    throw abiError(102, "function declares state but this ABI does not accept state bindings")
-  }
   let expectedNames = descriptor.inputNames
   guard Set(expectedNames).count == expectedNames.count,
         Set(bindings.keys) == Set(expectedNames), bindings.count == expectedNames.count else {
@@ -1251,12 +1447,49 @@ private func validateFunctionInputs(
   }
   return expectedNames
 }
+@available(macOS 27.0, *)
+private func validateFunctionStates(
+  function: CoreFunctionHandle,
+  bindings: [String: CoreArrayHandle]
+) throws -> [String] {
+  let descriptor = function.function.descriptor
+  let expectedNames = descriptor.stateNames
+  guard Set(expectedNames).count == expectedNames.count,
+        Set(bindings.keys) == Set(expectedNames), bindings.count == expectedNames.count else {
+    throw abiError(102, "mutable state bindings must exactly match the model's named states")
+  }
+  for name in expectedNames {
+    guard let expected = descriptor.stateDescriptor(of: name),
+          case let .ndArray(expectedArray) = expected,
+          let actual = bindings[name] else {
+      throw abiError(102, "missing or invalid Core AI state \(name)")
+    }
+    guard actual.scalarType == expectedArray.scalarType else {
+      throw abiError(102, "dtype mismatch for Core AI state \(name)")
+    }
+    let actualShape = actual.shape
+    guard actualShape.count == expectedArray.shape.count else {
+      throw abiError(102, "rank mismatch for Core AI state \(name)")
+    }
+    for axis in expectedArray.shape.indices {
+      let expectedDimension = expectedArray.shape[axis]
+      guard actualShape[axis] >= 0,
+            expectedDimension == -1 || expectedDimension == actualShape[axis] else {
+        throw abiError(102, "shape mismatch for Core AI state \(name)")
+      }
+    }
+    guard abiType(for: actual.scalarType) != nil else {
+      throw abiError(102, "Core AI state supports only float32 and int32")
+    }
+  }
+  return expectedNames
+}
+
 
 @available(macOS 27.0, *)
 private func validateFunctionOutputViews(
   function: CoreFunctionHandle,
-  bindings: [String: CoreArrayHandle],
-  commandQueue: any MTLCommandQueue
+  bindings: [String: CoreArrayHandle]
 ) throws -> [String] {
   let descriptor = function.function.descriptor
   let expectedNames = descriptor.outputNames
@@ -1295,15 +1528,6 @@ private func validateFunctionOutputViews(
     guard abiType(for: actual.scalarType) != nil else {
       throw abiError(102, "Core AI output views support only float32 and int32")
     }
-    guard case let .borrowed(storage) = actual.storage else {
-      throw abiError(102, "Core AI output views require shared Metal-buffer storage")
-    }
-    guard storage.metalBuffer.storageMode == .shared else {
-      throw abiError(102, "Core AI output views require shared MTLBuffer storage")
-    }
-    guard storage.metalBuffer.device.registryID == commandQueue.device.registryID else {
-      throw abiError(102, "Core AI output view and stream use different Metal devices")
-    }
   }
   return expectedNames
 }
@@ -1316,7 +1540,9 @@ extension CoreAIStreamExecutor {
     function: CoreFunctionHandle,
     inputNames: [String],
     bindings: [String: CoreArrayHandle],
-    outputBindings: [(name: String, storage: BorrowedMetalStorage)],
+    stateBindings: [String: CoreArrayHandle],
+    outputBindings: [String: CoreArrayHandle],
+    borrowedOwners: [BorrowedMetalStorage],
     job: CoreJobHandle
   ) async throws -> [String: CoreArrayHandle] {
     var asyncInputs: [String: InferenceFunction.AsyncValue] = [:]
@@ -1326,8 +1552,8 @@ extension CoreAIStreamExecutor {
         throw abiError(102, "missing Core AI input \(name)")
       }
       switch binding.storage {
-      case let .owned(array):
-        asyncInputs[name] = InferenceFunction.AsyncValue(array)
+      case let .owned(storage):
+        asyncInputs[name] = InferenceFunction.AsyncValue(storage.snapshot())
       case let .borrowed(storage):
         guard storage.metalBuffer.device.registryID == commandQueue.device.registryID else {
           throw abiError(102, "Core AI input \(name) and stream use different Metal devices")
@@ -1344,16 +1570,20 @@ extension CoreAIStreamExecutor {
     }
 
     let expectedNames = function.function.descriptor.outputNames
-    let outputViewNames = Set(outputBindings.map { $0.name })
+    let outputViewNames = Set(outputBindings.keys)
     let expectedAllocatedNames = expectedNames.filter { !outputViewNames.contains($0) }
-    let views = InferenceFunction.AsyncMutableViews()
-    let sdkOutputs = try await encodeWithOutputViews(
+    let sdkOutputs = try await encodeWithStates(
       computeStream: computeStream,
       function: function.function,
       inputs: asyncInputs,
+      stateNames: function.function.descriptor.stateNames,
+      stateBindings: stateBindings,
+      stateIndex: 0,
+      stateViews: InferenceFunction.AsyncMutableViews(),
       outputBindings: outputBindings,
-      index: 0,
-      views: consume views,
+      outputNames: outputBindings.keys.sorted(),
+      outputIndex: 0,
+      outputViews: InferenceFunction.AsyncMutableViews(),
       job: job
     )
     let reportedNames = Array(sdkOutputs.keys)
@@ -1365,37 +1595,111 @@ extension CoreAIStreamExecutor {
     var outputs: [String: CoreArrayHandle] = [:]
     outputs.reserveCapacity(expectedAllocatedNames.count)
     for name in expectedAllocatedNames {
-      guard let output = sdkOutputs[name] else {
-        throw abiError(102, "Core AI omitted allocated output \(name)")
-      }
-      guard let array = try await output.ndArray else {
-        throw abiError(102, "Core AI output \(name) is not an NDArray")
+      guard let output = sdkOutputs[name],
+            let array = try await output.ndArray else {
+        throw abiError(102, "Core AI omitted allocated NDArray output \(name)")
       }
       outputs[name] = CoreArrayHandle(
         array: array,
         name: name,
-        minimumBytes: try sdkArrayMinimumBytes(array)
+        minimumBytes: try sdkArrayMinimumBytes(array),
+        retaining: borrowedOwners
       )
     }
     return outputs
+  }
+
+  private static func encodeWithStates(
+    computeStream: ComputeStream,
+    function: InferenceFunction,
+    inputs: [String: InferenceFunction.AsyncValue],
+    stateNames: [String],
+    stateBindings: [String: CoreArrayHandle],
+    stateIndex: Int,
+    stateViews: consuming InferenceFunction.AsyncMutableViews,
+    outputBindings: [String: CoreArrayHandle],
+    outputNames: [String],
+    outputIndex: Int,
+    outputViews: consuming InferenceFunction.AsyncMutableViews,
+    job: CoreJobHandle
+  ) async throws -> [String: InferenceFunction.AsyncValue] {
+    var currentStates = consume stateViews
+    guard stateIndex < stateNames.count else {
+      return try await encodeWithOutputViews(
+        computeStream: computeStream,
+        function: function,
+        inputs: inputs,
+        states: consume currentStates,
+        outputBindings: outputBindings,
+        outputNames: outputNames,
+        outputIndex: outputIndex,
+        outputViews: consume outputViews,
+        job: job
+      )
+    }
+
+    let name = stateNames[stateIndex]
+    guard let handle = stateBindings[name] else {
+      throw abiError(102, "missing Core AI mutable state \(name)")
+    }
+    switch handle.storage {
+    case let .owned(storage):
+      var mutableValue = InferenceFunction.AsyncMutableValue(storage.snapshot())
+      currentStates.insert(&mutableValue, for: name)
+      let result = try await encodeWithStates(
+        computeStream: computeStream, function: function, inputs: inputs,
+        stateNames: stateNames, stateBindings: stateBindings, stateIndex: stateIndex + 1,
+        stateViews: consume currentStates, outputBindings: outputBindings,
+        outputNames: outputNames, outputIndex: outputIndex,
+        outputViews: consume outputViews, job: job
+      )
+      guard let updated = try await mutableValue.ndArray else {
+        throw abiError(103, "Core AI did not return mutable state \(name)")
+      }
+      storage.replace(updated)
+      return result
+    case let .borrowed(storage):
+      var mutableValue = unsafe InferenceFunction.AsyncMutableValue(
+        unsafeBuffer: storage.metalBuffer,
+        byteOffset: storage.byteOffset,
+        scalarType: storage.scalarType,
+        shape: storage.shape,
+        strides: storage.strides,
+        interleaveLayout: nil
+      )
+      currentStates.insert(&mutableValue, for: name)
+      let result = try await encodeWithStates(
+        computeStream: computeStream, function: function, inputs: inputs,
+        stateNames: stateNames, stateBindings: stateBindings, stateIndex: stateIndex + 1,
+        stateViews: consume currentStates, outputBindings: outputBindings,
+        outputNames: outputNames, outputIndex: outputIndex,
+        outputViews: consume outputViews, job: job
+      )
+      withExtendedLifetime(mutableValue) {}
+      return result
+    }
   }
 
   private static func encodeWithOutputViews(
     computeStream: ComputeStream,
     function: InferenceFunction,
     inputs: [String: InferenceFunction.AsyncValue],
-    outputBindings: [(name: String, storage: BorrowedMetalStorage)],
-    index: Int,
-    views: consuming InferenceFunction.AsyncMutableViews,
+    states: consuming InferenceFunction.AsyncMutableViews,
+    outputBindings: [String: CoreArrayHandle],
+    outputNames: [String],
+    outputIndex: Int,
+    outputViews: consuming InferenceFunction.AsyncMutableViews,
     job: CoreJobHandle
   ) async throws -> [String: InferenceFunction.AsyncValue] {
-    var currentViews = consume views
-    guard index < outputBindings.count else {
+    let currentStates = consume states
+    var currentOutputs = consume outputViews
+    guard outputIndex < outputNames.count else {
       let outputs: [String: InferenceFunction.AsyncValue]
       do {
         outputs = try function.encode(
           inputs: inputs,
-          outputViews: consume currentViews,
+          states: consume currentStates,
+          outputViews: consume currentOutputs,
           to: computeStream
         )
       } catch {
@@ -1408,27 +1712,44 @@ extension CoreAIStreamExecutor {
       return outputs
     }
 
-    let binding = outputBindings[index]
-    var mutableValue = unsafe InferenceFunction.AsyncMutableValue(
-      unsafeBuffer: binding.storage.metalBuffer,
-      byteOffset: binding.storage.byteOffset,
-      scalarType: binding.storage.scalarType,
-      shape: binding.storage.shape,
-      strides: binding.storage.strides,
-      interleaveLayout: nil
-    )
-    currentViews.insert(&mutableValue, for: binding.name)
-    let outputs = try await encodeWithOutputViews(
-      computeStream: computeStream,
-      function: function,
-      inputs: inputs,
-      outputBindings: outputBindings,
-      index: index + 1,
-      views: consume currentViews,
-      job: job
-    )
-    withExtendedLifetime(mutableValue) {}
-    return outputs
+    let name = outputNames[outputIndex]
+    guard let handle = outputBindings[name] else {
+      throw abiError(102, "missing Core AI output view \(name)")
+    }
+    switch handle.storage {
+    case let .owned(storage):
+      var mutableValue = InferenceFunction.AsyncMutableValue(storage.snapshot())
+      currentOutputs.insert(&mutableValue, for: name)
+      let result = try await encodeWithOutputViews(
+        computeStream: computeStream, function: function, inputs: inputs,
+        states: consume currentStates, outputBindings: outputBindings,
+        outputNames: outputNames, outputIndex: outputIndex + 1,
+        outputViews: consume currentOutputs, job: job
+      )
+      guard let updated = try await mutableValue.ndArray else {
+        throw abiError(103, "Core AI did not return preallocated output \(name)")
+      }
+      storage.replace(updated)
+      return result
+    case let .borrowed(storage):
+      var mutableValue = unsafe InferenceFunction.AsyncMutableValue(
+        unsafeBuffer: storage.metalBuffer,
+        byteOffset: storage.byteOffset,
+        scalarType: storage.scalarType,
+        shape: storage.shape,
+        strides: storage.strides,
+        interleaveLayout: nil
+      )
+      currentOutputs.insert(&mutableValue, for: name)
+      let result = try await encodeWithOutputViews(
+        computeStream: computeStream, function: function, inputs: inputs,
+        states: consume currentStates, outputBindings: outputBindings,
+        outputNames: outputNames, outputIndex: outputIndex + 1,
+        outputViews: consume currentOutputs, job: job
+      )
+      withExtendedLifetime(mutableValue) {}
+      return result
+    }
   }
 }
 
@@ -1437,29 +1758,39 @@ private func runInferenceWithInputViews(
   function: InferenceFunction,
   names: [String],
   bindings: [String: CoreArrayHandle],
+  stateNames: [String],
+  stateBindings: [String: CoreArrayHandle],
+  outputNames: [String],
+  outputBindings: [String: CoreArrayHandle],
   index: Int = 0,
   inputs: InferenceFunction.Inputs
 ) async throws -> InferenceFunction.Outputs {
   guard index < names.count else {
-    return try await function.run(inputs: inputs)
+    return try await runWithStateViews(
+      function: function, inputs: inputs,
+      stateNames: stateNames, stateBindings: stateBindings, stateIndex: 0,
+      stateViews: InferenceFunction.MutableViews(),
+      outputNames: outputNames, outputBindings: outputBindings, outputIndex: 0,
+      outputViews: InferenceFunction.MutableViews()
+    )
   }
   let name = names[index]
   guard let handle = bindings[name] else {
     throw abiError(102, "missing Core AI input \(name)")
   }
-  var nextInputs = inputs
   switch handle.storage {
-  case let .owned(array):
-    let rawView = array.rawView()
-    nextInputs.insert(rawView, for: name)
+  case let .owned(storage):
+    let array = storage.snapshot()
+    var nextInputs = inputs
+    nextInputs.insert(array.rawView(), for: name)
     return try await runInferenceWithInputViews(
-      function: function,
-      names: names,
-      bindings: bindings,
-      index: index + 1,
-      inputs: nextInputs
+      function: function, names: names, bindings: bindings,
+      stateNames: stateNames, stateBindings: stateBindings,
+      outputNames: outputNames, outputBindings: outputBindings,
+      index: index + 1, inputs: nextInputs
     )
   case let .borrowed(storage):
+    var nextInputs = inputs
     let metalBuffer = storage.metalBuffer
     let rawView = NDArray.RawView(
       metalBuffer: metalBuffer,
@@ -1471,11 +1802,133 @@ private func runInferenceWithInputViews(
     )
     nextInputs.insert(rawView, for: name)
     return try await runInferenceWithInputViews(
-      function: function,
-      names: names,
-      bindings: bindings,
-      index: index + 1,
-      inputs: nextInputs
+      function: function, names: names, bindings: bindings,
+      stateNames: stateNames, stateBindings: stateBindings,
+      outputNames: outputNames, outputBindings: outputBindings,
+      index: index + 1, inputs: nextInputs
+    )
+  }
+}
+
+@available(macOS 27.0, *)
+private func runWithStateViews(
+  function: InferenceFunction,
+  inputs: InferenceFunction.Inputs,
+  stateNames: [String],
+  stateBindings: [String: CoreArrayHandle],
+  stateIndex: Int,
+  stateViews: consuming InferenceFunction.MutableViews,
+  outputNames: [String],
+  outputBindings: [String: CoreArrayHandle],
+  outputIndex: Int,
+  outputViews: consuming InferenceFunction.MutableViews
+) async throws -> InferenceFunction.Outputs {
+  var currentStates = consume stateViews
+  guard stateIndex < stateNames.count else {
+    return try await runWithOutputViews(
+      function: function, inputs: inputs,
+      states: consume currentStates,
+      outputNames: outputNames, outputBindings: outputBindings,
+      outputIndex: outputIndex, outputViews: consume outputViews
+    )
+  }
+  let name = stateNames[stateIndex]
+  guard let handle = stateBindings[name] else {
+    throw abiError(102, "missing Core AI mutable state \(name)")
+  }
+  switch handle.storage {
+  case let .owned(storage):
+    var array = storage.snapshot()
+    let rawView = array.mutableRawView()
+    currentStates.insert(consume rawView, for: name)
+    do {
+      let outputs = try await runWithStateViews(
+        function: function, inputs: inputs,
+        stateNames: stateNames, stateBindings: stateBindings, stateIndex: stateIndex + 1,
+        stateViews: consume currentStates,
+        outputNames: outputNames, outputBindings: outputBindings, outputIndex: outputIndex,
+        outputViews: consume outputViews
+      )
+      storage.replace(array)
+      return outputs
+    } catch {
+      storage.replace(array)
+      throw error
+    }
+  case let .borrowed(storage):
+    let metalBuffer = storage.metalBuffer
+    let rawView = unsafe NDArray.MutableRawView(
+      metalBuffer: metalBuffer,
+      byteOffset: storage.byteOffset,
+      scalarType: storage.scalarType,
+      shape: storage.shape,
+      strides: storage.strides,
+      interleaveLayout: nil
+    )
+    currentStates.insert(consume rawView, for: name)
+    return try await runWithStateViews(
+      function: function, inputs: inputs,
+      stateNames: stateNames, stateBindings: stateBindings, stateIndex: stateIndex + 1,
+      stateViews: consume currentStates,
+      outputNames: outputNames, outputBindings: outputBindings, outputIndex: outputIndex,
+      outputViews: consume outputViews
+    )
+  }
+}
+
+@available(macOS 27.0, *)
+private func runWithOutputViews(
+  function: InferenceFunction,
+  inputs: InferenceFunction.Inputs,
+  states: consuming InferenceFunction.MutableViews,
+  outputNames: [String],
+  outputBindings: [String: CoreArrayHandle],
+  outputIndex: Int,
+  outputViews: consuming InferenceFunction.MutableViews
+) async throws -> InferenceFunction.Outputs {
+  let currentStates = consume states
+  var currentOutputs = consume outputViews
+  guard outputIndex < outputNames.count else {
+    return try await function.run(
+      inputs: inputs, states: consume currentStates, outputViews: consume currentOutputs
+    )
+  }
+  let name = outputNames[outputIndex]
+  guard let handle = outputBindings[name] else {
+    throw abiError(102, "missing Core AI output view \(name)")
+  }
+  switch handle.storage {
+  case let .owned(storage):
+    var array = storage.snapshot()
+    let rawView = array.mutableRawView()
+    currentOutputs.insert(consume rawView, for: name)
+    do {
+      let outputs = try await runWithOutputViews(
+        function: function, inputs: inputs, states: consume currentStates,
+        outputNames: outputNames, outputBindings: outputBindings, outputIndex: outputIndex + 1,
+        outputViews: consume currentOutputs
+      )
+      storage.replace(array)
+      return outputs
+    } catch {
+      storage.replace(array)
+      throw error
+    }
+  case let .borrowed(storage):
+    let metalBuffer = storage.metalBuffer
+    let rawView = unsafe NDArray.MutableRawView(
+      metalBuffer: metalBuffer,
+      byteOffset: storage.byteOffset,
+      scalarType: storage.scalarType,
+      shape: storage.shape,
+      strides: storage.strides,
+      interleaveLayout: nil
+    )
+    currentOutputs.insert(consume rawView, for: name)
+    return try await runWithOutputViews(
+      function: function, inputs: inputs, states: consume currentStates,
+      outputNames: outputNames, outputBindings: outputBindings, outputIndex: outputIndex + 1,
+      outputViews: consume currentOutputs
     )
   }
 }
@@ -1979,6 +2432,9 @@ public func ac_array_copy(
   }
   do {
     let array = try objectHandle(arrayPointer, as: CoreArrayHandle.self)
+    let lease = try CoreArrayAccessLease(handle: array, write: false)
+    defer { lease.release() }
+    try lease.waitSynchronously()
     _ = try copySdkArray(array, to: host, descriptor: descriptor)
     return statusOK()
   } catch {
@@ -2101,6 +2557,8 @@ public func ac_encode(
   _ functionPointer: UnsafeMutableRawPointer?,
   _ bindingsPointer: UnsafePointer<ACBinding>?,
   _ count: UInt32,
+  _ stateBindingsPointer: UnsafePointer<ACBinding>?,
+  _ stateCount: UInt32,
   _ outputViewsPointer: UnsafePointer<ACBinding>?,
   _ outputCount: UInt32,
   _ streamPointer: UnsafeMutableRawPointer?,
@@ -2116,62 +2574,43 @@ public func ac_encode(
     let function = try objectHandle(functionPointer, as: CoreFunctionHandle.self)
     let stream = try objectHandle(streamPointer, as: CoreAIStreamHandle.self)
     let bindings = try decodeCoreBindings(bindingsPointer, count: count, role: "input")
+    let stateBindings = try decodeCoreBindings(
+      stateBindingsPointer, count: stateCount, role: "state"
+    )
     let outputViews = try decodeCoreBindings(
-      outputViewsPointer,
-      count: outputCount,
-      role: "output view"
+      outputViewsPointer, count: outputCount, role: "output view"
     )
     let inputNames = try validateFunctionInputs(function: function, bindings: bindings)
-    _ = try validateFunctionOutputViews(
-      function: function,
-      bindings: outputViews,
-      commandQueue: stream.commandQueue
+    let stateNames = try validateFunctionStates(function: function, bindings: stateBindings)
+    _ = try validateFunctionOutputViews(function: function, bindings: outputViews)
+    try validateBorrowedInferenceDevices(
+      bindings: [bindings, stateBindings, outputViews],
+      expectedRegistryID: stream.commandQueue.device.registryID
     )
 
+    let outputNames = outputViews.keys.sorted()
+    let leases = try acquireInferenceLeases(
+      inputNames: inputNames, inputs: bindings,
+      stateNames: stateNames, states: stateBindings,
+      outputNames: outputNames, outputViews: outputViews
+    )
     var borrowedOwners: [BorrowedMetalStorage] = []
-    borrowedOwners.reserveCapacity(bindings.count + outputViews.count)
-    var leases: [CoreBufferReadLease] = []
-    leases.reserveCapacity(bindings.count + outputViews.count)
-    var leasedInputIdentities = Set<UInt64>()
+    for group in [bindings, stateBindings, outputViews] {
+      for handle in group.values {
+        if case let .borrowed(storage) = handle.storage { borrowedOwners.append(storage) }
+      }
+    }
     var borrowedInputCount: UInt64 = 0
-    var producerCount: UInt64 = 0
-
     for name in inputNames {
-      guard let binding = bindings[name] else {
-        throw abiError(102, "missing Core AI input \(name)")
-      }
-      guard case let .borrowed(storage) = binding.storage else { continue }
-      guard storage.metalBuffer.device.registryID == stream.commandQueue.device.registryID else {
-        throw abiError(102, "Core AI input \(name) and stream use different Metal devices")
-      }
-      borrowedOwners.append(storage)
-      let (nextBorrowedCount, borrowedOverflow) = borrowedInputCount.addingReportingOverflow(1)
-      borrowedInputCount = borrowedOverflow ? UInt64.max : nextBorrowedCount
-      if leasedInputIdentities.insert(storage.identity).inserted {
-        let lease = try CoreBufferReadLease(ownerHandle: storage.ownerHandle)
-        leases.append(lease)
-        let (nextProducerCount, producerOverflow) =
-          producerCount.addingReportingOverflow(lease.producerCount)
-        producerCount = producerOverflow ? UInt64.max : nextProducerCount
+      if let handle = bindings[name], case .borrowed = handle.storage {
+        let (next, overflow) = borrowedInputCount.addingReportingOverflow(1)
+        borrowedInputCount = overflow ? UInt64.max : next
       }
     }
-
-    var outputBindings: [(name: String, storage: BorrowedMetalStorage)] = []
-    outputBindings.reserveCapacity(outputViews.count)
-    for name in outputViews.keys.sorted() {
-      guard let binding = outputViews[name],
-            case let .borrowed(storage) = binding.storage else {
-        throw abiError(102, "Core AI output views require shared Metal-buffer storage")
-      }
-      outputBindings.append((name: name, storage: storage))
-      borrowedOwners.append(storage)
-      let lease = try CoreBufferReadLease(ownerHandle: storage.ownerHandle, access: 1)
-      leases.append(lease)
-      let (nextProducerCount, producerOverflow) =
-        producerCount.addingReportingOverflow(lease.producerCount)
-      producerCount = producerOverflow ? UInt64.max : nextProducerCount
+    let producerCount = leases.reduce(UInt64(0)) { total, lease in
+      let (next, overflow) = total.addingReportingOverflow(lease.producerCount)
+      return overflow ? UInt64.max : next
     }
-
     let producerFence = try captureMetalFence(stream)
     var context = modelEvidenceContext(
       invocationID: nextInvocationID(),
@@ -2190,20 +2629,21 @@ public func ac_encode(
 
     let submittedLeases = leases
     let submittedBindings = bindings
-    let submittedOutputViews = outputBindings
+    let submittedStates = stateBindings
+    let submittedOutputViews = outputViews
     let submittedBorrowedOwners = borrowedOwners
     Task.detached(priority: .userInitiated) {
       var outcome: JobOutcome
       do {
-        for lease in submittedLeases {
-          try await lease.waitForProducers()
-        }
+        for lease in submittedLeases { try await lease.waitForProducers() }
         try await producerFence.wait()
         let outputs = try await stream.executor.encode(
           function: function,
           inputNames: inputNames,
           bindings: submittedBindings,
+          stateBindings: submittedStates,
           outputBindings: submittedOutputViews,
+          borrowedOwners: submittedBorrowedOwners,
           job: job
         )
         outcome = .outputs(outputs)
@@ -2217,6 +2657,7 @@ public func ac_encode(
       for lease in submittedLeases { lease.release() }
       job.finish(outcome)
       withExtendedLifetime(submittedBindings) {}
+      withExtendedLifetime(submittedStates) {}
       withExtendedLifetime(submittedOutputViews) {}
       withExtendedLifetime(submittedBorrowedOwners) {}
       withExtendedLifetime(function) {}
@@ -2298,6 +2739,10 @@ public func ac_submit(
   _ functionPointer: UnsafeMutableRawPointer?,
   _ bindingsPointer: UnsafePointer<ACBinding>?,
   _ count: UInt32,
+  _ stateBindingsPointer: UnsafePointer<ACBinding>?,
+  _ stateCount: UInt32,
+  _ outputViewsPointer: UnsafePointer<ACBinding>?,
+  _ outputCount: UInt32,
   _ jobOut: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
 ) -> AMStatus {
   guard let jobOut else { return statusFailure(103, "inference job output pointer is nil") }
@@ -2307,54 +2752,45 @@ public func ac_submit(
   }
   do {
     let function = try objectHandle(functionPointer, as: CoreFunctionHandle.self)
-    guard count == 0 || bindingsPointer != nil else {
-      throw abiError(102, "nonempty inference bindings have a nil pointer")
-    }
-    var bindings: [String: CoreArrayHandle] = [:]
-    bindings.reserveCapacity(Int(count))
-    if count > 0, let bindingsPointer {
-      for index in 0..<Int(count) {
-        let binding = bindingsPointer[index]
-        guard let name = binding.name, name.pointee != 0 else {
-          throw abiError(102, "inference binding name is empty")
-        }
-        let bindingName = String(cString: name)
-        guard bindings[bindingName] == nil else {
-          throw abiError(102, "duplicate inference input name \(bindingName)")
-        }
-        let array = try objectHandle(binding.array, as: CoreArrayHandle.self)
-        bindings[bindingName] = array
-      }
-    }
-
+    let bindings = try decodeCoreBindings(bindingsPointer, count: count, role: "input")
+    let stateBindings = try decodeCoreBindings(
+      stateBindingsPointer, count: stateCount, role: "state"
+    )
+    let outputViews = try decodeCoreBindings(
+      outputViewsPointer, count: outputCount, role: "output view"
+    )
     let inputNames = try validateFunctionInputs(function: function, bindings: bindings)
+    let stateNames = try validateFunctionStates(function: function, bindings: stateBindings)
+    _ = try validateFunctionOutputViews(function: function, bindings: outputViews)
+    try validateBorrowedInferenceDevices(bindings: [bindings, stateBindings, outputViews])
+    let outputNames = outputViews.keys.sorted()
+    let leases = try acquireInferenceLeases(
+      inputNames: inputNames, inputs: bindings,
+      stateNames: stateNames, states: stateBindings,
+      outputNames: outputNames, outputViews: outputViews
+    )
     var borrowedOwners: [BorrowedMetalStorage] = []
-    var leases: [CoreBufferReadLease] = []
-    var leasedIdentities = Set<UInt64>()
+    for group in [bindings, stateBindings, outputViews] {
+      for handle in group.values {
+        if case let .borrowed(storage) = handle.storage { borrowedOwners.append(storage) }
+      }
+    }
     var borrowedInputCount: UInt64 = 0
-    var producerCount: UInt64 = 0
     for name in inputNames {
-      guard let binding = bindings[name] else {
-        throw abiError(102, "missing Core AI input \(name)")
+      if let handle = bindings[name], case .borrowed = handle.storage {
+        let (next, overflow) = borrowedInputCount.addingReportingOverflow(1)
+        borrowedInputCount = overflow ? UInt64.max : next
       }
-      guard case let .borrowed(storage) = binding.storage else { continue }
-      let (nextBorrowedCount, borrowedOverflow) =
-        borrowedInputCount.addingReportingOverflow(1)
-      borrowedInputCount = borrowedOverflow ? UInt64.max : nextBorrowedCount
-      borrowedOwners.append(storage)
-      if leasedIdentities.insert(storage.identity).inserted {
-        let lease = try CoreBufferReadLease(ownerHandle: storage.ownerHandle)
-        leases.append(lease)
-        let (nextProducerCount, producerOverflow) =
-          producerCount.addingReportingOverflow(lease.producerCount)
-        producerCount = producerOverflow ? UInt64.max : nextProducerCount
-      }
+    }
+    let producerCount = leases.reduce(UInt64(0)) { total, lease in
+      let (next, overflow) = total.addingReportingOverflow(lease.producerCount)
+      return overflow ? UInt64.max : next
     }
     let submittedBindings = bindings
+    let submittedStates = stateBindings
+    let submittedOutputViews = outputViews
     let submittedLeases = leases
     let submittedBorrowedOwners = borrowedOwners
-
-
     var context = modelEvidenceContext(
       invocationID: nextInvocationID(),
       policy: function.model.requestedPolicy,
@@ -2371,20 +2807,23 @@ public func ac_submit(
     Task.detached(priority: .userInitiated) {
       var outcome: JobOutcome
       do {
-        for lease in submittedLeases {
-          try await lease.waitForProducers()
-        }
+        for lease in submittedLeases { try await lease.waitForProducers() }
         var sdkOutputs = try await runInferenceWithInputViews(
           function: function.function,
           names: inputNames,
           bindings: submittedBindings,
+          stateNames: stateNames,
+          stateBindings: submittedStates,
+          outputNames: outputNames,
+          outputBindings: submittedOutputViews,
           inputs: InferenceFunction.Inputs()
         )
-        let expectedNames = function.function.descriptor.outputNames
+        let allOutputNames = function.function.descriptor.outputNames
+        let expectedNames = allOutputNames.filter { submittedOutputViews[$0] == nil }
         let reportedNames = Array(sdkOutputs.names)
         guard Set(reportedNames) == Set(expectedNames),
               reportedNames.count == expectedNames.count else {
-          throw abiError(102, "Core AI returned output names inconsistent with its function descriptor")
+          throw abiError(102, "Core AI returned outputs inconsistent with its output views and descriptor")
         }
         var outputs: [String: CoreArrayHandle] = [:]
         outputs.reserveCapacity(expectedNames.count)
@@ -2392,11 +2831,10 @@ public func ac_submit(
           guard let output = sdkOutputs.remove(name)?.ndArray else {
             throw abiError(102, "Core AI output \(name) is not an NDArray")
           }
-          let minimumBytes = try sdkArrayMinimumBytes(output)
           outputs[name] = CoreArrayHandle(
             array: output,
             name: name,
-            minimumBytes: minimumBytes,
+            minimumBytes: try sdkArrayMinimumBytes(output),
             retaining: submittedBorrowedOwners
           )
         }
@@ -2411,6 +2849,8 @@ public func ac_submit(
       for lease in submittedLeases { lease.release() }
       job.finish(outcome)
       withExtendedLifetime(submittedBindings) {}
+      withExtendedLifetime(submittedStates) {}
+      withExtendedLifetime(submittedOutputViews) {}
       withExtendedLifetime(submittedBorrowedOwners) {}
       withExtendedLifetime(function) {}
     }

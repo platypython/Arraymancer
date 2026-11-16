@@ -546,29 +546,48 @@ proc cpu*[T: float32 | int32](array: CoreAIArray; typ: typedesc[T]): Tensor[T] =
   let host = cast[pointer](result.get_data_ptr)
   checkCoreAI(coreAIApi().arrayCopy(handle, host, destination))
 
-proc submitInference*(function: CoreAIFunction; inputs: openArray[CoreAIBinding]): CoreAIJob =
-  ## Validate named descriptors and submit native inference while retaining inputs.
+proc submitInference*(function: CoreAIFunction; inputs: openArray[CoreAIBinding];
+                      states: openArray[CoreAIBinding] = [];
+                      outputViews: openArray[CoreAIBinding] = []): CoreAIJob =
+  ## Validate named descriptors and submit native inference.
   ## This returns a job, not host-ready output arrays.
   let functionHandle = requireOwner(if function == nil: nil else: function.owner, "function")
-  if uint64(inputs.len) > uint64(high(uint32)):
-    descriptorFailure("Too many Core AI inference inputs")
+  if uint64(inputs.len) > uint64(high(uint32)) or
+      uint64(states.len) > uint64(high(uint32)) or
+      uint64(outputViews.len) > uint64(high(uint32)):
+    descriptorFailure("Too many Core AI inference bindings")
   var nativeInputs = newSeq[ACBinding](inputs.len)
+  var nativeStates = newSeq[ACBinding](states.len)
+  var nativeOutputs = newSeq[ACBinding](outputViews.len)
   for index, input in inputs:
-    nativeInputs[index].name = input.name.cstring
     if containsNul(input.name):
       descriptorFailure("Core AI input name contains a null byte")
+    nativeInputs[index].name = input.name.cstring
     nativeInputs[index].array = requireOwner(if input.array == nil: nil else: input.array.owner, "array")
-  var inputPointer: ptr ACBinding
+  for index, state in states:
+    if containsNul(state.name):
+      descriptorFailure("Core AI state name contains a null byte")
+    nativeStates[index].name = state.name.cstring
+    nativeStates[index].array = requireOwner(if state.array == nil: nil else: state.array.owner, "array")
+  for index, output in outputViews:
+    if containsNul(output.name):
+      descriptorFailure("Core AI output name contains a null byte")
+    nativeOutputs[index].name = output.name.cstring
+    nativeOutputs[index].array = requireOwner(if output.array == nil: nil else: output.array.owner, "array")
+  var inputPointer, statePointer, outputPointer: ptr ACBinding
   if nativeInputs.len != 0: inputPointer = addr nativeInputs[0]
+  if nativeStates.len != 0: statePointer = addr nativeStates[0]
+  if nativeOutputs.len != 0: outputPointer = addr nativeOutputs[0]
   var nativeJob: pointer
-  let status = coreAIApi().submit(functionHandle, inputPointer, uint32(nativeInputs.len), addr nativeJob)
+  let status = coreAIApi().submit(functionHandle, inputPointer,
+    uint32(nativeInputs.len), statePointer, uint32(nativeStates.len),
+    outputPointer, uint32(nativeOutputs.len), addr nativeJob)
   try:
     checkCoreAI(status)
   except:
     if nativeJob != nil: coreAIApi().release(nativeJob)
     raise
   result = CoreAIJob(owner: ownCoreAI(nativeJob), function: function)
-
 proc newCoreAIStream*(stream: MetalStream): CoreAIStream =
   ## Create an SDK stream over the same retained native Metal command queue.
   if stream == nil or stream.owner == nil or stream.owner.handle == nil:
@@ -585,6 +604,7 @@ proc newCoreAIStream*(stream: MetalStream): CoreAIStream =
 
 proc encodeInference*(function: CoreAIFunction;
                        inputs: openArray[CoreAIBinding];
+                       states: openArray[CoreAIBinding] = [];
                        outputViews: openArray[CoreAIBinding] = [];
                        stream: CoreAIStream): CoreAIJob =
   ## Encode on the same queue as Metal work; returns before inference completes.
@@ -592,9 +612,11 @@ proc encodeInference*(function: CoreAIFunction;
   let functionHandle = requireOwner(if function == nil: nil else: function.owner, "function")
   let streamHandle = requireOwner(if stream == nil: nil else: stream.owner, "stream")
   if uint64(inputs.len) > uint64(high(uint32)) or
+      uint64(states.len) > uint64(high(uint32)) or
       uint64(outputViews.len) > uint64(high(uint32)):
     descriptorFailure("Too many Core AI inference bindings")
   var nativeInputs = newSeq[ACBinding](inputs.len)
+  var nativeStates = newSeq[ACBinding](states.len)
   var nativeOutputs = newSeq[ACBinding](outputViews.len)
   for index, input in inputs:
     if containsNul(input.name):
@@ -602,20 +624,26 @@ proc encodeInference*(function: CoreAIFunction;
     nativeInputs[index].name = input.name.cstring
     nativeInputs[index].array = requireOwner(
       if input.array == nil: nil else: input.array.owner, "array")
+  for index, state in states:
+    if containsNul(state.name):
+      descriptorFailure("Core AI state name contains a null byte")
+    nativeStates[index].name = state.name.cstring
+    nativeStates[index].array = requireOwner(
+      if state.array == nil: nil else: state.array.owner, "array")
   for index, output in outputViews:
     if containsNul(output.name):
       descriptorFailure("Core AI output name contains a null byte")
     nativeOutputs[index].name = output.name.cstring
     nativeOutputs[index].array = requireOwner(
       if output.array == nil: nil else: output.array.owner, "array")
-  var inputPointer: ptr ACBinding
-  var outputPointer: ptr ACBinding
+  var inputPointer, statePointer, outputPointer: ptr ACBinding
   if nativeInputs.len != 0: inputPointer = addr nativeInputs[0]
+  if nativeStates.len != 0: statePointer = addr nativeStates[0]
   if nativeOutputs.len != 0: outputPointer = addr nativeOutputs[0]
   var nativeJob: pointer
   let status = coreAIApi().encode(functionHandle, inputPointer,
-    uint32(nativeInputs.len), outputPointer, uint32(nativeOutputs.len),
-    streamHandle, addr nativeJob)
+    uint32(nativeInputs.len), statePointer, uint32(nativeStates.len),
+    outputPointer, uint32(nativeOutputs.len), streamHandle, addr nativeJob)
   try:
     checkCoreAI(status)
   except:
@@ -651,9 +679,11 @@ proc wait*(job: CoreAIJob; timeoutMs = 30000): seq[CoreAIBinding] =
     finally:
       releaseCString(name)
 
-proc infer*(function: CoreAIFunction; inputs: openArray[CoreAIBinding]): seq[CoreAIBinding] =
+proc infer*(function: CoreAIFunction; inputs: openArray[CoreAIBinding];
+            states: openArray[CoreAIBinding] = [];
+            outputViews: openArray[CoreAIBinding] = []): seq[CoreAIBinding] =
   ## Submit inference and wait up to 30 seconds for its named outputs.
-  let job = submitInference(function, inputs)
+  let job = submitInference(function, inputs, states = states, outputViews = outputViews)
   result = wait(job)
 
 proc awaitCurrentWorkCompleted*(stream: CoreAIStream;

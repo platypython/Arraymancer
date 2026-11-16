@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Execute authentic Core AI declared mutable state and caller-provided outputs
+  through both run and stream encoding. Owned arrays and shared Metal views
+  retain state updates and exclude conflicting access until completion.
 - Encode Core AI inference on the same retained Metal command queue into shared
   caller output views. Producer-scoped fences and separate SDK/queue completion
   boundaries preserve Metal consumers without intermediate host readback.

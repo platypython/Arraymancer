@@ -39,7 +39,8 @@ suite "Core AI strided shared-buffer inference":
     check info.strides == [1, 2].toMetadata
     check info.hostCopyBytes == 0
     for input in [toCoreAI(expected), borrowed]:
-      let outputs = function.infer([CoreAIBinding(name: "x", array: input)])
+      let outputs = function.infer([CoreAIBinding(name: "x", array: input)],
+        states = [], outputViews = [])
       check outputs[0].array.cpu(float32) == expected
       let output = outputs[0].array.descriptor
       check output.shape == [2, 3].toMetadata
@@ -48,7 +49,8 @@ suite "Core AI strided shared-buffer inference":
     check borrowed.descriptor.hostCopyBytes == 0
     check storage.cpu == [99'f32, 1, 4, 2, 5, 3, 6, 99].toTensor
     let another = [[1'f32, 2, 3], [4'f32, 5, 6], [7'f32, 8, 9]].toTensor
-    let output = function.infer([CoreAIBinding(name: "x", array: toCoreAI(another))])
+    let output = function.infer([CoreAIBinding(name: "x", array: toCoreAI(another))],
+      states = [], outputViews = [])
     check output[0].array.cpu(float32) == another
     check output[0].array.descriptor.strides == [3, 1].toMetadata
 
@@ -100,7 +102,8 @@ suite "Core AI strided shared-buffer inference":
     var pending: MetalTensor[float32]
     withMetalStream(producer): pending = source + 0'f32
     let view = coreAIView(pending.metalView([2, 3].toMetadata, [1, 2].toMetadata, 1))
-    let job = function.submitInference([CoreAIBinding(name: "x", array: view)])
+    let job = function.submitInference([CoreAIBinding(name: "x", array: view)],
+      states = [], outputViews = [])
     expect MetalBufferBusyError: pending[1] = 100'f32
     expect MetalBufferBusyError: pending += ones
     expect MetalBufferBusyError:
@@ -131,7 +134,8 @@ suite "Core AI strided shared-buffer inference":
     GC_fullCollect()
     metalEmptyCache()
     let pressure = newTensorWith[float32]([8], -9'f32).metal
-    let outputs = function.infer([CoreAIBinding(name: "x", array: borrowed)])
+    let outputs = function.infer([CoreAIBinding(name: "x", array: borrowed)],
+      states = [], outputViews = [])
     check outputs[0].array.cpu(float32) == [[1'f32, 2, 3], [4'f32, 5, 6]].toTensor
     check pressure.cpu == newTensorWith[float32]([8], -9'f32)
     check borrowed.descriptor.hostCopyBytes == 0

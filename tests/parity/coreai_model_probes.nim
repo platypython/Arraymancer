@@ -61,7 +61,8 @@ proc coreAIModelObservation*(): AppleObservation =
       var names = model.functionNames
       names.sort()
       let function = model.loadFunction("identity").get
-      let job = function.submitInference([CoreAIBinding(name: "x", array: toCoreAI([1.25'f32, -2].toTensor))])
+      let job = function.submitInference([CoreAIBinding(name: "x", array: toCoreAI([1.25'f32, -2].toTensor))],
+        states = [], outputViews = [])
       let outputs = job.wait()
       var observedOutputs = newJArray()
       for binding in outputs:
@@ -70,7 +71,7 @@ proc coreAIModelObservation*(): AppleObservation =
         "outputs": observedOutputs, "absent_function": model.loadFunction("absent_function").isNone}
       let key = if index == 0: "source" else: "compiled"
       result.actual[key] = actual
-      result.differences.add compareObservations(%*{"function_names": ["identity", "identity_matrix"],
+      result.differences.add compareObservations(%*{"function_names": ["identity", "identity_matrix", "increment"],
         "descriptor": identityDescriptor(), "outputs": [{"name": "y", "array": {
           "shape": [2], "dtype": "float32", "backend": "coreai", "values": [1.25, -2.0]}}],
         "absent_function": true}, actual, 0, 0)
@@ -103,7 +104,8 @@ proc coreAIDescriptorObservation*(): AppleObservation =
   try:
     let model = openCoreAIModel(coreAISourceAsset)
     let function = model.loadFunction("identity").get
-    let job = function.submitInference([CoreAIBinding(name: "x", array: toCoreAI([1.25'f32, -2].toTensor))])
+    let job = function.submitInference([CoreAIBinding(name: "x", array: toCoreAI([1.25'f32, -2].toTensor))],
+      states = [], outputViews = [])
     let outputs = job.wait()
     var actualOutputs = newJArray()
     for binding in outputs: actualOutputs.add %*{"name": binding.name, "array": observeCoreAI(binding.array)}
@@ -117,7 +119,7 @@ proc coreAIDescriptorObservation*(): AppleObservation =
     var errors = newJObject()
     for item in badArrays:
       var rejected = false
-      try: discard function.infer([CoreAIBinding(name: "x", array: item[1])])
+      try: discard function.infer([CoreAIBinding(name: "x", array: item[1])], states = [], outputViews = [])
       except CoreAIDescriptorError as error:
         rejected = true
         diagnostics.add %*{"category": "descriptor", "scenario": item[0], "message": error.msg}

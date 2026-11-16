@@ -41,7 +41,8 @@ proc coreAILayoutObservation*(): AppleObservation =
     var invocations = newJArray()
     var borrowedJob: CoreAIJob
     for index, input in inputs:
-      let job = function.submitInference([CoreAIBinding(name: "x", array: input)])
+      let job = function.submitInference([CoreAIBinding(name: "x", array: input)],
+        states = [], outputViews = [])
       let outputs = job.wait()
       var observed = newJArray()
       for binding in outputs:
@@ -105,7 +106,8 @@ proc coreAIInteropObservation*(): AppleObservation =
       "byte_offset": info.byteOffset, "borrowed": info.borrowed,
       "buffer_identity": $info.bufferIdentity, "original_buffer_identity": $originalIdentity,
       "input_bridge_copy_bytes": info.hostCopyBytes}
-    let job = function.submitInference([CoreAIBinding(name: "x", array: view)])
+    let job = function.submitInference([CoreAIBinding(name: "x", array: view)],
+      states = [], outputViews = [])
     var scalarRejected, mathRejected, pendingWait: bool
     var diagnostics = newJArray()
     try: pending[1] = 100'f32

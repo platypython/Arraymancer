@@ -52,6 +52,7 @@ type
   AMStreamFenceWait* = proc(fence: pointer): AMStatus {.cdecl, gcsafe, raises: [].}
   ACStreamCreate* = proc(metalStream: pointer; stream: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
   ACEncode* = proc(function: pointer; inputs: ptr ACBinding; count: uint32;
+    states: ptr ACBinding; stateCount: uint32;
     outputViews: ptr ACBinding; outputCount: uint32; stream: pointer;
     job: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
   ACStreamAwait* = proc(stream: pointer; job: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
@@ -75,7 +76,10 @@ type
     arrayView*: proc(buffer: pointer; descriptor: AMTensorDescriptor; array: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
     descriptorResolve*: proc(descriptorHandle: pointer; shape: ptr int64;
       rank: uint32; outValue: ptr ACArrayDescriptor): AMStatus {.cdecl, gcsafe, raises: [].}
-    submit*: proc(function: pointer; inputs: ptr ACBinding; count: uint32; job: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+    submit*: proc(function: pointer; inputs: ptr ACBinding; count: uint32;
+      states: ptr ACBinding; stateCount: uint32;
+      outputViews: ptr ACBinding; outputCount: uint32;
+      job: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
     jobOutputCount*: proc(job: pointer; count: ptr uint32): AMStatus {.cdecl, gcsafe, raises: [].}
     jobOutput*: proc(job: pointer; index: uint32; name: ptr cstring; array: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
     jobEvidence*: proc(job: pointer; evidence: ptr ACEvidence): AMStatus {.cdecl, gcsafe, raises: [].}

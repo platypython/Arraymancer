@@ -163,9 +163,12 @@ AMStatus ac_array_view(void *buffer, AMTensorDescriptor descriptor, void **array
 AMStatus ac_array_copy(void *array, void *host, AMTensorDescriptor descriptor);
 AMStatus ac_array_descriptor(void *array, ACArrayDescriptor *out);
 AMStatus ac_submit(void *function, const ACBinding *inputs, uint32_t count,
+                   const ACBinding *states, uint32_t state_count,
+                   const ACBinding *output_views, uint32_t output_count,
                    void **job);
 AMStatus ac_stream_create(void *metal_stream, void **stream);
 AMStatus ac_encode(void *function, const ACBinding *inputs, uint32_t count,
+                   const ACBinding *states, uint32_t state_count,
                    const ACBinding *output_views, uint32_t output_count,
                    void *stream, void **job);
 AMStatus ac_stream_await(void *stream, void **job);

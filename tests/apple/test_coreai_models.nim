@@ -8,7 +8,8 @@ proc detachedIdentityJob(): CoreAIJob =
   let model = openCoreAIModel(coreAISourceAsset)
   let function = model.loadFunction("identity").get
   let array = toCoreAI([1.25'f32, -2].toTensor)
-  function.submitInference([CoreAIBinding(name: "x", array: array)])
+  function.submitInference([CoreAIBinding(name: "x", array: array)],
+    states = [], outputViews = [])
 
 suite "Core AI authentic model loading":
   test "Manifest binds actual source files and pinned converter versions":
@@ -20,7 +21,7 @@ suite "Core AI authentic model loading":
       let model = openCoreAIModel(path)
       var names = model.functionNames
       names.sort()
-      check names == @["identity", "identity_matrix"]
+      check names == @["identity", "identity_matrix", "increment"]
       check model.loadFunction("absent_function").isNone
       let function = model.loadFunction("identity").get
       let desc = function.descriptor
@@ -30,7 +31,8 @@ suite "Core AI authentic model loading":
       check desc.inputs[0].dtype == "float32" and desc.outputs[0].dtype == "float32"
       check desc.inputs[0].shape == [2].toMetadata
       check not desc.inputs[0].dynamicShape
-      let outputs = function.infer([CoreAIBinding(name: "x", array: toCoreAI([1.25'f32, -2].toTensor))])
+      let outputs = function.infer([CoreAIBinding(name: "x", array: toCoreAI([1.25'f32, -2].toTensor))],
+        states = [], outputViews = [])
       check outputs.len == 1 and outputs[0].name == "y"
       check outputs[0].array.cpu(float32) == [1.25'f32, -2].toTensor
 
@@ -43,24 +45,25 @@ suite "Core AI authentic model loading":
     check desc.inputs[0].dynamicShape and desc.outputs[0].dynamicShape
     check desc.inputs[0].minimumBytes == 0
     let input = [[1'f32, 2, 3], [4'f32, 5, 6]].toTensor
-    let outputs = function.infer([CoreAIBinding(name: "x", array: toCoreAI(input))])
+    let outputs = function.infer([CoreAIBinding(name: "x", array: toCoreAI(input))],
+      states = [], outputViews = [])
     check outputs[0].array.cpu(float32) == input
 
   test "Wrong names, dtype, static shape and rank fail without conversion":
     let function = openCoreAIModel(coreAISourceAsset).loadFunction("identity").get
     let valid = CoreAIBinding(name: "x", array: toCoreAI([1'f32, 2].toTensor))
     expect CoreAIDescriptorError:
-      discard function.infer([CoreAIBinding(name: "x", array: toCoreAI([1'i32, 2].toTensor))])
+      discard function.infer([CoreAIBinding(name: "x", array: toCoreAI([1'i32, 2].toTensor))], states = [], outputViews = [])
     expect CoreAIDescriptorError:
-      discard function.infer([CoreAIBinding(name: "x", array: toCoreAI([1'f32, 2, 3].toTensor))])
+      discard function.infer([CoreAIBinding(name: "x", array: toCoreAI([1'f32, 2, 3].toTensor))], states = [], outputViews = [])
     expect CoreAIDescriptorError:
-      discard function.infer([CoreAIBinding(name: "x", array: toCoreAI([[1'f32, 2]].toTensor))])
+      discard function.infer([CoreAIBinding(name: "x", array: toCoreAI([[1'f32, 2]].toTensor))], states = [], outputViews = [])
     expect CoreAIDescriptorError:
-      discard function.infer([CoreAIBinding(name: "wrong", array: valid.array)])
+      discard function.infer([CoreAIBinding(name: "wrong", array: valid.array)], states = [], outputViews = [])
     expect CoreAIDescriptorError:
-      discard function.infer(newSeq[CoreAIBinding]())
+      discard function.infer(newSeq[CoreAIBinding](), states = [], outputViews = [])
     expect CoreAIDescriptorError:
-      discard function.infer([valid, valid])
+      discard function.infer([valid, valid], states = [], outputViews = [])
     expect CoreAIDescriptorError:
       discard valid.array.cpu(int32)
     expect CoreAIError:
@@ -77,7 +80,8 @@ suite "Core AI authentic model loading":
     storage[1] = 100'f32
     storage[3] = 200'f32
     let function = openCoreAIModel(coreAISourceAsset).loadFunction("identity").get
-    let outputs = function.infer([CoreAIBinding(name: "x", array: array)])
+    let outputs = function.infer([CoreAIBinding(name: "x", array: array)],
+      states = [], outputViews = [])
     check outputs[0].array.cpu(float32) == [1.25'f32, -2].toTensor
     check array.descriptor.hostCopyBytes == 8'u64
     let job = detachedIdentityJob()

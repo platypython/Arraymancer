@@ -31,7 +31,7 @@ proc coreAIStreamObservation*(): AppleObservation =
       inputView = coreAIView(produced)
       outputView = coreAIView(output)
       job = function.encodeInference([CoreAIBinding(name: "x", array: inputView)],
-        outputViews = [CoreAIBinding(name: "y", array: outputView)], stream = stream)
+        states = [], outputViews = [CoreAIBinding(name: "y", array: outputView)], stream = stream)
     GC_fullCollect()
     let outputs = job.wait()
     var allocatedNames: seq[string]
