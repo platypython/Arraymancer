@@ -73,18 +73,23 @@ suite "Pinned PyTorch conformance foundation":
     expect ValueError: discard parseSelection(@["--profile=apple", "--case=tensor.matmul_2d"])
     expect ValueError:
       discard collectReport(parseSelection(@["--profile=cpu", "--case=unknown"]))
+    expect ValueError: discard parseSelection(@["--requirement=apple.metal.device_dispatch"])
+    expect ValueError: discard parseSelection(@["--profile=apple", "--requirement=apple.metal.device_dispatch"])
+    expect ValueError: discard parseSelection(@["--profile=apple-coreai", "--requirement=apple.metal.device_dispatch"])
+    expect ValueError: discard parseSelection(@["--profile=apple-metal", "--requirement=unknown"])
 
   test "Apple profiles remain independent mandatory gates":
-    let metal = collectAppleCoverage(requirements, capabilities, @["apple-metal"])
-    let coreai = collectAppleCoverage(requirements, capabilities, @["apple-coreai"])
+    let metal = collectAppleCoverage(requirements, capabilities, @["apple-metal"], [])
+    let coreai = collectAppleCoverage(requirements, capabilities, @["apple-coreai"], [])
     check metal.len == 10
     check coreai.len == 8
-    check collectAppleCoverage(requirements, capabilities, @["cpu"]).len == 0
+    check collectAppleCoverage(requirements, capabilities, @["cpu"], []).len == 0
     for entries in [metal, coreai]:
       for entry in entries:
         check entry["execution"].getStr() == "not_run"
         check entry["actual"].kind == JNull
-      let report = %*{"counts": {"mismatch": 0, "error": 0}, "apple_counts": {"unobserved": entries.len}}
+      let report = %*{"counts": {"mismatch": 0, "error": 0},
+        "apple_counts": {"unobserved": entries.len, "mismatch": 0, "error": 0}}
       check reportExitCode(report) == 1
 
   test "Partial annotations cannot establish execution":
@@ -92,13 +97,14 @@ suite "Pinned PyTorch conformance foundation":
     for i in 0 ..< changed["apple_requirements"].len:
       changed["apple_requirements"][i]["status"] = %"partial"
     validateCapabilities(changed, inventory, requirements)
-    let coverage = collectAppleCoverage(requirements, changed, @["apple-metal", "apple-coreai"])
+    let coverage = collectAppleCoverage(requirements, changed, @["apple-metal", "apple-coreai"], [])
     check coverage.len == 18
     for entry in coverage:
       check entry["implementation_status"].getStr() == "partial"
       check entry["execution"].getStr() == "not_run"
       check entry["actual"].kind == JNull
-    check reportExitCode(%*{"counts": {"mismatch": 0, "error": 0}, "apple_counts": {"unobserved": coverage.len}}) == 1
+    check reportExitCode(%*{"counts": {"mismatch": 0, "error": 0},
+      "apple_counts": {"unobserved": coverage.len, "mismatch": 0, "error": 0}}) == 1
 
   test "Missing Apple profiles requirements and MPS links are invalid":
     var malformed = duplicate(requirements)
@@ -122,3 +128,44 @@ suite "Pinned PyTorch conformance foundation":
     malformed = duplicate(capabilities)
     malformed["areas"] = withoutFirst(malformed["areas"])
     expect ValueError: validateCapabilities(malformed, inventory, requirements)
+
+  test "Typed native observations distinguish pass mismatch and error":
+    let id = "apple.metal.device_dispatch"
+    let evidence = %*{"invocation_id": 1, "completed": true,
+      "kind": "device_storage_control", "cpu_fallback_count": 0}
+    var observation = AppleObservation(id: id, profile: "apple-metal", execution: aePass,
+      actual: %*{"observed": true}, evidence: evidence)
+    let passed = collectAppleCoverage(requirements, capabilities, ["apple-metal"], [observation], id)
+    check passed.len == 1
+    check passed[0]["execution"].getStr == "pass"
+    check completedNativeInvocation(passed[0]["evidence"])
+    observation.execution = aeMismatch
+    observation.differences = @[Difference(path: "/observed", expected: %true, actual: %false)]
+    let mismatch = collectAppleCoverage(requirements, capabilities, ["apple-metal"], [observation], id)
+    check mismatch[0]["execution"].getStr == "mismatch"
+    check mismatch[0]["differences"].len == 1
+    observation.execution = aeError
+    observation.differences = @[]
+    observation.error = %*{"category": "unavailable", "message": "isolated policy probe"}
+    let errored = collectAppleCoverage(requirements, capabilities, ["apple-metal"], [observation], id)
+    check errored[0]["execution"].getStr == "error"
+    for execution in ["mismatch", "error"]:
+      var counters = %*{"unobserved": 0, "mismatch": 0, "error": 0}
+      counters[execution] = %1
+      check reportExitCode(%*{"counts": {"mismatch": 0, "error": 0}, "apple_counts": counters}) == 1
+
+  test "Malformed duplicate conflicting and uncompleted observations fail closed":
+    let id = "apple.metal.device_dispatch"
+    var observation = AppleObservation(id: id, profile: "apple-metal", execution: aePass,
+      actual: %*{"observed": true}, evidence: %*{"invocation_id": 1, "completed": true,
+        "kind": "device_storage_control", "cpu_fallback_count": 0})
+    expect ValueError:
+      discard collectAppleCoverage(requirements, capabilities, ["apple-metal"], [observation, observation])
+    observation.id = "unknown"
+    expect ValueError: discard collectAppleCoverage(requirements, capabilities, ["apple-metal"], [observation])
+    observation.id = id
+    observation.profile = "apple-coreai"
+    expect ValueError: discard collectAppleCoverage(requirements, capabilities, ["apple-metal"], [observation])
+    observation.profile = "apple-metal"
+    observation.evidence["completed"] = %false
+    expect ValueError: discard collectAppleCoverage(requirements, capabilities, ["apple-metal"], [observation])

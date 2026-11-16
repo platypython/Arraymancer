@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Execute compiled-in native Apple conformance observations and fail closed on
+  missing, mismatching or errored requirements. Report format 2 adds native
+  evidence; `--requirement=ID` selects one contract with its explicit Apple profile.
 - Add optional native Metal float32 storage and explicit CPU transfers on macOS
   arm64. Build with `nim c -r tools/build_apple.nim --backend=metal`, then enable
   `-d:metal`; unavailable devices or libraries raise explicit backend errors.

@@ -15,13 +15,15 @@
 ## Runs native CPU observations and reports required, unobserved Apple coverage.
 import std/[json, os, parseopt]
 import ./[parity_support, native_cases]
+when defined(metal) or defined(coreai):
+  import ./native_metal_cases
 
 const parityRoot* = "tests/parity/"
-const usage = "Usage: pytorch_parity [--profile=all|cpu|apple|apple-metal|apple-coreai] [--case=ID] [--fixtures=PATH] [--output=PATH] [--help]"
+const usage = "Usage: pytorch_parity [--profile=all|cpu|apple|apple-metal|apple-coreai] [--case=ID | --requirement=ID] [--fixtures=PATH] [--output=PATH] [--help]"
 
 type Selection* = object
   profiles*: seq[string]
-  caseId*, fixtures*, output*: string
+  caseId*, requirementId*, fixtures*, output*: string
 
 proc parseSelection*(args: seq[string]): Selection =
   result.fixtures = parityRoot & "fixtures.json"
@@ -37,6 +39,9 @@ proc parseSelection*(args: seq[string]): Selection =
     of "case":
       if value.len == 0: raise newException(ValueError, "--case requires an ID")
       result.caseId = value
+    of "requirement":
+      if value.len == 0: raise newException(ValueError, "--requirement requires an ID")
+      result.requirementId = value
     of "fixtures":
       if value.len == 0: raise newException(ValueError, "--fixtures requires a path")
       result.fixtures = value
@@ -52,11 +57,21 @@ proc parseSelection*(args: seq[string]): Selection =
   else: raise newException(ValueError, "Unknown profile: " & profile)
   if result.caseId.len > 0 and not explicitCpu:
     raise newException(ValueError, "--case requires explicit --profile=cpu")
+  if result.requirementId.len > 0:
+    if profile notin ["apple-metal", "apple-coreai"] or result.caseId.len > 0:
+      raise newException(ValueError, "--requirement requires a single explicit Apple profile and excludes --case")
+    let requirements = loadAppleRequirements(parityRoot & "apple_requirements.json")
+    var found = false
+    for req in requirements["requirements"]:
+      if req["id"].getStr == result.requirementId and req["profile"].getStr == profile: found = true
+    if not found: raise newException(ValueError, "Unknown or profile-conflicting requirement: " & result.requirementId)
 
 proc reportExitCode*(report: JsonNode): int =
   if report["counts"]["mismatch"].getInt() > 0 or
       report["counts"]["error"].getInt() > 0 or
-      report["apple_counts"]["unobserved"].getInt() > 0: 1
+      report["apple_counts"]["unobserved"].getInt() > 0 or
+      report["apple_counts"]["mismatch"].getInt() > 0 or
+      report["apple_counts"]["error"].getInt() > 0: 1
   else: 0
 
 proc collectReport*(selection: Selection): JsonNode =
@@ -102,15 +117,29 @@ proc collectReport*(selection: Selection): JsonNode =
       let status = entry["status"].getStr()
       counts[status] = %(counts[status].getInt() + 1)
       results.add(entry)
-  let appleCoverage = collectAppleCoverage(requirements, capabilities, selection.profiles)
+  var observations: seq[AppleObservation]
+  when defined(metal) or defined(coreai):
+    if "apple-metal" in selection.profiles:
+      observations = runMetalRequirements(selection.requirementId)
+  let appleCoverage = collectAppleCoverage(requirements, capabilities, selection.profiles,
+    observations, selection.requirementId)
   var appleCounts = %*{"required": appleCoverage.len, "partial": 0, "missing": 0,
-    "unreviewed": 0, "native_executed": 0, "unobserved": appleCoverage.len,
+    "unreviewed": 0, "native_executed": 0, "unobserved": 0,
+    "pass": 0, "mismatch": 0, "error": 0,
     "gate": (if appleCoverage.len == 0: "not_selected" else: "incomplete")}
   for entry in appleCoverage:
     let status = entry["implementation_status"].getStr()
     appleCounts[status] = %(appleCounts[status].getInt() + 1)
-  result = %*{"format": 1, "reference": reference, "scope": "conformance_foundation",
-    "profiles": selection.profiles, "selection": (if selection.caseId.len == 0: "all" else: selection.caseId),
+    let execution = entry["execution"].getStr
+    let counter = if execution == "not_run": "unobserved" else: execution
+    appleCounts[counter] = %(appleCounts[counter].getInt + 1)
+    if completedNativeInvocation(entry["evidence"]):
+      appleCounts["native_executed"] = %(appleCounts["native_executed"].getInt + 1)
+  if appleCoverage.len > 0 and appleCounts["pass"].getInt == appleCoverage.len:
+    appleCounts["gate"] = %"pass"
+  result = %*{"format": 2, "reference": reference, "scope": "native_apple_conformance",
+    "profiles": selection.profiles, "selection": (if selection.requirementId.len > 0: selection.requirementId
+      elif selection.caseId.len == 0: "all" else: selection.caseId),
     "inventory_counts": inventoryCounts, "capability_counts": capabilityCounts,
     "results": results, "counts": counts, "apple_coverage": appleCoverage,
     "apple_counts": appleCounts, "notice": "Full feature parity is not established by this run."}

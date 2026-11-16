@@ -16,6 +16,10 @@ type
     shape*, strides*: array[8, int64]
     offset*: int64
     capacity*: uint64
+  AMEvidence* {.bycopy.} = object
+    invocationId*, registryId*, transferBytes*, materializationBytes*: uint64
+    cpuFallbackCount*: uint64
+    completed*, kind*: int32
   MetalApi* = object
     messageFree*: proc(message: cstring) {.cdecl, raises: [].}
     retain*, release*: proc(handle: pointer) {.cdecl, raises: [].}
@@ -24,6 +28,7 @@ type
     buffer*: proc(device: pointer; bytes: uint64; handle: ptr pointer): AMStatus {.cdecl.}
     transfer*: proc(buffer: pointer; descriptor: AMDescriptor; host: pointer; upload: int32): AMStatus {.cdecl.}
 
+    evidence*: proc(buffer: pointer; evidence: ptr AMEvidence): AMStatus {.cdecl.}
 const arraymancerAppleLibDir* {.strdefine.} = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir / "build/apple"
 var api: MetalApi
 var library: LibHandle
@@ -48,6 +53,7 @@ proc metalApi*(): MetalApi =
       resolve(deviceCount, "am_device_count")
       resolve(device, "am_device")
       resolve(buffer, "am_buffer")
+      resolve(evidence, "am_buffer_evidence")
       resolve(transfer, "am_transfer")
       library = handle
     result = api

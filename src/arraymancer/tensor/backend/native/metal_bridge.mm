@@ -3,13 +3,14 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "apple_abi.h"
-#include <mutex>
+#include <atomic>
 #include <cstring>
 #include <cstdlib>
 
 @interface AMBuffer : NSObject
 @property(nonatomic, strong) id<MTLBuffer> buffer;
 @property(nonatomic, strong) id<MTLCommandBuffer> producer;
+@property(nonatomic) AMEvidence evidence;
 @property(nonatomic) uint64_t capacity;
 @end
 @implementation AMBuffer
@@ -17,6 +18,14 @@
 
 static AMStatus failure(int32_t code, const char *text) {
   return {code, strdup(text)};
+}
+static AMStatus ok();
+static std::atomic<uint64_t> nextInvocation{1};
+AMStatus am_buffer_evidence(void *buffer, AMEvidence *evidence) {
+  if (!buffer || !evidence) return failure(2, "null evidence handle");
+  AMBuffer *owner = (__bridge AMBuffer *)buffer;
+  *evidence = owner.evidence;
+  return ok();
 }
 static AMStatus ok() { return {0, nullptr}; }
 void am_message_free(char *message) { free(message); }
@@ -47,6 +56,7 @@ AMStatus am_buffer(void *device, uint64_t bytes, void **buffer) {
     id<MTLDevice> dev = (__bridge id<MTLDevice>)device;
     if (bytes > dev.maxBufferLength) return failure(4, "Metal allocation exceeds maxBufferLength");
     AMBuffer *owner = [AMBuffer new];
+    owner.evidence = {nextInvocation.fetch_add(1), dev.registryID, 0, 0, 0, 1, 1};
     owner.buffer = [dev newBufferWithLength:MAX(bytes, 1) options:MTLResourceStorageModeShared];
     if (!owner.buffer) return failure(4, "Metal allocation failed");
     owner.capacity = bytes;
@@ -93,6 +103,11 @@ AMStatus am_transfer(void *buffer, AMTensorDescriptor d, void *host, int32_t upl
       if (upload) memcpy(native + index * 4, cpu + n * 4, 4);
       else memcpy(cpu + n * 4, native + index * 4, 4);
     }
+    AMEvidence evidence = owner.evidence;
+    evidence.invocation_id = nextInvocation.fetch_add(1);
+    evidence.transfer_bytes += count * 4;
+    evidence.completed = 1;
+    owner.evidence = evidence;
     return ok();
   }
 }

@@ -14,6 +14,12 @@ typedef struct {
   int64_t offset;
   uint64_t capacity;
 } AMTensorDescriptor;
+typedef struct {
+  uint64_t invocation_id, registry_id, transfer_bytes, materialization_bytes;
+  uint64_t cpu_fallback_count;
+  int32_t completed, kind;
+} AMEvidence;
+AMStatus am_buffer_evidence(void *buffer, AMEvidence *evidence);
 void am_message_free(char *message);
 void am_retain(void *handle);
 void am_release(void *handle);

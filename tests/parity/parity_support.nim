@@ -38,6 +38,13 @@ type
   Difference* = object
     path*: string
     expected*, actual*: JsonNode
+  AppleExecution* = enum
+    aePass, aeMismatch, aeError
+  AppleObservation* = object
+    id*, profile*: string
+    execution*: AppleExecution
+    actual*, error*, evidence*: JsonNode
+    differences*: seq[Difference]
 
 const
   RequiredCaseIds = ["tensor.transpose_alias", "tensor.empty_shape", "tensor.scalar_metadata",
@@ -375,32 +382,74 @@ proc compareValue(expected, actual: JsonNode, path: string, atol, rtol: float64,
 
 proc compareObservations*(expected, actual: JsonNode, atol, rtol: float64): seq[Difference] =
   compareValue(expected, actual, "", atol, rtol, result)
+proc completedNativeInvocation*(evidence: JsonNode): bool =
+  if evidence == nil or evidence.kind != JObject: return false
+  if not evidence.hasKey("invocation_id") or evidence["invocation_id"].kind != JInt or
+      evidence["invocation_id"].getBiggestInt <= 0: return false
+  if not evidence.hasKey("completed") or evidence["completed"].kind != JBool or
+      not evidence["completed"].getBool: return false
+  evidence.hasKey("kind") and evidence["kind"].getStr in
+    ["device_storage_control", "gpu_command", "coreai_inference"]
+
 proc collectAppleCoverage*(requirements, capabilities: JsonNode;
-                           profiles: openArray[string]): JsonNode =
+                           profiles: openArray[string];
+                           observations: openArray[AppleObservation];
+                           requirementId = ""): JsonNode =
   result = newJArray()
-  let annotations = field(capabilities, "apple_requirements")
-  var selectedProfiles = initHashSet[string]()
-  for profile in profiles:
-    if profile != "cpu": selectedProfiles.incl(profile)
+  var known = initTable[string, string]()
+  for req in field(requirements, "requirements"):
+    known[text(field(req, "id"), "requirement id")] = text(field(req, "profile"), "profile")
+  if requirementId.len > 0:
+    require(known.hasKey(requirementId), "Unknown Apple requirement " & requirementId)
+    require(profiles.len == 1 and profiles[0] == known[requirementId],
+      "Requirement needs its explicit single Apple profile")
+  var observed = initTable[string, AppleObservation]()
+  for observation in observations:
+    require(known.hasKey(observation.id), "Unknown Apple observation " & observation.id)
+    require(observation.id notin observed, "Duplicate Apple observation " & observation.id)
+    require(known[observation.id] == observation.profile and observation.profile in profiles,
+      "Apple observation/profile conflict")
+    require(requirementId.len == 0 or observation.id == requirementId, "Unselected Apple observation")
+    if observation.execution == aePass:
+      require(observation.actual != nil and observation.actual.kind != JNull and
+        observation.differences.len == 0 and (observation.error == nil or observation.error.kind == JNull),
+        "Pass requires actual values without differences/errors")
+      require(completedNativeInvocation(observation.evidence), "Pass requires completed native invocation")
+      let kind = observation.evidence["kind"].getStr
+      if observation.profile == "apple-metal":
+        require(kind == "gpu_command" or observation.id == "apple.metal.device_dispatch",
+          "Metal computation requires completed GPU command")
+        require(observation.evidence.hasKey("cpu_fallback_count") and
+          observation.evidence["cpu_fallback_count"].getInt == 0, "Metal fallback cannot pass")
+      else:
+        require(kind == "coreai_inference", "Core AI requires completed inference")
+    if observation.execution == aeMismatch:
+      require(observation.differences.len > 0, "Mismatch requires differences")
+    if observation.execution == aeError:
+      require(observation.error != nil and observation.error.kind == JObject, "Error requires diagnostic")
+    observed[observation.id] = observation
   for req in field(requirements, "requirements"):
     let profile = text(field(req, "profile"), "requirement profile")
-    if profile notin selectedProfiles: continue
     let id = text(field(req, "id"), "requirement id")
-    var status = "unreviewed"
-    var found = false
-    for annotation in annotations:
-      if annotation.kind == JObject and annotation.hasKey("id") and annotation["id"].kind == JString and
-          annotation["id"].getStr == id:
-        status = text(field(annotation, "status"), "Apple implementation status")
-        found = true
-        break
-    if not found: invalid("missing Apple capability annotation " & id)
-    if status notin AllowedStatuses: invalid("invalid Apple implementation status " & status)
-    var entry = newJObject()
-    entry["id"] = %id
-    entry["profile"] = %profile
-    entry["implementation_status"] = %status
-    entry["execution"] = %"not_run"
-    entry["actual"] = newJNull()
-    entry["reason"] = %"No native conformance observation in this foundation."
+    if profile notin profiles or (requirementId.len > 0 and id != requirementId): continue
+    var status = ""
+    for annotation in field(capabilities, "apple_requirements"):
+      if annotation["id"].getStr == id: status = text(field(annotation, "status"), "status")
+    require(status in AllowedStatuses, "Missing or invalid Apple annotation " & id)
+    var entry = %*{"id": id, "profile": profile, "implementation_status": status,
+      "execution": "not_run", "actual": nil, "reason": "No native conformance observation.",
+      "differences": [], "error": nil, "evidence": nil}
+    if observed.hasKey(id):
+      let observation = observed[id]
+      entry["execution"] = %(case observation.execution
+        of aePass: "pass"
+        of aeMismatch: "mismatch"
+        of aeError: "error")
+      entry["reason"] = newJNull()
+      entry["actual"] = if observation.actual == nil: newJNull() else: observation.actual
+      entry["error"] = if observation.error == nil: newJNull() else: observation.error
+      entry["evidence"] = if observation.evidence == nil: newJNull() else: observation.evidence
+      for difference in observation.differences:
+        entry["differences"].add(%*{"path": difference.path,
+          "expected": difference.expected, "actual": difference.actual})
     result.add entry
