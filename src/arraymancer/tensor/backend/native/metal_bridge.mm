@@ -113,6 +113,16 @@ static BOOL releaseBufferLease(AMBufferLease *lease);
 @end
 @implementation AMStream
 @end
+@interface AMStreamFence : NSObject
+@property(nonatomic, strong) AMStream *stream;
+@property(nonatomic, copy) NSArray<AMPendingCommand *> *snapshot;
+@property(nonatomic) uint64_t sequence;
+@property(nonatomic) BOOL completed;
+@property(nonatomic) int32_t resultCode;
+@property(nonatomic, copy) NSString *resultMessage;
+@end
+@implementation AMStreamFence
+@end
 
 @interface AMCustomLease : NSObject
 @property(nonatomic, weak) AMBuffer *owner;
@@ -974,6 +984,80 @@ static AMStatus enqueueMarker(AMStream *stream, id<MTLCommandBuffer> *marker,
   if (marker) *marker = command;
   return ok();
 }
+AMStatus am_stream_info(void *streamHandle, void **metalQueue,
+                        uint64_t *identity) {
+  if (!metalQueue || !identity)
+    return failure(2, "null Metal stream information output");
+  *metalQueue = nullptr;
+  *identity = 0;
+  if (!streamHandle) return failure(2, "null Metal stream");
+  id object = (__bridge id)streamHandle;
+  if (![object isKindOfClass:AMStream.class])
+    return failure(2, "invalid Metal stream handle");
+  AMStream *stream = (AMStream *)object;
+  if (!stream.queue) return failure(1, "Metal stream queue unavailable");
+  *metalQueue = (__bridge void *)stream.queue;
+  *identity = stream.identity;
+  return ok();
+}
+
+AMStatus am_stream_fence(void *streamHandle, void **fenceHandle) {
+  @autoreleasepool {
+    if (!fenceHandle) return failure(2, "null Metal stream fence output");
+    *fenceHandle = nullptr;
+    if (!streamHandle) return failure(2, "null Metal stream");
+    id object = (__bridge id)streamHandle;
+    if (![object isKindOfClass:AMStream.class])
+      return failure(2, "invalid Metal stream handle");
+    AMStream *stream = (AMStream *)object;
+    AMStreamFence *fence = [AMStreamFence new];
+    if (!fence) return failure(7, "cannot allocate Metal stream fence");
+    uint64_t sequence = 0;
+    AMStatus status = enqueueMarker(stream, nil, &sequence);
+    if (status.code) return status;
+    fence.stream = stream;
+    fence.sequence = sequence;
+    fence.snapshot = pendingThrough(stream, sequence);
+    *fenceHandle = (__bridge_retained void *)fence;
+    return ok();
+  }
+}
+
+AMStatus am_stream_fence_wait(void *fenceHandle) {
+  @autoreleasepool {
+    if (!fenceHandle) return failure(2, "null Metal stream fence");
+    id object = (__bridge id)fenceHandle;
+    if (![object isKindOfClass:AMStreamFence.class])
+      return failure(2, "invalid Metal stream fence handle");
+    AMStreamFence *fence = (AMStreamFence *)object;
+    @synchronized(fence) {
+      if (!fence.completed) {
+        @try {
+          waitAndFinalize(fence.stream, fence.snapshot);
+          AMStatus status = streamFailureThrough(fence.stream, fence.sequence);
+          fence.resultCode = status.code;
+          if (status.message) {
+            fence.resultMessage =
+                [NSString stringWithUTF8String:status.message]
+                ?: @"Metal stream command failed";
+            free(status.message);
+          }
+          fence.snapshot = @[];
+        } @catch (NSException *exception) {
+          fence.resultCode = 5;
+          fence.resultMessage =
+              exception.reason ?: @"Metal stream fence wait failed";
+          fence.snapshot = @[];
+        }
+        fence.completed = YES;
+      }
+      return fence.resultCode
+          ? failure(fence.resultCode, fence.resultMessage.UTF8String)
+          : ok();
+    }
+  }
+}
+
 AMStatus am_device_count(int32_t *count) {
   @autoreleasepool {
     if (!count) return failure(2, "null count");

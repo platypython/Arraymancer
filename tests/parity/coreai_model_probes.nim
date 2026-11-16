@@ -37,7 +37,9 @@ proc coreAIEvidence*(job: CoreAIJob): JsonNode =
     "architecture": native.architecture, "bridge_host_copy_bytes": native.hostCopyBytes,
     "bridge_materialization_bytes": native.materializationBytes,
     "bridge_cpu_fallback_count": native.cpuFallbackCount,
-    "borrowed_input_count": native.borrowedInputCount, "producer_count": native.producerCount}
+    "borrowed_input_count": native.borrowedInputCount, "producer_count": native.producerCount,
+    "stream_identity": native.streamIdentity, "sdk_stream_completed": native.sdkStreamCompleted,
+    "metal_queue_completed": native.metalQueueCompleted}
   if native.actualPlacement >= 0: result["actual_placement"] = %native.actualPlacement
 
 proc identityDescriptor(): JsonNode =

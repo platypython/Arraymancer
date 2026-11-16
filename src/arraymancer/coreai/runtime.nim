@@ -1,10 +1,9 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
 ## Provides typed Core AI model, descriptor, array and inference-job APIs.
 import std/options
-from ../tensor/metal_types import MetalTensor
+from ../tensor/metal_types import MetalTensor, MetalStream
 import ../tensor/[data_structure, init_cpu]
 import ./backend except CoreAIError, CoreAIUnavailableError, CoreAIDescriptorError, CoreAITimeoutError, CoreAIBufferBusyError
-
 type
   CoreAIError* = backend.CoreAIError
   CoreAIUnavailableError* = backend.CoreAIUnavailableError
@@ -35,7 +34,15 @@ type
     availableMask*, allowedMask*: uint32
     hostCopyBytes*, materializationBytes*, cpuFallbackCount*: uint64
     borrowedInputCount*, producerCount*: uint64
+    streamIdentity*: uint64
+    sdkStreamCompleted*, metalQueueCompleted*: bool
     assetDigest*, functionName*, architecture*: string
+
+  CoreAIStream* = ref object
+    ## Owns the Core AI wrapper for one retained Metal queue and its SDK stream.
+    owner: CoreAIHandle
+    metalStream: MetalStream
+    streamIdentity*: uint64
 
   CoreAIHandleObj = object
     handle: pointer
@@ -74,7 +81,7 @@ type
     ## Native work retains dependencies until completion, even after a wait times out.
     owner: CoreAIHandle
     function: CoreAIFunction
-
+    stream: CoreAIStream
 when defined(gcDestructors):
   proc `=destroy`(owner: var CoreAIHandleObj) =
     if owner.handle != nil:
@@ -230,6 +237,11 @@ proc coreAIJobEvidence*(job: CoreAIJob): CoreAIEvidence =
     result.cpuFallbackCount = native.cpuFallbackCount
     result.borrowedInputCount = native.borrowedInputCount
     result.producerCount = native.producerCount
+    if native.sdkStreamCompleted notin 0..1 or native.metalQueueCompleted notin 0..1:
+      raise newException(CoreAIError, "Core AI returned invalid stream completion flags")
+    result.streamIdentity = native.streamIdentity
+    result.sdkStreamCompleted = native.sdkStreamCompleted != 0
+    result.metalQueueCompleted = native.metalQueueCompleted != 0
     result.assetDigest = if native.assetDigest == nil: "" else: $native.assetDigest
     result.functionName = if native.functionName == nil: "" else: $native.functionName
     result.architecture = if native.architecture == nil: "" else: $native.architecture
@@ -557,6 +569,61 @@ proc submitInference*(function: CoreAIFunction; inputs: openArray[CoreAIBinding]
     raise
   result = CoreAIJob(owner: ownCoreAI(nativeJob), function: function)
 
+proc newCoreAIStream*(stream: MetalStream): CoreAIStream =
+  ## Create an SDK stream over the same retained native Metal command queue.
+  if stream == nil or stream.owner == nil or stream.owner.handle == nil:
+    raise newException(CoreAIError, "Invalid or released Metal stream")
+  var queue: pointer
+  var identity: uint64
+  checkCoreAI(coreAIApi().streamInfo(stream.owner.handle, addr queue, addr identity))
+  if queue == nil:
+    raise newException(CoreAIError, "Metal stream has no native command queue")
+  var nativeStream: pointer
+  checkCoreAI(coreAIApi().streamCreate(stream.owner.handle, addr nativeStream))
+  result = CoreAIStream(owner: ownCoreAI(nativeStream),
+    metalStream: stream, streamIdentity: identity)
+
+proc encodeInference*(function: CoreAIFunction;
+                       inputs: openArray[CoreAIBinding];
+                       outputViews: openArray[CoreAIBinding] = [];
+                       stream: CoreAIStream): CoreAIJob =
+  ## Encode on the same queue as Metal work; returns before inference completes.
+  ## Native work retains arrays and the stream through SDK completion.
+  let functionHandle = requireOwner(if function == nil: nil else: function.owner, "function")
+  let streamHandle = requireOwner(if stream == nil: nil else: stream.owner, "stream")
+  if uint64(inputs.len) > uint64(high(uint32)) or
+      uint64(outputViews.len) > uint64(high(uint32)):
+    descriptorFailure("Too many Core AI inference bindings")
+  var nativeInputs = newSeq[ACBinding](inputs.len)
+  var nativeOutputs = newSeq[ACBinding](outputViews.len)
+  for index, input in inputs:
+    if containsNul(input.name):
+      descriptorFailure("Core AI input name contains a null byte")
+    nativeInputs[index].name = input.name.cstring
+    nativeInputs[index].array = requireOwner(
+      if input.array == nil: nil else: input.array.owner, "array")
+  for index, output in outputViews:
+    if containsNul(output.name):
+      descriptorFailure("Core AI output name contains a null byte")
+    nativeOutputs[index].name = output.name.cstring
+    nativeOutputs[index].array = requireOwner(
+      if output.array == nil: nil else: output.array.owner, "array")
+  var inputPointer: ptr ACBinding
+  var outputPointer: ptr ACBinding
+  if nativeInputs.len != 0: inputPointer = addr nativeInputs[0]
+  if nativeOutputs.len != 0: outputPointer = addr nativeOutputs[0]
+  var nativeJob: pointer
+  let status = coreAIApi().encode(functionHandle, inputPointer,
+    uint32(nativeInputs.len), outputPointer, uint32(nativeOutputs.len),
+    streamHandle, addr nativeJob)
+  try:
+    checkCoreAI(status)
+  except:
+    if nativeJob != nil: coreAIApi().release(nativeJob)
+    raise
+  result = CoreAIJob(owner: ownCoreAI(nativeJob), function: function,
+    stream: stream)
+
 proc wait*(job: CoreAIJob; timeoutMs = 30000): seq[CoreAIBinding] =
   ## Wait for this job only and return its named SDK arrays. Zero milliseconds polls.
   ## Timeout does not cancel native work or release its pending dependencies.
@@ -588,3 +655,21 @@ proc infer*(function: CoreAIFunction; inputs: openArray[CoreAIBinding]): seq[Cor
   ## Submit inference and wait up to 30 seconds for its named outputs.
   let job = submitInference(function, inputs)
   result = wait(job)
+
+proc awaitCurrentWorkCompleted*(stream: CoreAIStream;
+                                timeoutMs = 30000): CoreAIEvidence {.discardable.} =
+  ## Wait for accepted SDK jobs and this queue's SDK/Metal completion boundary.
+  ## This is a completion fence, not tensor readback or a fully host-wait-free pipeline.
+  let streamHandle = requireOwner(if stream == nil: nil else: stream.owner, "stream")
+  if timeoutMs < 0 or uint64(timeoutMs) > uint64(high(uint32)):
+    descriptorFailure("Core AI wait timeout is outside the supported range")
+  var nativeJob: pointer
+  let status = coreAIApi().streamAwait(streamHandle, addr nativeJob)
+  try:
+    checkCoreAI(status)
+  except:
+    if nativeJob != nil: coreAIApi().release(nativeJob)
+    raise
+  let job = CoreAIJob(owner: ownCoreAI(nativeJob), stream: stream)
+  checkCoreAI(coreAIApi().jobWait(job.owner.handle, uint32(timeoutMs)))
+  result = coreAIJobEvidence(job)

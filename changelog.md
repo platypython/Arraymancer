@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Encode Core AI inference on the same retained Metal command queue into shared
+  caller output views. Producer-scoped fences and separate SDK/queue completion
+  boundaries preserve Metal consumers without intermediate host readback.
 - Preserve Core AI shared Metal-buffer views with byte offsets and strides.
   SDK descriptor resolution retains preferred layouts; producer-scoped native
   leases reject competing mutation until inference completes without host packing.

@@ -70,6 +70,9 @@ AMStatus am_stream_set(void *stream);
 AMStatus am_stream_sync(void *stream);
 AMStatus am_device_sync(void *device);
 AMStatus am_stream_complete(void *stream, int32_t *complete);
+AMStatus am_stream_info(void *stream, void **metal_queue, uint64_t *identity);
+AMStatus am_stream_fence(void *stream, void **fence);
+AMStatus am_stream_fence_wait(void *fence);
 AMStatus am_event(void *device, void **out);
 AMStatus am_event_record(void *event, void *stream, uint64_t *recorded_value);
 AMStatus am_event_wait(void *stream, void *event, uint64_t value,
@@ -92,7 +95,8 @@ AMStatus am_library(void *device, const char *text, int32_t mode, void **out);
 AMStatus am_kernel(void *library, const char *name, void **out);
 AMStatus am_dispatch(void *kernel, const AMKernelBinding *bindings,
                      uint32_t count, AMGrid grid, AMGrid group, void *stream);
-AMStatus am_transfer(void *buffer, AMTensorDescriptor descriptor, void *host, int32_t upload);
+AMStatus am_transfer(void *buffer, AMTensorDescriptor descriptor, void *host,
+                     int32_t upload);
 AMStatus am_buffer_info(void *buffer, AMTensorDescriptor descriptor,
                         void **metal_buffer, uint64_t *identity);
 AMStatus am_buffer_lease_begin(void *buffer, int32_t access,
@@ -134,6 +138,8 @@ typedef struct {
   char *function_name;
   char *architecture;
   uint64_t borrowed_input_count, producer_count;
+  uint64_t stream_identity;
+  int32_t sdk_stream_completed, metal_queue_completed;
 } ACEvidence;
 void ac_message_free(char *message);
 void ac_retain(void *handle);
@@ -158,6 +164,11 @@ AMStatus ac_array_copy(void *array, void *host, AMTensorDescriptor descriptor);
 AMStatus ac_array_descriptor(void *array, ACArrayDescriptor *out);
 AMStatus ac_submit(void *function, const ACBinding *inputs, uint32_t count,
                    void **job);
+AMStatus ac_stream_create(void *metal_stream, void **stream);
+AMStatus ac_encode(void *function, const ACBinding *inputs, uint32_t count,
+                   const ACBinding *output_views, uint32_t output_count,
+                   void *stream, void **job);
+AMStatus ac_stream_await(void *stream, void **job);
 AMStatus ac_job_output_count(void *job, uint32_t *count);
 AMStatus ac_job_output(void *job, uint32_t index, char **name, void **array);
 AMStatus ac_job_evidence(void *job, ACEvidence *out);

@@ -43,6 +43,18 @@ type
     hostCopyBytes*, materializationBytes*, cpuFallbackCount*: uint64
     assetDigest*, functionName*, architecture*: cstring
     borrowedInputCount*, producerCount*: uint64
+    streamIdentity*: uint64
+    sdkStreamCompleted*, metalQueueCompleted*: int32
+
+  AMStreamInfo* = proc(stream: pointer; metalQueue: ptr pointer;
+    identity: ptr uint64): AMStatus {.cdecl, gcsafe, raises: [].}
+  AMStreamFence* = proc(stream: pointer; fence: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+  AMStreamFenceWait* = proc(fence: pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+  ACStreamCreate* = proc(metalStream: pointer; stream: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+  ACEncode* = proc(function: pointer; inputs: ptr ACBinding; count: uint32;
+    outputViews: ptr ACBinding; outputCount: uint32; stream: pointer;
+    job: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+  ACStreamAwait* = proc(stream: pointer; job: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
 
   CoreAIApi* = object
     messageFree*: proc(message: cstring) {.cdecl, gcsafe, raises: [].}
@@ -60,14 +72,19 @@ type
     arrayImport*: proc(host: pointer; descriptor: AMTensorDescriptor; array: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
     arrayCopy*: proc(array: pointer; host: pointer; descriptor: AMTensorDescriptor): AMStatus {.cdecl, gcsafe, raises: [].}
     arrayDescriptor*: proc(array: pointer; descriptor: ptr ACArrayDescriptor): AMStatus {.cdecl, gcsafe, raises: [].}
-    arrayView*: proc(buffer: pointer; descriptor: AMTensorDescriptor;
-      array: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
+    arrayView*: proc(buffer: pointer; descriptor: AMTensorDescriptor; array: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
     descriptorResolve*: proc(descriptorHandle: pointer; shape: ptr int64;
       rank: uint32; outValue: ptr ACArrayDescriptor): AMStatus {.cdecl, gcsafe, raises: [].}
     submit*: proc(function: pointer; inputs: ptr ACBinding; count: uint32; job: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
     jobOutputCount*: proc(job: pointer; count: ptr uint32): AMStatus {.cdecl, gcsafe, raises: [].}
     jobOutput*: proc(job: pointer; index: uint32; name: ptr cstring; array: ptr pointer): AMStatus {.cdecl, gcsafe, raises: [].}
     jobEvidence*: proc(job: pointer; evidence: ptr ACEvidence): AMStatus {.cdecl, gcsafe, raises: [].}
+    streamInfo*: AMStreamInfo
+    streamFence*: AMStreamFence
+    streamFenceWait*: AMStreamFenceWait
+    streamCreate*: ACStreamCreate
+    encode*: ACEncode
+    streamAwait*: ACStreamAwait
 
 const arraymancerAppleLibDir {.strdefine.} = currentSourcePath().parentDir.parentDir.parentDir.parentDir / "build/apple"
 
@@ -115,8 +132,15 @@ proc coreAIApi*(): CoreAIApi {.gcsafe.} =
       resolve(jobOutputCount, "ac_job_output_count")
       resolve(jobOutput, "ac_job_output")
       resolve(jobEvidence, "ac_job_evidence")
+      resolve(streamInfo, "am_stream_info")
+      resolve(streamFence, "am_stream_fence")
+      resolve(streamFenceWait, "am_stream_fence_wait")
+      resolve(streamCreate, "ac_stream_create")
+      resolve(encode, "ac_encode")
+      resolve(streamAwait, "ac_stream_await")
       library = handle
     result = api
+ 
 
 proc releaseCString*(value: cstring) {.gcsafe.} =
   if value != nil:

@@ -132,6 +132,9 @@ private struct EvidenceContext: Sendable {
   var architecture: String
   var borrowedInputCount: UInt64 = 0
   var producerCount: UInt64 = 0
+  var streamIdentity: UInt64 = 0
+  var sdkStreamCompleted = false
+  var metalQueueCompleted = false
 }
 
 @available(macOS 27.0, *)
@@ -309,10 +312,10 @@ private final class CoreBufferReadLease: @unchecked Sendable {
   let producerCount: UInt64
   private let released = Mutex<Bool>(false)
 
-  init(ownerHandle: UnsafeMutableRawPointer) throws {
+  init(ownerHandle: UnsafeMutableRawPointer, access: Int32 = 0) throws {
     var leaseHandle: UnsafeMutableRawPointer?
     var producerCount: UInt64 = 0
-    let status = am_buffer_lease_begin(ownerHandle, 0, &leaseHandle, &producerCount)
+    let status = am_buffer_lease_begin(ownerHandle, access, &leaseHandle, &producerCount)
     do {
       try checkMetalStatus(status, fallback: 102)
       guard let leaseHandle else {
@@ -359,6 +362,7 @@ private final class CoreBufferReadLease: @unchecked Sendable {
 private enum JobOutcome: Sendable {
   case model(CoreModelHandle)
   case outputs([String: CoreArrayHandle])
+  case streamCompleted
   case failure(JobFailure)
 }
 
@@ -397,10 +401,147 @@ private final class CoreJobHandle: @unchecked Sendable {
     return outcome
   }
 
+  func waitUntilFinished() -> JobOutcome {
+    condition.lock()
+    defer { condition.unlock() }
+    while outcome == nil { condition.wait() }
+    guard let outcome else { preconditionFailure("job completion condition lost its outcome") }
+    return outcome
+  }
+
+  func markStreamCompletion(sdk: Bool? = nil, metal: Bool? = nil) {
+    condition.lock()
+    if let sdk { context.sdkStreamCompleted = sdk }
+    if let metal { context.metalQueueCompleted = metal }
+    condition.unlock()
+  }
+
   func snapshot() -> (JobOutcome?, EvidenceContext) {
     condition.lock()
     defer { condition.unlock() }
     return (outcome, context)
+  }
+}
+@available(macOS 27.0, *)
+private final class CoreAIStreamExecutor: Sendable {
+  private enum Request: Sendable {
+    case encode(CoreFunctionHandle, [String], [String: CoreArrayHandle],
+                [(name: String, storage: BorrowedMetalStorage)], CoreJobHandle,
+                CheckedContinuation<[String: CoreArrayHandle], Error>)
+    case completion(CheckedContinuation<Void, Never>)
+  }
+  private struct QueueReference: @unchecked Sendable {
+    // Metal queues allow cross-thread submission; ComputeStream stays worker-local.
+    let queue: any MTLCommandQueue
+  }
+  private let continuation: AsyncStream<Request>.Continuation
+
+  init(commandQueue: any MTLCommandQueue) {
+    let requests = AsyncStream<Request>.makeStream()
+    continuation = requests.continuation
+    let queue = QueueReference(queue: commandQueue)
+    Task.detached {
+      let computeStream = ComputeStream(commandQueue: queue.queue)
+      for await request in requests.stream {
+        switch request {
+        case let .encode(function, names, bindings, outputs, job, completion):
+          do {
+            let result = try await Self.performEncode(
+              computeStream: computeStream, commandQueue: queue.queue,
+              function: function, inputNames: names, bindings: bindings,
+              outputBindings: outputs, job: job)
+            completion.resume(returning: result)
+          } catch {
+            completion.resume(throwing: error)
+          }
+        case let .completion(completion):
+          await computeStream.currentWorkCompleted()
+          completion.resume()
+        }
+      }
+    }
+  }
+
+  deinit { continuation.finish() }
+
+  func encode(
+    function: CoreFunctionHandle, inputNames: [String],
+    bindings: [String: CoreArrayHandle],
+    outputBindings: [(name: String, storage: BorrowedMetalStorage)],
+    job: CoreJobHandle
+  ) async throws -> [String: CoreArrayHandle] {
+    try await withCheckedThrowingContinuation { completion in
+      continuation.yield(.encode(function, inputNames, bindings, outputBindings, job, completion))
+    }
+  }
+
+  func currentWorkCompleted() async {
+    await withCheckedContinuation { completion in
+      continuation.yield(.completion(completion))
+    }
+  }
+}
+
+@available(macOS 27.0, *)
+private final class CoreAIStreamHandle: @unchecked Sendable {
+  let nativeStreamHandle: UnsafeMutableRawPointer
+  let commandQueue: any MTLCommandQueue
+  let identity: UInt64
+  let executor: CoreAIStreamExecutor
+  private let acceptedJobs = Mutex<[CoreJobHandle]>([])
+
+  init(
+    nativeStreamHandle: UnsafeMutableRawPointer,
+    commandQueue: any MTLCommandQueue,
+    identity: UInt64
+  ) {
+    self.nativeStreamHandle = nativeStreamHandle
+    self.commandQueue = commandQueue
+    self.identity = identity
+    self.executor = CoreAIStreamExecutor(commandQueue: commandQueue)
+  }
+
+  func accept(_ job: CoreJobHandle) {
+    acceptedJobs.withLock { $0.append(job) }
+  }
+
+  func takeAcceptedJobs() -> [CoreJobHandle] {
+    acceptedJobs.withLock { jobs in
+      let snapshot = jobs
+      jobs.removeAll(keepingCapacity: true)
+      return snapshot
+    }
+  }
+
+  deinit {
+    am_release(nativeStreamHandle)
+  }
+}
+
+@available(macOS 27.0, *)
+private final class CoreMetalFence: @unchecked Sendable {
+  let nativeHandle: UnsafeMutableRawPointer
+
+  init(nativeHandle: UnsafeMutableRawPointer) {
+    self.nativeHandle = nativeHandle
+  }
+
+  func wait() async throws {
+    let fence = self
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          try checkMetalStatus(am_stream_fence_wait(fence.nativeHandle), fallback: 103)
+          continuation.resume()
+        } catch {
+          continuation.resume(throwing: error)
+        }
+      }
+    }
+  }
+
+  deinit {
+    am_release(nativeHandle)
   }
 }
 
@@ -1110,6 +1251,187 @@ private func validateFunctionInputs(
   }
   return expectedNames
 }
+
+@available(macOS 27.0, *)
+private func validateFunctionOutputViews(
+  function: CoreFunctionHandle,
+  bindings: [String: CoreArrayHandle],
+  commandQueue: any MTLCommandQueue
+) throws -> [String] {
+  let descriptor = function.function.descriptor
+  let expectedNames = descriptor.outputNames
+  let expectedSet = Set(expectedNames)
+  guard expectedSet.count == expectedNames.count,
+        Set(bindings.keys).isSubset(of: expectedSet) else {
+    throw abiError(102, "output views must use unique names declared by the function")
+  }
+
+  for name in bindings.keys.sorted() {
+    guard let expected = descriptor.outputDescriptor(of: name),
+          case let .ndArray(expectedArray) = expected else {
+      throw abiError(102, "Core AI output \(name) is not a named NDArray")
+    }
+    guard let actual = bindings[name] else {
+      throw abiError(102, "missing Core AI output view \(name)")
+    }
+    guard actual.scalarType == expectedArray.scalarType else {
+      throw abiError(102, "dtype mismatch for Core AI output view \(name)")
+    }
+    let actualShape = actual.shape
+    let expectedShape = expectedArray.shape
+    guard actualShape.count == expectedShape.count else {
+      throw abiError(102, "rank mismatch for Core AI output view \(name)")
+    }
+    for axis in expectedShape.indices {
+      let expectedDimension = expectedShape[axis]
+      let actualDimension = actualShape[axis]
+      guard expectedDimension == -1 || expectedDimension == actualDimension else {
+        throw abiError(102, "static dimension mismatch for Core AI output view \(name)")
+      }
+      guard actualDimension >= 0 else {
+        throw abiError(102, "Core AI output view \(name) has a negative dimension")
+      }
+    }
+    guard abiType(for: actual.scalarType) != nil else {
+      throw abiError(102, "Core AI output views support only float32 and int32")
+    }
+    guard case let .borrowed(storage) = actual.storage else {
+      throw abiError(102, "Core AI output views require shared Metal-buffer storage")
+    }
+    guard storage.metalBuffer.storageMode == .shared else {
+      throw abiError(102, "Core AI output views require shared MTLBuffer storage")
+    }
+    guard storage.metalBuffer.device.registryID == commandQueue.device.registryID else {
+      throw abiError(102, "Core AI output view and stream use different Metal devices")
+    }
+  }
+  return expectedNames
+}
+
+@available(macOS 27.0, *)
+extension CoreAIStreamExecutor {
+  private static func performEncode(
+    computeStream: ComputeStream,
+    commandQueue: any MTLCommandQueue,
+    function: CoreFunctionHandle,
+    inputNames: [String],
+    bindings: [String: CoreArrayHandle],
+    outputBindings: [(name: String, storage: BorrowedMetalStorage)],
+    job: CoreJobHandle
+  ) async throws -> [String: CoreArrayHandle] {
+    var asyncInputs: [String: InferenceFunction.AsyncValue] = [:]
+    asyncInputs.reserveCapacity(inputNames.count)
+    for name in inputNames {
+      guard let binding = bindings[name] else {
+        throw abiError(102, "missing Core AI input \(name)")
+      }
+      switch binding.storage {
+      case let .owned(array):
+        asyncInputs[name] = InferenceFunction.AsyncValue(array)
+      case let .borrowed(storage):
+        guard storage.metalBuffer.device.registryID == commandQueue.device.registryID else {
+          throw abiError(102, "Core AI input \(name) and stream use different Metal devices")
+        }
+        asyncInputs[name] = unsafe InferenceFunction.AsyncValue(
+          unsafeBuffer: storage.metalBuffer,
+          byteOffset: storage.byteOffset,
+          scalarType: storage.scalarType,
+          shape: storage.shape,
+          strides: storage.strides,
+          interleaveLayout: nil
+        )
+      }
+    }
+
+    let expectedNames = function.function.descriptor.outputNames
+    let outputViewNames = Set(outputBindings.map { $0.name })
+    let expectedAllocatedNames = expectedNames.filter { !outputViewNames.contains($0) }
+    let views = InferenceFunction.AsyncMutableViews()
+    let sdkOutputs = try await encodeWithOutputViews(
+      computeStream: computeStream,
+      function: function.function,
+      inputs: asyncInputs,
+      outputBindings: outputBindings,
+      index: 0,
+      views: consume views,
+      job: job
+    )
+    let reportedNames = Array(sdkOutputs.keys)
+    guard Set(reportedNames) == Set(expectedAllocatedNames),
+          reportedNames.count == expectedAllocatedNames.count else {
+      throw abiError(102, "Core AI returned outputs inconsistent with its output views and descriptor")
+    }
+
+    var outputs: [String: CoreArrayHandle] = [:]
+    outputs.reserveCapacity(expectedAllocatedNames.count)
+    for name in expectedAllocatedNames {
+      guard let output = sdkOutputs[name] else {
+        throw abiError(102, "Core AI omitted allocated output \(name)")
+      }
+      guard let array = try await output.ndArray else {
+        throw abiError(102, "Core AI output \(name) is not an NDArray")
+      }
+      outputs[name] = CoreArrayHandle(
+        array: array,
+        name: name,
+        minimumBytes: try sdkArrayMinimumBytes(array)
+      )
+    }
+    return outputs
+  }
+
+  private static func encodeWithOutputViews(
+    computeStream: ComputeStream,
+    function: InferenceFunction,
+    inputs: [String: InferenceFunction.AsyncValue],
+    outputBindings: [(name: String, storage: BorrowedMetalStorage)],
+    index: Int,
+    views: consuming InferenceFunction.AsyncMutableViews,
+    job: CoreJobHandle
+  ) async throws -> [String: InferenceFunction.AsyncValue] {
+    var currentViews = consume views
+    guard index < outputBindings.count else {
+      let outputs: [String: InferenceFunction.AsyncValue]
+      do {
+        outputs = try function.encode(
+          inputs: inputs,
+          outputViews: consume currentViews,
+          to: computeStream
+        )
+      } catch {
+        await computeStream.currentWorkCompleted()
+        job.markStreamCompletion(sdk: true)
+        throw error
+      }
+      await computeStream.currentWorkCompleted()
+      job.markStreamCompletion(sdk: true)
+      return outputs
+    }
+
+    let binding = outputBindings[index]
+    var mutableValue = unsafe InferenceFunction.AsyncMutableValue(
+      unsafeBuffer: binding.storage.metalBuffer,
+      byteOffset: binding.storage.byteOffset,
+      scalarType: binding.storage.scalarType,
+      shape: binding.storage.shape,
+      strides: binding.storage.strides,
+      interleaveLayout: nil
+    )
+    currentViews.insert(&mutableValue, for: binding.name)
+    let outputs = try await encodeWithOutputViews(
+      computeStream: computeStream,
+      function: function,
+      inputs: inputs,
+      outputBindings: outputBindings,
+      index: index + 1,
+      views: consume currentViews,
+      job: job
+    )
+    withExtendedLifetime(mutableValue) {}
+    return outputs
+  }
+}
+
 @available(macOS 27.0, *)
 private func runInferenceWithInputViews(
   function: InferenceFunction,
@@ -1156,6 +1478,65 @@ private func runInferenceWithInputViews(
       inputs: nextInputs
     )
   }
+}
+
+@available(macOS 27.0, *)
+private func captureMetalFence(_ stream: CoreAIStreamHandle) throws -> CoreMetalFence {
+  var fenceHandle: UnsafeMutableRawPointer?
+  try checkMetalStatus(
+    am_stream_fence(stream.nativeStreamHandle, &fenceHandle),
+    fallback: 102
+  )
+  guard let fenceHandle else {
+    throw abiError(103, "native Metal stream fence returned a nil handle")
+  }
+  return CoreMetalFence(nativeHandle: fenceHandle)
+}
+
+@available(macOS 27.0, *)
+private func waitForCoreJob(_ job: CoreJobHandle) async -> JobOutcome {
+  await withCheckedContinuation { (continuation: CheckedContinuation<JobOutcome, Never>) in
+    DispatchQueue.global(qos: .userInitiated).async {
+      continuation.resume(returning: job.waitUntilFinished())
+    }
+  }
+}
+
+@available(macOS 27.0, *)
+private func awaitCoreJobSuccess(_ job: CoreJobHandle) async throws {
+  switch await waitForCoreJob(job) {
+  case let .failure(failure):
+    throw abiError(failure.code, failure.message)
+  case .model, .outputs, .streamCompleted:
+    return
+  }
+}
+
+@available(macOS 27.0, *)
+private func decodeCoreBindings(
+  _ bindingsPointer: UnsafePointer<ACBinding>?,
+  count: UInt32,
+  role: String
+) throws -> [String: CoreArrayHandle] {
+  guard count == 0 || bindingsPointer != nil else {
+    throw abiError(102, "nonempty \(role) bindings have a nil pointer")
+  }
+  var bindings: [String: CoreArrayHandle] = [:]
+  bindings.reserveCapacity(Int(count))
+  if count > 0, let bindingsPointer {
+    for index in 0..<Int(count) {
+      let binding = bindingsPointer[index]
+      guard let name = binding.name, name.pointee != 0 else {
+        throw abiError(102, "\(role) binding name is empty")
+      }
+      let bindingName = String(cString: name)
+      guard bindings[bindingName] == nil else {
+        throw abiError(102, "duplicate \(role) binding name \(bindingName)")
+      }
+      bindings[bindingName] = try objectHandle(binding.array, as: CoreArrayHandle.self)
+    }
+  }
+  return bindings
 }
 
 
@@ -1670,6 +2051,249 @@ public func ac_array_descriptor(
 }
 
 @c @implementation
+public func ac_stream_create(
+  _ metalStreamPointer: UnsafeMutableRawPointer?,
+  _ streamOut: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+) -> AMStatus {
+  guard let streamOut else { return statusFailure(103, "Core AI stream output pointer is nil") }
+  streamOut.pointee = nil
+  guard #available(macOS 27.0, *) else {
+    return statusFailure(100, "Core AI requires macOS 27 or later")
+  }
+  guard let metalStreamPointer else {
+    return statusFailure(102, "Metal stream handle is nil")
+  }
+
+  am_retain(metalStreamPointer)
+  var ownershipTransferred = false
+  defer {
+    if !ownershipTransferred { am_release(metalStreamPointer) }
+  }
+  do {
+    var queuePointer: UnsafeMutableRawPointer?
+    var identity: UInt64 = 0
+    try checkMetalStatus(
+      am_stream_info(metalStreamPointer, &queuePointer, &identity),
+      fallback: 102
+    )
+    guard let queuePointer else {
+      throw abiError(103, "native Metal stream info returned a nil command queue")
+    }
+    let queueObject = Unmanaged<AnyObject>.fromOpaque(queuePointer).takeUnretainedValue()
+    guard let commandQueue = queueObject as? any MTLCommandQueue else {
+      throw abiError(102, "native Metal stream queue is not an MTLCommandQueue")
+    }
+    let stream = CoreAIStreamHandle(
+      nativeStreamHandle: metalStreamPointer,
+      commandQueue: commandQueue,
+      identity: identity
+    )
+    ownershipTransferred = true
+    streamOut.pointee = retainedHandle(stream)
+    return statusOK()
+  } catch {
+    return statusFailure(error)
+  }
+}
+
+@c @implementation
+public func ac_encode(
+  _ functionPointer: UnsafeMutableRawPointer?,
+  _ bindingsPointer: UnsafePointer<ACBinding>?,
+  _ count: UInt32,
+  _ outputViewsPointer: UnsafePointer<ACBinding>?,
+  _ outputCount: UInt32,
+  _ streamPointer: UnsafeMutableRawPointer?,
+  _ jobOut: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+) -> AMStatus {
+  guard let jobOut else { return statusFailure(103, "inference job output pointer is nil") }
+  jobOut.pointee = nil
+  guard #available(macOS 27.0, *) else {
+    return statusFailure(100, "Core AI requires macOS 27 or later")
+  }
+
+  do {
+    let function = try objectHandle(functionPointer, as: CoreFunctionHandle.self)
+    let stream = try objectHandle(streamPointer, as: CoreAIStreamHandle.self)
+    let bindings = try decodeCoreBindings(bindingsPointer, count: count, role: "input")
+    let outputViews = try decodeCoreBindings(
+      outputViewsPointer,
+      count: outputCount,
+      role: "output view"
+    )
+    let inputNames = try validateFunctionInputs(function: function, bindings: bindings)
+    _ = try validateFunctionOutputViews(
+      function: function,
+      bindings: outputViews,
+      commandQueue: stream.commandQueue
+    )
+
+    var borrowedOwners: [BorrowedMetalStorage] = []
+    borrowedOwners.reserveCapacity(bindings.count + outputViews.count)
+    var leases: [CoreBufferReadLease] = []
+    leases.reserveCapacity(bindings.count + outputViews.count)
+    var leasedInputIdentities = Set<UInt64>()
+    var borrowedInputCount: UInt64 = 0
+    var producerCount: UInt64 = 0
+
+    for name in inputNames {
+      guard let binding = bindings[name] else {
+        throw abiError(102, "missing Core AI input \(name)")
+      }
+      guard case let .borrowed(storage) = binding.storage else { continue }
+      guard storage.metalBuffer.device.registryID == stream.commandQueue.device.registryID else {
+        throw abiError(102, "Core AI input \(name) and stream use different Metal devices")
+      }
+      borrowedOwners.append(storage)
+      let (nextBorrowedCount, borrowedOverflow) = borrowedInputCount.addingReportingOverflow(1)
+      borrowedInputCount = borrowedOverflow ? UInt64.max : nextBorrowedCount
+      if leasedInputIdentities.insert(storage.identity).inserted {
+        let lease = try CoreBufferReadLease(ownerHandle: storage.ownerHandle)
+        leases.append(lease)
+        let (nextProducerCount, producerOverflow) =
+          producerCount.addingReportingOverflow(lease.producerCount)
+        producerCount = producerOverflow ? UInt64.max : nextProducerCount
+      }
+    }
+
+    var outputBindings: [(name: String, storage: BorrowedMetalStorage)] = []
+    outputBindings.reserveCapacity(outputViews.count)
+    for name in outputViews.keys.sorted() {
+      guard let binding = outputViews[name],
+            case let .borrowed(storage) = binding.storage else {
+        throw abiError(102, "Core AI output views require shared Metal-buffer storage")
+      }
+      outputBindings.append((name: name, storage: storage))
+      borrowedOwners.append(storage)
+      let lease = try CoreBufferReadLease(ownerHandle: storage.ownerHandle, access: 1)
+      leases.append(lease)
+      let (nextProducerCount, producerOverflow) =
+        producerCount.addingReportingOverflow(lease.producerCount)
+      producerCount = producerOverflow ? UInt64.max : nextProducerCount
+    }
+
+    let producerFence = try captureMetalFence(stream)
+    var context = modelEvidenceContext(
+      invocationID: nextInvocationID(),
+      policy: function.model.requestedPolicy,
+      options: function.model.options,
+      functionName: function.name,
+      assetDigest: function.model.assetDigest,
+      architecture: function.model.architecture
+    )
+    context.borrowedInputCount = borrowedInputCount
+    context.producerCount = producerCount
+    context.streamIdentity = stream.identity
+    let job = CoreJobHandle(context: context)
+    stream.accept(job)
+    jobOut.pointee = retainedHandle(job)
+
+    let submittedLeases = leases
+    let submittedBindings = bindings
+    let submittedOutputViews = outputBindings
+    let submittedBorrowedOwners = borrowedOwners
+    Task.detached(priority: .userInitiated) {
+      var outcome: JobOutcome
+      do {
+        for lease in submittedLeases {
+          try await lease.waitForProducers()
+        }
+        try await producerFence.wait()
+        let outputs = try await stream.executor.encode(
+          function: function,
+          inputNames: inputNames,
+          bindings: submittedBindings,
+          outputBindings: submittedOutputViews,
+          job: job
+        )
+        outcome = .outputs(outputs)
+      } catch {
+        let failure = error as? ABIError
+        outcome = .failure(JobFailure(
+          code: failure?.code ?? 103,
+          message: failure?.message ?? String(describing: error)
+        ))
+      }
+      for lease in submittedLeases { lease.release() }
+      job.finish(outcome)
+      withExtendedLifetime(submittedBindings) {}
+      withExtendedLifetime(submittedOutputViews) {}
+      withExtendedLifetime(submittedBorrowedOwners) {}
+      withExtendedLifetime(function) {}
+      withExtendedLifetime(stream) {}
+    }
+    return statusOK()
+  } catch {
+    return statusFailure(error)
+  }
+}
+
+@c @implementation
+public func ac_stream_await(
+  _ streamPointer: UnsafeMutableRawPointer?,
+  _ jobOut: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+) -> AMStatus {
+  guard let jobOut else { return statusFailure(103, "stream completion job output pointer is nil") }
+  jobOut.pointee = nil
+  guard #available(macOS 27.0, *) else {
+    return statusFailure(100, "Core AI requires macOS 27 or later")
+  }
+  do {
+    let stream = try objectHandle(streamPointer, as: CoreAIStreamHandle.self)
+    let acceptedJobs = stream.takeAcceptedJobs()
+    let context = EvidenceContext(
+      invocationID: nextInvocationID(),
+      kind: 4,
+      requestedPolicy: 0,
+      availableMask: 0,
+      allowedMask: 0,
+      preferredUnit: -1,
+      functionName: "",
+      assetDigest: "",
+      architecture: AIModel.deviceArchitectureName,
+      streamIdentity: stream.identity
+    )
+    let job = CoreJobHandle(context: context)
+    jobOut.pointee = retainedHandle(job)
+
+    Task.detached(priority: .userInitiated) {
+      var failures: [JobFailure] = []
+      for acceptedJob in acceptedJobs {
+        if case let .failure(failure) = await waitForCoreJob(acceptedJob) {
+          failures.append(failure)
+        }
+      }
+
+      await stream.executor.currentWorkCompleted()
+      job.markStreamCompletion(sdk: true)
+      do {
+        let fence = try captureMetalFence(stream)
+        try await fence.wait()
+        job.markStreamCompletion(metal: true)
+      } catch {
+        let failure = error as? ABIError
+        failures.append(JobFailure(
+          code: failure?.code ?? 103,
+          message: failure?.message ?? String(describing: error)
+        ))
+      }
+
+      if failures.isEmpty {
+        job.finish(.streamCompleted)
+      } else {
+        let message = failures.map(\.message).joined(separator: "; ")
+        job.finish(.failure(JobFailure(code: failures[0].code, message: message)))
+      }
+      withExtendedLifetime(acceptedJobs) {}
+      withExtendedLifetime(stream) {}
+    }
+    return statusOK()
+  } catch {
+    return statusFailure(error)
+  }
+}
+
+@c @implementation
 public func ac_submit(
   _ functionPointer: UnsafeMutableRawPointer?,
   _ bindingsPointer: UnsafePointer<ACBinding>?,
@@ -1810,8 +2434,13 @@ public func ac_job_output_count(
     let job = try objectHandle(jobPointer, as: CoreJobHandle.self)
     let (outcome, _) = job.snapshot()
     guard let outcome else { throw abiError(103, "inference job has not completed") }
+    if case let .failure(failure) = outcome {
+      throw abiError(failure.code, failure.message)
+    }
+    if case .streamCompleted = outcome {
+      throw abiError(103, "stream completion job has no inference outputs")
+    }
     guard case let .outputs(outputs) = outcome else {
-      if case let .failure(failure) = outcome { throw abiError(failure.code, failure.message) }
       throw abiError(103, "job is a model-loading operation, not inference")
     }
     guard let value = UInt32(exactly: outputs.count) else {
@@ -1843,8 +2472,13 @@ public func ac_job_output(
     let job = try objectHandle(jobPointer, as: CoreJobHandle.self)
     let (outcome, _) = job.snapshot()
     guard let outcome else { throw abiError(103, "inference job has not completed") }
+    if case let .failure(failure) = outcome {
+      throw abiError(failure.code, failure.message)
+    }
+    if case .streamCompleted = outcome {
+      throw abiError(103, "stream completion job has no inference outputs")
+    }
     guard case let .outputs(outputs) = outcome else {
-      if case let .failure(failure) = outcome { throw abiError(failure.code, failure.message) }
       throw abiError(103, "job is a model-loading operation, not inference")
     }
     let names = outputs.keys.sorted()
@@ -1889,6 +2523,9 @@ public func ac_job_evidence(
     evidence.cpu_fallback_count = 0
     evidence.borrowed_input_count = context.borrowedInputCount
     evidence.producer_count = context.producerCount
+    evidence.stream_identity = context.streamIdentity
+    evidence.sdk_stream_completed = context.sdkStreamCompleted ? 1 : 0
+    evidence.metal_queue_completed = context.metalQueueCompleted ? 1 : 0
     evidence.asset_digest = ownedCString(context.assetDigest)
     evidence.function_name = ownedCString(context.functionName)
     evidence.architecture = ownedCString(context.architecture)
