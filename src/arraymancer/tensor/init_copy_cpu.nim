@@ -24,4 +24,6 @@ proc clone*[T](t: Tensor[T], layout: OrderType = rowMajor): Tensor[T] {.noinit.}
   ## Returns:
   ##     - A full copy. The copy is recreated as a contiguous tensor.
   ##       If the input was a slice, unused values are discarded.
+  if t.shape.len == 0 and t.storage.isNil:
+    return t
   contiguousImpl(t, layout, result)

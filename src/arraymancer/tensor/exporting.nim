@@ -52,14 +52,16 @@ proc export_tensor*[T](t: Tensor[T]):
   ## - shape
   ## - strides
   ## - data
-  ## If the tensor was not contiguous (a slice for example), it is reshaped.
-  ## Data is exported in C order (last index changes the fastest, column in 2D case)
+  ## Shape and strides describe contiguous C-order data, even for an input view.
+  ## Data is exported in C order (last index changes the fastest, column in 2D case).
 
-  let contig_t = t.asContiguous
-
-  result.shape = contig_t.shape
-  result.strides = contig_t.strides
-  result.data = contig_t.toFlatSeq
+  result.shape = toSeq(t.shape)
+  result.strides = newSeq[int](t.rank)
+  var stride = 1
+  for axis in countdown(t.rank - 1, 0):
+    result.strides[axis] = stride
+    stride *= t.shape[axis]
+  result.data = t.toFlatSeq
 
 proc toSeq1D*[T](t: Tensor[T]): seq[T] =
   ## Exports a rank-1 tensor to a 1D sequence

@@ -62,13 +62,24 @@ func rank*[T](t: Tensor[T]): range[0 .. LASER_MAXRANK] {.inline.} =
   # Number of dimensions in the tensor
   t.shape.len
 
+func shapeProduct*(shape: Metadata): int {.inline.} =
+  ## Return the number of elements described by a shape.
+  ## Unlike DynamicStackArray.product, an empty shape describes one scalar.
+  if shape.len == 0:
+    1
+  else:
+    shape.product
+
 func size*[T](t: Tensor[T]): Natural {.inline.} =
-  # Total number of elements in the tensor (same as `len`, but returns a Natural)
-  t.shape.product
+  ## Total number of elements. A default rank-zero Tensor remains an empty sentinel.
+  if t.shape.len == 0 and t.storage.isNil:
+    0
+  else:
+    t.shape.shapeProduct
 
 func len*[T](t: Tensor[T]): int {.inline.} =
-  # Total number of elements in the tensor (same as `size`, but returns an int)
-  t.shape.product
+  ## Total number of elements (same as `size`, but returns an int)
+  int(t.size)
 
 # note: the finalizer has to be here for ARC to like it
 when not defined(gcDestructors):

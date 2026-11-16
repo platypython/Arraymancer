@@ -177,7 +177,8 @@ proc squeezeImpl*(t: var AnyTensor, axis: int) {.noSideEffect.} =
   when compileOption("boundChecks"):
     check_squeezeAxis(t, axis)
 
-  if t.rank > 1 and t.shape[axis] == 1: # We don't support rank 0 Tensor
+  # Removing a single axis preserves at least one dimension.
+  if t.rank > 1 and t.shape[axis] == 1:
     t.shape.delete(axis)
     t.strides.delete(axis)
 

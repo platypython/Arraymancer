@@ -29,7 +29,7 @@ func check_nested_elements*(shape: Metadata, len: int) {.inline.}=
   ## Input:
   ##   -- A shape (sequence of int)
   ##   -- A length (int)
-  if unlikely(shape.product != len):
+  if unlikely(shape.shapeProduct != len):
     raise newException(IndexDefect, "Each nested sequence at the same level must have the same number of elements")
 
 func check_index*(t: Tensor, idx: varargs[int]) {.inline.}=
@@ -121,15 +121,24 @@ func check_shape*(a: Tensor; b: Tensor|openArray;
                                    " and " & $b_shape)
 
 func check_reshape*(t: AnyTensor, new_shape: Metadata) {.inline.}=
-  if unlikely(t.size != new_shape.product):
+  var product: int
+  when t is Tensor:
+    product = new_shape.shapeProduct
+  else:
+    product = new_shape.product
+  if unlikely(t.size != product):
     raise newException(ValueError, "The total number of elements in the old (" &
                                     $t.size &
                                     ") and the new (" &
-                                    $new_shape.product &
+                                    $product &
                                     ") reshaped tensor must be the same")
 
 func check_reshape*(t: AnyTensor, new_shape:varargs[int]) {.inline.}=
-  let product = new_shape.toMetadata.product
+  var product: int
+  when t is Tensor:
+    product = new_shape.toMetadata.shapeProduct
+  else:
+    product = new_shape.toMetadata.product
   if unlikely(t.size != product):
     raise newException(ValueError, "The total number of elements in the old (" &
                                     $t.size &

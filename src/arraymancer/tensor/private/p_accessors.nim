@@ -72,6 +72,13 @@ func size(t: TensorForm): int {.inline.} =
 func reduceRank(t: TensorForm): TensorForm =
   result = t
 
+  if t.rank == 0:
+    result.shape[0] = 1
+    result.strides[0] = 1
+    result.shape.len = 1
+    result.strides.len = 1
+    return
+
   var i = 0
   result.shape[0] = t.shape[0]
   result.strides[0] = t.strides[0]
@@ -326,33 +333,32 @@ template stridedIterationLoop*(strider: IterKind, data, t, iter_offset, iter_siz
 
 template stridedIteration*(strider: IterKind, t, iter_offset, iter_size: typed): untyped =
   ## Iterate over a Tensor, displaying data as in C order, whatever the strides.
-
-  # Get tensor data address with offset builtin
-  # only reading here, pointer access is safe even for ref types
-
-  when getSubType(type(t)) is KnownSupportsCopyMem:
-    let data = t.unsafe_raw_offset()
-  else:
-    template data: untyped {.gensym.} = t
-
-  let tf = reduceRank(TensorForm(shape: t.shape, strides: t.strides))
-
-  assert tf.rank >= 1
-  if tf.rank == 1:
-    let s = tf.strides[^1]
-    for i in iter_offset..<(iter_offset+iter_size):
-      stridedIterationYield(strider, data, i, i*s)
-  else:
-    let prev_d = tf.shape[^2]
-    let last_d = tf.shape[^1]
-    if prev_d == 2 and last_d == 2:
-      stridedIterationLoop(strider, data, tf, iter_offset, iter_size, 2, 2)
-    elif last_d == 2:
-      stridedIterationLoop(strider, data, tf, iter_offset, iter_size, prev_d, 2)
-    elif last_d == 3:
-      stridedIterationLoop(strider, data, tf, iter_offset, iter_size, prev_d, 3)
+  if iter_size > 0:
+    # Get tensor data address with offset builtin
+    # only reading here, pointer access is safe even for ref types
+    when getSubType(type(t)) is KnownSupportsCopyMem:
+      let data = t.unsafe_raw_offset()
     else:
-      stridedIterationLoop(strider, data, tf, iter_offset, iter_size, prev_d, last_d)
+      template data: untyped {.gensym.} = t
+
+    let tf = reduceRank(TensorForm(shape: t.shape, strides: t.strides))
+
+    assert tf.rank >= 1
+    if tf.rank == 1:
+      let s = tf.strides[^1]
+      for i in iter_offset..<(iter_offset+iter_size):
+        stridedIterationYield(strider, data, i, i*s)
+    else:
+      let prev_d = tf.shape[^2]
+      let last_d = tf.shape[^1]
+      if prev_d == 2 and last_d == 2:
+        stridedIterationLoop(strider, data, tf, iter_offset, iter_size, 2, 2)
+      elif last_d == 2:
+        stridedIterationLoop(strider, data, tf, iter_offset, iter_size, prev_d, 2)
+      elif last_d == 3:
+        stridedIterationLoop(strider, data, tf, iter_offset, iter_size, prev_d, 3)
+      else:
+        stridedIterationLoop(strider, data, tf, iter_offset, iter_size, prev_d, last_d)
 
 iterator stridedOffsets*[T](t: Tensor[T], iter_offset, iter_size: int): int {.inline, noSideEffect.} =
   ## Iterate over a tensor's raw offsets in C order.
@@ -361,19 +367,19 @@ iterator stridedOffsets*[T](t: Tensor[T], iter_offset, iter_size: int): int {.in
 
 template stridedCoordsIteration*(t, iter_offset, iter_size: typed): untyped =
   ## Iterate over a Tensor, displaying data as in C order, whatever the strides. (coords)
+  if iter_size > 0:
+    # Get tensor data address with offset builtin
+    # only reading here, pointer access is safe even for ref types
+    when getSubType(type(t)) is KnownSupportsCopyMem:
+      let data = t.unsafe_raw_offset()
+    else:
+      template data: untyped {.gensym.} = t
+    let rank = t.rank
 
-  # Get tensor data address with offset builtin
-  # only reading here, pointer access is safe even for ref types
-  when getSubType(type(t)) is KnownSupportsCopyMem:
-    let data = t.unsafe_raw_offset()
-  else:
-    template data: untyped {.gensym.} = t
-  let rank = t.rank
-
-  initStridedIteration(coord, backstrides, iter_pos, t, iter_offset, iter_size)
-  for i in iter_offset..<(iter_offset+iter_size):
-    yield (coord[0..<rank], data[iter_pos])
-    advanceStridedIteration(coord, backstrides, iter_pos, t, iter_offset, iter_size)
+    initStridedIteration(coord, backstrides, iter_pos, t, iter_offset, iter_size)
+    for i in iter_offset..<(iter_offset+iter_size):
+      yield (coord[0..<rank], data[iter_pos])
+      advanceStridedIteration(coord, backstrides, iter_pos, t, iter_offset, iter_size)
 
 template dualStridedIterationYield*(strider: IterKind, t1data, t2data, i, t1_iter_pos, t2_iter_pos: typed) =
   ## Iterator the return value

@@ -79,6 +79,10 @@ proc deepCopy*[T](dst: var Tensor[T], src: Tensor[T]) =
   ## Note that if x was already initialized with a ``storage``,
   ## the storage will be detached from x. This does not write
   ## into existing storage.
+  if src.shape.len == 0 and src.storage.isNil:
+    dst = src
+    return
+
   var size: int
   initTensorMetadata(dst, size, src.shape)
   allocCpuStorage(dst.storage, size)
@@ -195,10 +199,8 @@ proc newTensor*[T](shape: varargs[int] = [0]): Tensor[T] =
   ## Create a new tensor of type T with the given shape.
   ##
   ## If no shape is provided, we create an empty rank-1 tensor.
-  ## To create a rank-0 tensor, explicitly pass and empty shape `[]`.
-  ##
-  ## Note that in general it is not a good idea to use rank-0 tensors.
-  ## However, they can be used as "sentinel" values for Tensor arguments.
+  ## The explicit empty shape `[]` creates a rank-zero tensor with one element.
+  ## A default(Tensor[T]) has no storage and remains an empty sentinel.
   var size: int
   initTensorMetadata(result, size, shape)
   allocCpuStorage(result.storage, size)
@@ -208,6 +210,7 @@ proc newTensor*[T](shape: varargs[int] = [0]): Tensor[T] =
 
 proc newTensor*[T](shape: Metadata): Tensor[T] =
   ## Create a new tensor of type T with the given shape.
+  ## An empty shape describes a rank-zero tensor with one element.
   var size: int
   initTensorMetadata(result, size, shape)
   allocCpuStorage(result.storage, size)
@@ -223,7 +226,7 @@ proc toTensor[T](a: openArray[T], shape: Metadata): Tensor[T] =
   ## Result:
   ##      - A Tensor of the same shape
   var data = @a
-  if unlikely(shape.product != data.len):
+  if unlikely(shape.shapeProduct != data.len):
     raise newException(
       IndexDefect,
       "Each nested sequence at the same level" &
@@ -234,7 +237,8 @@ proc toTensor[T](a: openArray[T], shape: Metadata): Tensor[T] =
   allocCpuStorage(result.storage, size)
 
   when T is KnownSupportsCopyMem:
-    result.copyFromRaw(data[0].unsafeAddr, data.len)
+    if data.len > 0:
+      result.copyFromRaw(data[0].unsafeAddr, data.len)
   else:
     when defined(gcArc) or defined(gcOrc):
       result.storage.raw_buffer = move data

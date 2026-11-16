@@ -6,10 +6,10 @@ Tutorial: First steps
 Tensor properties
 ~~~~~~~~~~~~~~~~~
 
-Tensors have the following properties: - ``rank``: - 0 for scalar
-(unfortunately cannot be stored) - 1 for vector - 2 for matrices - N for
-N-dimension array - ``shape``: a sequence of the tensor dimensions along
-each axis.
+Tensors have a ``rank`` (number of dimensions) and a ``shape`` (the size
+along each axis). Rank 0 is a scalar with shape ``[]`` and one element;
+rank 1 is a vector, rank 2 is a matrix, and higher ranks describe
+N-dimensional arrays.
 
 Next properties are technical and there for completeness - ``strides``:
 a sequence of numbers of steps to get the next item along a dimension. -
@@ -77,6 +77,12 @@ shape with a default value. (0 for numbers, false for bool …)
 
 ``zeros_like`` and ``ones_like`` take an input tensor and output a
 tensor of the same shape but filled with 0 and 1 respectively.
+
+Pass an explicit empty shape to ``newTensor[float]([])`` to create a
+zero-initialized CPU scalar. Its ``rank`` is 0 and its ``size`` is 1.
+Calling ``newTensor[float]()`` without a shape creates an empty vector
+of shape ``[0]``. A default, uninitialized ``Tensor[float]`` remains an
+empty sentinel with no storage.
 
 .. code:: nim
 

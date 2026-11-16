@@ -21,6 +21,12 @@ proc main() =
       let t = toSeq(1..6).toTensor().reshape(2, 3)
       check t.toFlatSeq == toSeq(1 .. 6)
 
+    test "Tuple export materializes transposed data in C order":
+      let exported = [[1, 2, 3], [4, 5, 6]].toTensor.transpose.export_tensor()
+      check exported.shape == @[3, 2]
+      check exported.strides == @[2, 1]
+      check exported.data == @[1, 4, 2, 5, 3, 6]
+
     test "Nested sequence exporting":
       block:
         let s = @[@[1, 2, 3], @[4, 5, 6]]

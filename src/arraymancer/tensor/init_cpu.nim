@@ -33,7 +33,7 @@ proc newTensorUninit*[T](shape: varargs[int] = [0]): Tensor[T] {.noinit, inline.
   ##      - Tensor data is uninitialized and contains garbage.
   ##      - If no shape is provided, a 1D tensor of size 0 is created.
   ##        It is possible to create a rank-0 tensor by explicitly
-  ##        providing an empty shape `[]` (e.g. `newTensorUninit[float]([])`).
+  ##        providing an empty shape `[]`, which allocates one uninitialized element.
   var size: int
   initTensorMetadata(result, size, shape)
   allocCpuStorage(result.storage, size)
@@ -51,6 +51,7 @@ proc newTensorUninit*[T](shape: Metadata): Tensor[T] {.noinit, inline.} =
   ##      - A Tensor of the proper shape with NO initialization
   ## Warning ⚠:
   ##      - Tensor data is uninitialized and contains garbage.
+  ## An empty shape allocates one uninitialized scalar element.
   var size: int
   initTensorMetadata(result, size, shape)
   allocCpuStorage(result.storage, size)
@@ -76,7 +77,7 @@ proc newTensorWith*[T](shape: varargs[int], value: T): Tensor[T] {.noinit.} =
       x = value
   else:
     for i in 0 ..< result.size:
-      result[i] = value
+      result.storage.raw_buffer[i] = value
 
 proc newTensorWith*[T](shape: Metadata, value: T): Tensor[T] {.noinit.} =
   ## Creates a new Tensor filled with the given value
@@ -97,7 +98,7 @@ proc newTensorWith*[T](shape: Metadata, value: T): Tensor[T] {.noinit.} =
       x = value
   else:
     for i in 0 ..< result.size:
-      result[i] = value
+      result.storage.raw_buffer[i] = value
 
 # newTensor is defined in laser/tensor/initialization
 

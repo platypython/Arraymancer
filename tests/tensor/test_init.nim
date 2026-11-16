@@ -114,6 +114,102 @@ proc main() =
         for v in t.items:
           check v == complex64(0.0,0.0)
 
+    test "Initialized rank-zero tensors":
+      let sentinel = default(Tensor[int])
+      check sentinel.rank == 0
+      check sentinel.size == 0
+      check sentinel.len == 0
+
+      var sentinelValues: seq[int]
+      for value in sentinel.items:
+        sentinelValues.add(value)
+      check sentinelValues.len == 0
+      check sentinel.toFlatSeq.len == 0
+
+      var sentinelPairCount = 0
+      for coordinates, value in sentinel.pairs:
+        discard coordinates
+        discard value
+        inc sentinelPairCount
+      check sentinelPairCount == 0
+
+      let sentinelExport = sentinel.export_tensor()
+      check sentinelExport.shape.len == 0
+      check sentinelExport.data.len == 0
+
+      let clonedSentinel = sentinel.clone()
+      check clonedSentinel.rank == 0
+      check clonedSentinel.size == 0
+      check clonedSentinel.storage.isNil
+
+      var deepCopiedSentinel: Tensor[int]
+      deepCopy(deepCopiedSentinel, sentinel)
+      check deepCopiedSentinel.size == 0
+      check deepCopiedSentinel.storage.isNil
+
+      let uninitialized = newTensorUninit[int]([])
+      check uninitialized.rank == 0
+      check uninitialized.size == 1
+      check uninitialized.len == 1
+
+      let scalar = zeros[int]([])
+      check scalar.rank == 0
+      check scalar.size == 1
+      check scalar.len == 1
+      check scalar.toFlatSeq == @[0]
+
+      let filled = newTensorWith[int]([], 42)
+      var iterated: seq[int]
+      for value in filled:
+        iterated.add(value)
+      check iterated == @[42]
+
+      var pairCount = 0
+      for coordinates, value in filled.pairs:
+        check coordinates.len == 0
+        check value == 42
+        inc pairCount
+      check pairCount == 1
+
+      let exported = filled.export_tensor()
+      check exported.shape.len == 0
+      check exported.strides.len == 0
+      check exported.data == @[42]
+
+      let cloned = filled.clone()
+      check cloned.rank == 0
+      check cloned.size == 1
+      check cloned.toFlatSeq == @[42]
+
+      let empty = zeros[int]([0])
+      check empty.size == 0
+      check empty.len == 0
+      check empty.toFlatSeq.len == 0
+      check empty.export_tensor().data.len == 0
+
+      let clonedEmpty = empty.clone()
+      check clonedEmpty.shape == [0]
+      check clonedEmpty.size == 0
+      check clonedEmpty.len == 0
+      check clonedEmpty.toFlatSeq.len == 0
+
+      let emptyFromSequence = newSeq[int]().toTensor()
+      check emptyFromSequence.shape == [0]
+      check emptyFromSequence.size == 0
+      check emptyFromSequence.toFlatSeq.len == 0
+
+    test "Rank-zero tensors with managed elements":
+      let scalar = newTensor[string]([])
+      check scalar.size == 1
+      check scalar.toFlatSeq == @[""]
+      let filled = newTensorWith[string]([], "scalar")
+      check filled.toFlatSeq == @["scalar"]
+      check newTensorWith[string](toMetadata([]), "metadata").toFlatSeq == @["metadata"]
+      var cloned = filled.clone()
+      cloned.atContiguousIndex(0) = "changed"
+      check filled.toFlatSeq == @["scalar"]
+      check cloned.toFlatSeq == @["changed"]
+
     test "Ones":
       block:
         let t = ones[float]([4,4,4])

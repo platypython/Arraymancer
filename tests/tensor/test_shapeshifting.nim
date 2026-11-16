@@ -70,6 +70,30 @@ proc main() =
       check: a == b
       check: a == c
 
+    test "Reshape scalars and empty tensors":
+      let scalar = newTensorWith[int]([], 17)
+      let scalarView = scalar.reshape([])
+      check scalarView.rank == 0
+      check scalarView.size == 1
+      check scalarView.toFlatSeq == @[17]
+
+      let vector = scalar.reshape([1])
+      check vector.shape == [1]
+      check vector.toFlatSeq == @[17]
+      check scalar.reshape_infer(-1).shape == [1]
+
+      let empty = zeros[int]([2, 0, 3])
+      let emptyReshaped = empty.reshape([0])
+      check emptyReshaped.size == 0
+      check emptyReshaped.len == 0
+      check emptyReshaped.toFlatSeq.len == 0
+
+      when compileOption("boundChecks"):
+        expect(ValueError):
+          discard scalar.reshape([0])
+        expect(ValueError):
+          discard empty.reshape([])
+
     test "Unsafe reshape":
       block:
         let a = toSeq(1..4).toTensor()
@@ -122,8 +146,8 @@ proc main() =
       check: empty_tensor.append(1) == [1].toTensor
       check: empty_tensor.append(a) == a
       check: a.append(empty_tensor) == a
-      # 2. Properly handle rank-0 (empty) tensors
-      let rank0_tensor = newTensor[int]([])
+      # The default rank-zero Tensor remains an empty sentinel.
+      let rank0_tensor = default(Tensor[int])
       check: a.append(rank0_tensor) == a
       check: rank0_tensor.append(a) == a
 
@@ -152,10 +176,8 @@ proc main() =
 
         check: b == [4, 3, 2, 1, 8, 7, 6, 5].toTensor.reshape(2,1,4)
 
-    test "Squeezing a single element tensor":
-      # Previously squeezing a single element tensor turned the result into
-      # a 0 rank tensor. But we don't actually fully support zero rank tensors!
-      # Hence `squeeze` now leaves at least a rank 1 tensor
+    test "Squeezing a single element tensor keeps rank one":
+      # Squeeze deliberately keeps at least one dimension for compatibility.
       block:
         let a = [1].toTensor
         let b = a.squeeze()

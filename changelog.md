@@ -1,6 +1,8 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Count initialized CPU rank-zero tensors as one element while preserving empty
+  uninitialized tensor sentinels.
 - Align trailing dimensions when broadcasting tensors of different ranks.
 - Normalize mean-MSE gradients by the number of prediction elements.
 - Restore the previous autograd tracking mode when `no_grad_mode` exits through
