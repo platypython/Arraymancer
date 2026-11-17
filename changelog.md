@@ -1,6 +1,8 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Return rank-zero CPU autograd `mean` and `sum` results. Correct axis-mean
+  gradients to divide by the reduced axis length, retaining the axis in outputs.
 - Add explicit output-gradient seeds to autograd `backprop` for vector-Jacobian
   products. Exact shape checks preserve the tape on invalid seeds, seed storage
   stays independent, and leaf gradients accumulate. The no-argument overload

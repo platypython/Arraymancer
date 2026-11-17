@@ -17,22 +17,19 @@ import  ../private/ast_utils,
         ./autograd_common,
         sequtils
 
-template reductionTensor(value: untyped): untyped =
-  when defined(metal) or defined(coreai):
-    when typeof(value) is MetalTensor: value
-    else: [value].toTensor
-  else:
-    [value].toTensor
+proc reductionTensor[T](value: T): Tensor[T] =
+  ## Wrap a host reduction in an initialized scalar without intermediate storage.
+  result = newTensorUninit[T]([])
+  result.unsafe_raw_offset[0] = value
+
+when defined(metal) or defined(coreai):
+  proc reductionTensor[T](value: MetalTensor[T]): MetalTensor[T] =
+    value
 type MeanGate*[TT] {.final.} = ref object of Gate[TT]
   ## TODO: generalize to C <- alpha AB + C
   cached_input_shape: Metadata
   axis: int
 
-proc shape_product(m: MeanGate): int {.inline.} =
-  result = 1
-  for i, v in m.cached_input_shape:
-    if i != m.axis:
-      result *= v
 
 proc mean_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
   let self = MeanGate[TT](self)
@@ -48,7 +45,7 @@ proc mean_with_axis_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): Small
   let self = MeanGate[TT](self)
   let gradient = payload.variable.grad
   result = newDiffs[TT](1)
-  result[0] = (gradient / getSubType(TT)(self.shape_product)).broadcast(self.cached_input_shape)
+  result[0] = (gradient / getSubType(TT)(self.cached_input_shape[self.axis])).broadcast(self.cached_input_shape)
 
 proc mean_cache[TT](result: Variable[TT], a: Variable[TT]) =
   # Gate
@@ -90,6 +87,7 @@ proc mean_cache[TT](result: Variable[TT], a: Variable[TT], axis: Natural) =
   )
 
 proc mean*[TT](a: Variable[TT]): Variable[TT] =
+  ## Average all elements, returning an initialized rank-zero tensor.
   # Resulting var
   new result
   result.context = a.context
@@ -100,6 +98,8 @@ proc mean*[TT](a: Variable[TT]): Variable[TT] =
     result.mean_cache(a)
 
 proc mean*[TT](a: Variable[TT], axis: Natural): Variable[TT] =
+  ## Average along ``axis``, retaining that dimension with length one.
+  ## Backward divides by the length of the reduced axis.
   # Resulting var
   new result
   result.context = a.context
@@ -142,9 +142,7 @@ proc sum_cache[TT](result: Variable[TT], a: Variable[TT]) =
   )
 
 proc sum*[TT](a: Variable[TT]): Variable[TT] =
-  # Gate
-  var gate: SumGate[TT]
-  new gate
+  ## Sum all elements, returning an initialized rank-zero tensor.
 
   # Resulting var
   new result

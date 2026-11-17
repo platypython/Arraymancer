@@ -17,6 +17,28 @@ import std / [unittest, sequtils]
 
 proc main() =
   suite "Autograd of basic operations":
+    test "Sum returns a scalar and propagates a scalar seed through a view":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([[1.0, 2, 3], [4.0, 5, 6]].toTensor.transpose,
+                           requires_grad = true)
+      let output = x.sum
+      check output.value.rank == 0
+      check output.value.size == 1
+      check output.value.atContiguousIndex(0) == 21.0
+      output.backprop([2.0].toTensor.reshape(newSeq[int]()))
+      check x.grad == ones[float64](3, 2) * 2.0
+
+    test "Axis mean VJP divides by the reduced axis on a three-dimensional view":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable(toSeq(1..24).toTensor.asType(float64).reshape(2, 3, 4),
+                           requires_grad = true)
+      let output = x.mean(axis = 1)
+      let seed = ones[float64](2, 1, 4) * 6.0
+      output.backprop(seed)
+      check output.value.shape == [2, 1, 4]
+      check output.value == [[[5.0, 6, 7, 8]], [[17.0, 18, 19, 20]]].toTensor
+      check x.grad == ones[float64](2, 3, 4) * 2.0
+
     test "Explicit strided gradients weight a branched vector-Jacobian product":
       let ctx = newContext Tensor[float64]
       let x = ctx.variable([[1.0, 2, 3], [4.0, 5, 6]].toTensor,
@@ -100,6 +122,9 @@ proc main() =
 
       let va = ctx.variable(a, requires_grad = true)
       let m = va.mean()
+      check m.value.rank == 0
+      check m.value.size == 1
+      check m.value.atContiguousIndex(0) == 4.5'f32
 
       m.backprop()
 
@@ -135,14 +160,14 @@ proc main() =
 
       let m0 = va.mean(axis=0)
       m0.backprop()
-      let constantTensor0 = ones[float32](2, 4) / 4.0
+      let constantTensor0 = ones[float32](2, 4) / 2.0
       check: va.grad == constantTensor0
 
       va.grad = zeros_like(va.grad)
 
       let m = va.mean(axis=1)
       m.backprop()
-      let constantTensor1 = ones[float32](2, 4) / 2.0
+      let constantTensor1 = ones[float32](2, 4) / 4.0
       check: va.grad == constantTensor1
 
     test "Gradient of division":
