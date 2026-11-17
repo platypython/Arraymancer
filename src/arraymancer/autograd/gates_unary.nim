@@ -34,9 +34,9 @@ proc unaryBackward[TT; kind: static[UnaryKind]](self: Gate[TT], payload: Payload
   let gate = UnaryGate[TT, kind](self)
   let gradient = payload.variable.grad
   result = newDiffs[TT](1)
-  when kind == unaryExp:
+  when kind == UnaryKind.unaryExp:
     result[0] = gradient *. gate.cache
-  elif kind == unaryLn:
+  elif kind == UnaryKind.unaryLn:
     result[0] = gradient /. gate.cache
   else:
     result[0] = sqrtGradient(gradient, gate.cache)
@@ -49,7 +49,7 @@ proc unary[TT](a: Variable[TT], value: TT, kind: static[UnaryKind]): Variable[TT
   if a.is_grad_needed:
     var gate: UnaryGate[TT, kind]
     new gate
-    when kind == unaryLn: gate.cache = a.value
+    when kind == UnaryKind.unaryLn: gate.cache = a.value
     else: gate.cache = result.value
     result.grad = zeros_like(result.value)
     result.requires_grad = true
@@ -58,25 +58,25 @@ proc unary[TT](a: Variable[TT], value: TT, kind: static[UnaryKind]): Variable[TT
 
 proc exp*[T: SomeFloat](a: Variable[Tensor[T]]): Variable[Tensor[T]] =
   ## Element-wise real exponential with a shape-preserving VJP.
-  unary(a, a.value.exp, unaryExp)
+  unary(a, a.value.exp, UnaryKind.unaryExp)
 
 proc ln*[T: SomeFloat](a: Variable[Tensor[T]]): Variable[Tensor[T]] =
   ## Element-wise real natural logarithm; backward divides by the input.
-  unary(a, a.value.ln, unaryLn)
+  unary(a, a.value.ln, UnaryKind.unaryLn)
 
 proc sqrt*[T: SomeFloat](a: Variable[Tensor[T]]): Variable[Tensor[T]] =
   ## Element-wise real square root; zero/domain derivatives retain IEEE results.
-  unary(a, a.value.sqrt, unarySqrt)
+  unary(a, a.value.sqrt, UnaryKind.unarySqrt)
 
 when defined(metal) or defined(coreai):
   proc exp*(a: Variable[MetalTensor[float32]]): Variable[MetalTensor[float32]] =
     ## GPU-resident float32 exponential and VJP, without host readback.
-    unary(a, a.value.exp, unaryExp)
+    unary(a, a.value.exp, UnaryKind.unaryExp)
 
   proc ln*(a: Variable[MetalTensor[float32]]): Variable[MetalTensor[float32]] =
     ## GPU-resident float32 natural logarithm and VJP.
-    unary(a, a.value.ln, unaryLn)
+    unary(a, a.value.ln, UnaryKind.unaryLn)
 
   proc sqrt*(a: Variable[MetalTensor[float32]]): Variable[MetalTensor[float32]] =
     ## GPU-resident float32 square root with one fused backward dispatch.
-    unary(a, a.value.sqrt, unarySqrt)
+    unary(a, a.value.sqrt, UnaryKind.unarySqrt)
