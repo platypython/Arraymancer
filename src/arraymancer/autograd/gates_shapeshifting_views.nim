@@ -296,7 +296,7 @@ template squeezeUnsqueeze(GateName, forward_proc, backward_proc: untyped): untyp
     result.value = forward_proc(v.value, axis)
 
     # Caching for backprop
-    if v.requires_grad:
+    if v.is_grad_needed:
       result.`forward_proc _ cache`(v, axis)
 
 squeezeUnsqueeze(SqueezeGate, squeeze, unsqueeze)

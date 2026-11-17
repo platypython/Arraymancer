@@ -128,5 +128,5 @@ proc chunk*[TT](v: Variable[TT], nb_chunks: Positive, axis: Natural): seq[Variab
   result.chunk_inference(v, nb_chunks, axis)
 
   # Caching for backprop
-  if v.requires_grad:
+  if v.is_grad_needed:
     result.chunk_cache(v, nb_chunks, axis)

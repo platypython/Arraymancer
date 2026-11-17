@@ -17,6 +17,28 @@ import std / [unittest, sequtils]
 
 proc main() =
   suite "Autograd of basic operations":
+    test "No-grad mode disables chunk, squeeze and unsqueeze backward edges":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([[[2.0], [3.0]]].toTensor, requires_grad = true)
+      ctx.no_grad_mode:
+        let squeezed = x.squeeze(0)
+        let expanded = x.unsqueeze(1)
+        let pieces = x.chunk(2, axis = 1)
+        check squeezed.value == [[2.0], [3.0]].toTensor
+        check expanded.value.shape == [1, 1, 2, 1]
+        check not squeezed.requires_grad
+        check not expanded.requires_grad
+        for piece in pieces:
+          check not piece.requires_grad
+        expect ValueError:
+          pieces[0].backprop()
+        ctx.no_grad_mode:
+          check not x.squeeze(0).requires_grad
+        check not x.is_grad_needed
+      check x.is_grad_needed
+      x.sum.backprop()
+      check x.grad == ones[float64](1, 2, 1)
+
     test "Ellipsis resolves trailing selectors and negative indices once":
       let ctx = newContext Tensor[float64]
       let x = ctx.variable(toSeq(0..11).toTensor.asType(float64).reshape(2, 2, 3),

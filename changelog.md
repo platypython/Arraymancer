@@ -1,6 +1,8 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Respect `no_grad_mode` when creating autograd chunks, squeezed views and
+  unsqueezed views; they no longer record backward edges while tracing is disabled.
 - Expand pinned CPU conformance from nine to eighteen real PyTorch observations,
   covering seeded/retained VJPs, independent graphs, chunk and selector gradients,
   and scalar/axis reduction semantics.
