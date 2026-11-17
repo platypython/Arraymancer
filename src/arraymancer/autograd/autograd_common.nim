@@ -217,20 +217,19 @@ func check_ctx*(a, b: Variable) {.inline.} =
   if unlikely(a.context != b.context):
     raise newException(ValueError, "You cannot combine variable from different contexts")
 
-proc backprop*[TT](v: Variable[TT]) =
-  ## Differentiate the chain of operations w.r.t to this variable.
-  ## Context will be reset
-
+proc backpropagate[TT](v: Variable[TT], gradient: TT) =
+  ## Consume the tape with an owned output cotangent.
   if unlikely(not v.requires_grad):
     raise newException(ValueError, "Operations leading to this variable were not fully traced.\nDid you forget to set a `requires_grad` or to disable the context `no_grad_mode`?")
-
-  # We initialize the Variable we want to backpropagate on with a Tensor of ones.
-  # TODO, restrict to scalar backprop?
-  v.grad = v.value.ones_like
 
   # We pop the context until we find the gate that produced our Variable
   while v.context.len > 0 and v.context.peek.payload.variable != v:
     discard v.context.pop
+
+  if v.context.len == 0:
+    v.grad += gradient
+    return
+  v.grad = gradient
 
   while v.context.len > 0:
     let curNode = v.context.pop
@@ -239,6 +238,24 @@ proc backprop*[TT](v: Variable[TT]) =
       let parent_i = curNode.parents[i]
       if parent_i.requires_grad:
         parent_i.grad += diff
+
+proc backprop*[TT](v: Variable[TT], gradient: TT) =
+  ## Compute a vector-Jacobian product with an explicit output gradient.
+  ##
+  ## ``gradient`` must have exactly the output shape; broadcasting is not allowed.
+  ## Its values are copied so accumulating gradients cannot mutate the caller's
+  ## tensor. Leaf gradients accumulate and the context tape is consumed.
+  if gradient.shape != v.value.shape:
+    raise newException(ValueError, "backprop gradient shape must match the output shape")
+  v.backpropagate(gradient.clone)
+
+proc backprop*[TT](v: Variable[TT]) =
+  ## Differentiate the sum of output elements using an implicit gradient of ones.
+  ##
+  ## Unlike PyTorch, non-scalar outputs remain supported for compatibility.
+  ## Use the explicit-gradient overload for a vector-Jacobian product.
+  ## Leaf gradients accumulate and the context tape is consumed.
+  v.backpropagate(v.value.ones_like)
 
 func newParents*[TT](num: Natural): Parents[TT] {.inline.} =
   newSeq[Variable[TT]](num)

@@ -17,6 +17,62 @@ import std / [unittest, sequtils]
 
 proc main() =
   suite "Autograd of basic operations":
+    test "Explicit strided gradients weight a branched vector-Jacobian product":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([[1.0, 2, 3], [4.0, 5, 6]].toTensor,
+                           requires_grad = true)
+      let y = x *. x + x
+      var seed = [[1.0, 4], [2.0, 5], [3.0, 6]].toTensor.transpose
+      let original = seed.clone
+      y.backprop(seed)
+      check x.grad == [[3.0, 10, 21], [36.0, 55, 78]].toTensor
+      check y.grad == original
+      seed[0, 0] = 100
+      check y.grad == original
+
+    test "Seeded broadcast gradients reduce leading and singleton dimensions":
+      let ctx = newContext Tensor[float64]
+      let a = ctx.variable([[10.0], [20.0]].toTensor, requires_grad = true)
+      let b = ctx.variable([1.0, 2, 3].toTensor, requires_grad = true)
+      let output = a +. b
+      output.backprop([[1.0, 2, 3], [4.0, 5, 6]].toTensor)
+      check a.grad == [[6.0], [15.0]].toTensor
+      check b.grad == [5.0, 7, 9].toTensor
+
+    test "Invalid seed shape preserves the tape and existing gradients":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([[1.0, 2], [3.0, 4]].toTensor, requires_grad = true)
+      let output = x + x
+      expect ValueError:
+        output.backprop([1.0, 2, 3, 4].toTensor)
+      check x.grad == zeros[float64](2, 2)
+      check output.grad == zeros[float64](2, 2)
+      output.backprop([[1.0, 2], [3.0, 4]].toTensor)
+      check x.grad == [[2.0, 4], [6.0, 8]].toTensor
+
+    test "Explicit scalar seeds scale reductions and leaf seeds accumulate":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([2.0, 4].toTensor, requires_grad = true)
+      let output = x.mse_loss(zeros[float64](2))
+      output.backprop([3.0].toTensor.reshape(newSeq[int]()))
+      check x.grad == [6.0, 12].toTensor
+      let seed = [2.0, -1].toTensor
+      x.backprop(seed)
+      x.backprop(seed)
+      check x.grad == [10.0, 10].toTensor
+      check seed == [2.0, -1].toTensor
+
+    test "Empty output seeds and untraced outputs":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable(zeros[float64](0, 3), requires_grad = true)
+      let output = x + x
+      output.backprop(zeros[float64](0, 3))
+      check x.grad.shape == [0, 3]
+      check x.grad.size == 0
+      let constant = ctx.variable([1.0].toTensor)
+      expect ValueError:
+        constant.backprop([2.0].toTensor)
+
     test "Gradient of tensor addition":
 
       let a = toSeq(1..8).toTensor.reshape(2,4).asType(float32)

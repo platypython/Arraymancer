@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add explicit output-gradient seeds to autograd `backprop` for vector-Jacobian
+  products. Exact shape checks preserve the tape on invalid seeds, seed storage
+  stays independent, and leaf gradients accumulate. The no-argument overload
+  retains its implicit sum-of-elements behavior.
 - Gate all ten Metal and eight Core AI native contracts alongside nine pinned CPU
   cases with `nimble parity` on macOS 27 arm64. Dedicated `test_metal` and
   `test_coreai` tasks build and run the native suites.
