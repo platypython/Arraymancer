@@ -15,9 +15,10 @@
 import  ./backend/openmp,
         ./private/p_checks,
         ./private/p_inner_spans,
+        ./private/p_accelerate,
         ./data_structure, ./init_cpu, ./accessors
 
-import sugar
+import std / [sugar, math]
 # Valid tensor spans already fit their backing storage. Wrapping index arithmetic
 # avoids per-element overflow branches without disabling checks in the user's op.
 
@@ -138,6 +139,46 @@ template apply3_inline*[T: KnownSupportsCopyMem;U,V](dest: var Tensor[T],
     omp_parallel_blocks(block_offset, block_size, output[].size):
       for x {.inject.}, y {.inject.}, z {.inject.} in mzip(output[], input1, input2, block_offset, block_size):
         x = op
+
+type UnaryMathOp* = enum
+  unaryExp, unaryLn, unarySqrt
+
+proc applyUnary*(dest: var Tensor[float32]; src: Tensor[float32];
+                 operation: static[UnaryMathOp]) =
+  ## Write elementwise exp, ln or sqrt into an equally shaped destination.
+  ## Reuse destination storage; aliases and strided views use scalar traversal.
+  ## Disjoint contiguous macOS buffers use bulk math without input copies.
+  if dest.shape != src.shape:
+    raise newException(ValueError, "Unary input and output shapes must agree")
+  if src.size == 0: return
+  when defined(macosx):
+    if dest.is_C_contiguous and src.is_C_contiguous and disjointOwnedStorage(dest, src):
+      when operation == unarySqrt:
+        let destination = dest.storage.raw_buffer
+        let source = src.storage.raw_buffer
+        let destinationOffset = dest.offset
+        let sourceOffset = src.offset
+        for cursor in 0'u ..< uint(src.size):
+          let i = cast[int](cursor)
+          destination[destinationOffset +% i] = math.sqrt(source[sourceOffset +% i])
+      else:
+        var offset = 0
+        while offset < src.size:
+          var count = min(src.size - offset, high(cint).int).cint
+          let destination = addr dest.storage.raw_buffer[dest.offset + offset]
+          let source = addr src.storage.raw_buffer[src.offset + offset]
+          when operation == unaryExp:
+            vvexpf(destination, source, addr count)
+          else:
+            vvlogf(destination, source, addr count)
+          offset += count.int
+      return
+  when operation == unaryExp:
+    dest.apply2_inline(src, math.exp(y))
+  elif operation == unaryLn:
+    dest.apply2_inline(src, math.ln(y))
+  else:
+    dest.apply2_inline(src, math.sqrt(y))
 
 template map_inline*[T](t: Tensor[T], op:untyped): untyped =
 

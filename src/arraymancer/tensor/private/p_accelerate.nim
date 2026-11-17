@@ -18,3 +18,8 @@ when defined(macosx):
 
   proc vDSP_sve*(input: ptr float32; stride: clong; output: ptr float32; count: culong)
     {.importc, header: "<Accelerate/Accelerate.h>".}
+
+  proc vvexpf*(output, input: ptr float32; count: ptr cint)
+    {.importc, header: "<Accelerate/Accelerate.h>".}
+  proc vvlogf*(output, input: ptr float32; count: ptr cint)
+    {.importc, header: "<Accelerate/Accelerate.h>".}

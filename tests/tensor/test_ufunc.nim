@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import ../../src/arraymancer
-import std / unittest
+import std / [unittest, math]
 
 proc main() =
   suite "Universal functions":
@@ -93,6 +93,56 @@ proc main() =
       # abs complex -> float
       let c = [-2.0,-1,0,1,2].toTensor().asType(Complex[float64])
       check abs(c) == [2.0,1,0,1,2].toTensor().asType(float64)
+
+    test "Bulk unary operations preserve IEEE values and preallocated storage":
+      let source = [-Inf.float32, -4'f32, -0'f32, 0'f32, 1'f32, Inf.float32, NaN.float32].toTensor
+      template compareOperation(operation: static[UnaryMathOp]; reference: untyped) =
+        block:
+          var output = newTensor[float32](source.shape)
+          let storage = output.storage
+          output.applyUnary(source, operation)
+          check output.storage == storage
+          let expected = source.map_inline(reference)
+          for i in 0 ..< source.size:
+            let actual = output[i]
+            let wanted = expected[i]
+            if wanted != wanted:
+              check actual != actual
+            elif wanted == 0'f32:
+              check cast[uint32](actual) == cast[uint32](wanted)
+            elif abs(wanted) == Inf.float32:
+              check actual == wanted
+            else:
+              check abs(actual - wanted) <= 1e-6'f32 * max(1'f32, abs(wanted))
+      compareOperation(unaryExp, math.exp(x))
+      compareOperation(unaryLn, math.ln(x))
+      compareOperation(unarySqrt, math.sqrt(x))
+
+    test "Bulk unary operations preserve views, aliases and scalar/empty shapes":
+      let owner = [99'f32, 1, 4, 9, 16, 99].toTensor
+      let reversed = owner[4..1|-1]
+      check reversed.sqrt == [4'f32, 3, 2, 1].toTensor
+      var outputOwner = newTensorWith[float32](6, -1'f32)
+      var output = outputOwner[1..4]
+      output.applyUnary(owner[1..4], unarySqrt)
+      check outputOwner == [-1'f32, 1, 2, 3, 4, -1].toTensor
+      var alias = owner[1..4]
+      alias.applyUnary(alias, unarySqrt)
+      check owner == [99'f32, 1, 2, 3, 4, 99].toTensor
+      check [[1'f32, 4], [9'f32, 16]].toTensor.transpose.sqrt ==
+        [[1'f32, 3], [2'f32, 4]].toTensor
+      check [1'f32, 4].toTensor.reshape(1, 2).broadcast(3, 2).sqrt ==
+        [[1'f32, 2], [1'f32, 2], [1'f32, 2]].toTensor
+      check [1'f64, 4, 9, 16].toTensor[3..0|-1].sqrt == [4'f64, 3, 2, 1].toTensor
+      var scalar = newTensorWith[float32]([], 4'f32)
+      scalar.applyUnary(scalar, unarySqrt)
+      check scalar.shape == []
+      check scalar.item == 2'f32
+      var empty = newTensor[float32](2, 0, 3)
+      empty.applyUnary(empty, unaryExp)
+      check empty.exp.shape == [2, 0, 3]
+      expect ValueError:
+        output.applyUnary(newTensor[float32](2, 2), unaryLn)
 
     test "As type with empty tensor returns empty tensor":
       let a = newTensor[int](0)

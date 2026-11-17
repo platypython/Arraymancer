@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add storage-reusing `applyUnary` for float32 exp/ln/sqrt; allocating tensor
+  functions share bulk vForce exp/log and hardware sqrt paths on macOS while
+  retaining scalar, empty and alias behavior.
 - Use system Accelerate for contiguous macOS float32 sums and means, and avoid
   vector-promotion/layout setup for dense rank-two matrix multiplication.
 - Speed up CPU map/apply loops for contiguous tensors and compatible broadcast

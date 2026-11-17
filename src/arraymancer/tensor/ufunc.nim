@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import  ./data_structure,
+        ./init_cpu,
         ./higher_order_applymap,
         ./private/p_empty_tensors
 # Standard library
@@ -89,14 +90,36 @@ makeUniversal(isNaN)
 #makeUniversal(nextPowerOfTwo)
 #makeUniversal(countBits32)
 #makeUniversal(sum)
-makeUniversal(sqrt,
-  docSuffix="Note that the scalar [sqrt](https://nim-lang.org/docs/math.html#sqrt%2Cfloat64) function computes the square root of its input.")
+proc sqrt*[T](t: Tensor[T]): Tensor[T] {.noinit.} =
+  ## Return elementwise square roots, preserving scalar and empty shapes.
+  returnEmptyLikeIfEmpty(t)
+  when T is float32:
+    result = newTensorUninit[T](t.shape)
+    result.applyUnary(t, unarySqrt)
+  else:
+    result = t.map_inline(math.sqrt(x))
 makeUniversal(cbrt,
   docSuffix="Note that the scalar [cbrt](https://nim-lang.org/docs/math.html#cbrt%2Cfloat64) function computes the cube root of its input.")
-makeUniversal(ln)
+proc ln*[T](t: Tensor[T]): Tensor[T] {.noinit.} =
+  ## Return elementwise natural logarithms, preserving scalar and empty shapes.
+  returnEmptyLikeIfEmpty(t)
+  when T is float32:
+    result = newTensorUninit[T](t.shape)
+    result.applyUnary(t, unaryLn)
+  else:
+    result = t.map_inline(math.ln(x))
 makeUniversal(log10)
 makeUniversal(log2)
-makeUniversal(exp)
+proc exp*[T](t: Tensor[T]): Tensor[T] {.noinit.} =
+  ## Return elementwise exponentials, preserving scalar and empty shapes.
+  returnEmptyLikeIfEmpty(t)
+  when T is float32:
+    result = newTensorUninit[T](t.shape)
+    result.applyUnary(t, unaryExp)
+  else:
+    result = t.map_inline(math.exp(x))
+
+export exp, ln, sqrt
 makeUniversal(arccos)
 makeUniversal(arcsin)
 makeUniversal(arctan)
