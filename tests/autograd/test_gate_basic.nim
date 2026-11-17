@@ -17,6 +17,139 @@ import std / [unittest, sequtils]
 
 proc main() =
   suite "Autograd of basic operations":
+    test "Ellipsis resolves trailing selectors and negative indices once":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable(toSeq(0..11).toTensor.asType(float64).reshape(2, 2, 3),
+                           requires_grad = true)
+      let selected = x[`...`, [-1, 0]]
+      check selected.value == [[[2.0, 0], [5.0, 3]], [[8.0, 6], [11.0, 9]]].toTensor
+      selected.sum.backprop()
+      check x.grad == [[[1.0, 0, 1], [1.0, 0, 1]], [[1.0, 0, 1], [1.0, 0, 1]]].toTensor
+
+    test "Slice bounds evaluate once and no-grad disables slice recording":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([1.0, 2, 3, 4].toTensor, requires_grad = true)
+      var calls = 0
+      proc start(): int =
+        inc calls
+        1
+      let selected = x[start()..3]
+      check calls == 1
+      ctx.no_grad_mode:
+        check not x[1..2].requires_grad
+        check not x[1].requires_grad
+        check not x[[0, 2]].requires_grad
+      selected.sum.backprop()
+      check x.grad == [0.0, 1, 1, 1].toTensor
+
+    test "Overlapping signed-stride slices scatter seeded gradients":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([1.0, 2, 3, 4, 5].toTensor, requires_grad = true)
+      let a = x[1..3]
+      let b = x[4..0|-2]
+      let output = a.sum + b.sum
+      output.backprop(retain_graph = true)
+      check x.grad == [1.0, 1, 2, 1, 1].toTensor
+      output.backprop()
+      check x.grad == [2.0, 2, 4, 2, 2].toTensor
+
+    test "Point indexing returns a scalar and records a backward edge":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([[1.0, 2], [3.0, 4]].toTensor.transpose, requires_grad = true)
+      let output = x[1, 0]
+      check output.value.rank == 0
+      check output.value.atContiguousIndex(0) == 2.0
+      output.backprop([3.0].toTensor.reshape(newSeq[int]()))
+      check x.grad == [[0.0, 0], [3.0, 0]].toTensor
+
+    test "Repeated index selections accumulate and snapshot selectors":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([[1.0, 2, 3], [4.0, 5, 6]].toTensor, requires_grad = true)
+      var indices = [2, 0, 2].toTensor
+      let output = x[_, indices]
+      indices[0] = 1
+      check output.value == [[3.0, 1, 3], [6.0, 4, 6]].toTensor
+      output.backprop([[1.0, 2, 3], [4.0, 5, 6]].toTensor)
+      check x.grad == [[2.0, 0, 4], [5.0, 0, 10]].toTensor
+
+    test "Full and axis masks scatter without aliasing gradients":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([[1.0, 2, 3], [4.0, 5, 6]].toTensor.transpose, requires_grad = true)
+      let full = x[[[true, false], [false, true], [true, false]]]
+      check full.value == [1.0, 5, 3].toTensor
+      full.backprop([2.0, 3, 4].toTensor)
+      check x.grad == [[2.0, 0], [0.0, 3], [4.0, 0]].toTensor
+      let axis = x[[true, false, true], _]
+      axis.sum.backprop()
+      check x.grad == [[3.0, 1], [0.0, 3], [5.0, 1]].toTensor
+      let empty = x[[false, false, false], _]
+      check empty.value.shape == [0, 2]
+      empty.backprop(zeros[float64](0, 2))
+      check x.grad == [[3.0, 1], [0.0, 3], [5.0, 1]].toTensor
+
+    test "Retained backward recomputes intermediates and accumulates only leaves":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([2.0, 3].toTensor, requires_grad = true)
+      let squared = x *. x
+      let output = squared *. squared
+      output.backprop([1.0, 2].toTensor, retain_graph = true)
+      check x.grad == [32.0, 216].toTensor
+      output.backprop([3.0, 4].toTensor, retain_graph = true)
+      check x.grad == [128.0, 648].toTensor
+      check squared.grad == [24.0, 72].toTensor
+      output.backprop()
+      check x.grad == [160.0, 756].toTensor
+      expect ValueError:
+        output.backprop()
+      check x.grad == [160.0, 756].toTensor
+
+    test "Independent graphs survive out-of-order backward and leaf backward":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([2.0, 3].toTensor, requires_grad = true)
+      let y = ctx.variable([4.0, 5].toTensor, requires_grad = true)
+      let earlier = x *. x
+      let later = y *. y
+      x.backprop([1.0, 2].toTensor)
+      earlier.backprop()
+      check x.grad == [5.0, 8].toTensor
+      check y.grad == [0.0, 0].toTensor
+      later.backprop()
+      check y.grad == [8.0, 10].toTensor
+
+    test "Unrelated singular gates cannot contaminate gradients":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([2.0, 3].toTensor, requires_grad = true)
+      let unused = x /. ctx.variable(zeros[float64](2))
+      let output = x + x
+      output.backprop()
+      check x.grad == [2.0, 2].toTensor
+      check unused.grad == zeros[float64](2)
+
+    test "Shared freed ancestors fail before modifying gradients":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([2.0, 3].toTensor, requires_grad = true)
+      let squared = x *. x
+      let a = squared + squared
+      let b = squared *. squared
+      a.backprop(retain_graph = true)
+      b.backprop()
+      check x.grad == [40.0, 120].toTensor
+      expect ValueError:
+        a.backprop()
+      check x.grad == [40.0, 120].toTensor
+      check a.grad == ones[float64](2)
+
+    test "Direct chunk backward zeros unused outputs on each retained traversal":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([1.0, 2, 3, 4].toTensor, requires_grad = true)
+      let parts = x.chunk(2, axis = 0)
+      parts[1].backprop([2.0, 3].toTensor, retain_graph = true)
+      check x.grad == [0.0, 0, 2, 3].toTensor
+      parts[0].backprop([5.0, 7].toTensor)
+      check x.grad == [5.0, 7, 2, 3].toTensor
+      expect ValueError:
+        parts[1].backprop()
+
     test "Sum returns a scalar and propagates a scalar seed through a view":
       let ctx = newContext Tensor[float64]
       let x = ctx.variable([[1.0, 2, 3], [4.0, 5, 6]].toTensor.transpose,

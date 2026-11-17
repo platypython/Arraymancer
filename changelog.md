@@ -1,6 +1,13 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add `retain_graph` to autograd backward. Recompute intermediate cotangents on
+  retained traversals, accumulate leaf gradients, reject released ancestors, and
+  preserve independent graphs. Direct backward from one chunk zeros unused
+  sibling cotangents instead of reading the wrong payload variant.
+- Record CPU indexing and slicing as autograd gates. Scalar indices return
+  rank-zero values; overlapping slices and repeated selectors scatter-add their
+  gradients. Boolean masks snapshot selected positions, including empty masks.
 - Return rank-zero CPU autograd `mean` and `sum` results. Correct axis-mean
   gradients to divide by the reduced axis length, retaining the axis in outputs.
 - Add explicit output-gradient seeds to autograd `backprop` for vector-Jacobian

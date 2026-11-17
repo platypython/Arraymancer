@@ -13,6 +13,19 @@ proc checkValues(t: MetalTensor[float32]; shape: openArray[int]; expected: openA
   for i, value in expected: check abs(values[i] - value) < 1e-6'f32
 
 suite "Metal autograd on the existing tape":
+  test "Retained seeded VJPs recompute GPU intermediates and accumulate leaves":
+    let ctx = newContext(MetalTensor[float32])
+    let x = ctx.variable([2'f32, 3].toTensor.metal, requires_grad = true)
+    let squared = x *. x
+    let output = squared *. squared
+    let seed = [1'f32, 2].toTensor.metal
+    output.backprop(seed, retain_graph = true)
+    x.grad.checkValues([2], [32'f32, 216])
+    output.backprop(seed)
+    x.grad.checkValues([2], [64'f32, 432])
+    seed.checkValues([2], [1'f32, 2])
+    expect ValueError:
+      output.backprop(seed)
   test "Mean and MSE preserve native scalar values and gradients":
     let ctx = newContext(MetalTensor[float32])
     let x = ctx.variable([[1'f32, 2], [3'f32, 4]].toTensor.metal, requires_grad = true)

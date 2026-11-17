@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import std / [typetraits, macros]
+import std / [typetraits, macros, sets]
 
 # ############################################################
 #
@@ -50,7 +50,7 @@ type
     ##
     ## A context is also called a tape or a Wengert list.
     ##
-    ## Note: backpropagation empties the list of operations.
+    ## Backpropagation releases traversed operations unless ``retain_graph`` is set.
     nodes: seq[Node[TT]]
     no_grad: bool
 
@@ -66,6 +66,8 @@ type
     value*: TT
     grad*: TT
     requires_grad*: bool
+    has_grad_fn: bool
+    graph_freed: bool
 
   Gate*[TT] = ref object of RootObj # {.acyclic.}
     ## Base operator or layer. You can describe your custom operations or layers
@@ -157,19 +159,11 @@ proc variable*[TT](ctx: Context[TT], value: TT, requires_grad = false): Variable
     result.requires_grad = true
     result.grad = value.zeros_like
 
-template len[TT](ctx: Context[TT]): int =
-  ## Returns the number of operations applied in the context
-  ctx.nodes.len
 
 template push[TT](ctx: Context[TT], node: Node[TT]) =
   ## Append a new operation to the context
   ctx.nodes.add(node)
 
-template peek[TT](ctx: Context[TT]): Node[TT] =
-  ctx.nodes[ctx.len - 1]
-
-template pop[TT](ctx: Context[TT]): Node[TT] =
-  ctx.nodes.pop
 
 func register_node*[TT](
         name: static string,
@@ -186,8 +180,11 @@ func register_node*[TT](
 
   when result is Variable:
     node.payload = Payload[TT](kind: pkVar, variable: result)
+    result.has_grad_fn = true
   else:
     node.payload = Payload[TT](kind: pkSeq, sequence: result)
+    for variable in result:
+      variable.has_grad_fn = true
 
   when defined(debug):
     node.name = name
@@ -217,45 +214,106 @@ func check_ctx*(a, b: Variable) {.inline.} =
   if unlikely(a.context != b.context):
     raise newException(ValueError, "You cannot combine variable from different contexts")
 
-proc backpropagate[TT](v: Variable[TT], gradient: TT) =
-  ## Consume the tape with an owned output cotangent.
+proc resetIntermediate[TT](v: Variable[TT]) =
+  ## Reuse owned gradient buffers between retained traversals.
+  when compiles(v.grad.setZero()):
+    v.grad.setZero()
+  elif compiles(v.grad.fill(getSubType(TT)(0))):
+    v.grad.fill(getSubType(TT)(0))
+  else:
+    v.grad = v.value.zeros_like
+
+proc backpropagate[TT](v: Variable[TT], gradient: TT, retain_graph: bool) =
+  ## Traverse only output ancestors, leaving independent graphs intact.
   if unlikely(not v.requires_grad):
     raise newException(ValueError, "Operations leading to this variable were not fully traced.\nDid you forget to set a `requires_grad` or to disable the context `no_grad_mode`?")
-
-  # We pop the context until we find the gate that produced our Variable
-  while v.context.len > 0 and v.context.peek.payload.variable != v:
-    discard v.context.pop
-
-  if v.context.len == 0:
+  if v.graph_freed:
+    raise newException(ValueError, "The backward graph has been released; use retain_graph on the preceding backward call")
+  if not v.has_grad_fn:
     v.grad += gradient
     return
+
+  var needed = initHashSet[pointer]()
+  needed.incl(cast[pointer](v))
+  var execution: seq[int]
+  for i in countdown(v.context.nodes.high, 0):
+    template node: untyped = v.context.nodes[i]
+    var reachable = false
+    case node.payload.kind
+    of pkVar:
+      reachable = cast[pointer](node.payload.variable) in needed
+    of pkSeq:
+      for output in node.payload.sequence:
+        if cast[pointer](output) in needed:
+          reachable = true
+          break
+    if reachable:
+      execution.add(i)
+      for parent in node.parents:
+        if parent.requires_grad:
+          if parent.graph_freed:
+            raise newException(ValueError, "A required backward graph has already been released")
+          needed.incl(cast[pointer](parent))
+
+  # Validate the entire traversal before changing any gradients.
+  for i in execution:
+    case v.context.nodes[i].payload.kind
+    of pkVar:
+      let output = v.context.nodes[i].payload.variable
+      if output != v: output.resetIntermediate()
+    of pkSeq:
+      for output in v.context.nodes[i].payload.sequence:
+        if output != v: output.resetIntermediate()
   v.grad = gradient
 
-  while v.context.len > 0:
-    let curNode = v.context.pop
-    let diffs = curNode.backward(curNode.gate, curNode.payload)
-    for i, diff in diffs:
-      let parent_i = curNode.parents[i]
-      if parent_i.requires_grad:
-        parent_i.grad += diff
+  for i in execution:
+    template node: untyped = v.context.nodes[i]
+    let diffs = node.backward(node.gate, node.payload)
+    for j, diff in diffs:
+      let parent = node.parents[j]
+      if parent.requires_grad:
+        parent.grad += diff
 
-proc backprop*[TT](v: Variable[TT], gradient: TT) =
+  if not retain_graph:
+    # Compact once; indices in execution are in descending tape order.
+    var next = execution.high
+    var destination = 0
+    for i in 0 ..< v.context.nodes.len:
+      if next >= 0 and execution[next] == i:
+        case v.context.nodes[i].payload.kind
+        of pkVar: v.context.nodes[i].payload.variable.graph_freed = true
+        of pkSeq:
+          for output in v.context.nodes[i].payload.sequence:
+            output.graph_freed = true
+        dec next
+      else:
+        if destination != i:
+          v.context.nodes[destination] = move(v.context.nodes[i])
+        inc destination
+    v.context.nodes.setLen(destination)
+
+proc backprop*[TT](v: Variable[TT], gradient: TT, retain_graph = false) =
   ## Compute a vector-Jacobian product with an explicit output gradient.
   ##
   ## ``gradient`` must have exactly the output shape; broadcasting is not allowed.
   ## Its values are copied so accumulating gradients cannot mutate the caller's
-  ## tensor. Leaf gradients accumulate and the context tape is consumed.
+  ## tensor. Leaf gradients accumulate; intermediate gradients are recomputed.
+  ## ``retain_graph`` preserves traversed operations for another backward call.
+  ## Otherwise those operations are released and cannot be traversed again.
+  ## Independent graphs in the same context are left intact.
   if gradient.shape != v.value.shape:
     raise newException(ValueError, "backprop gradient shape must match the output shape")
-  v.backpropagate(gradient.clone)
+  v.backpropagate(gradient.clone, retain_graph)
 
-proc backprop*[TT](v: Variable[TT]) =
+proc backprop*[TT](v: Variable[TT], retain_graph = false) =
   ## Differentiate the sum of output elements using an implicit gradient of ones.
   ##
   ## Unlike PyTorch, non-scalar outputs remain supported for compatibility.
   ## Use the explicit-gradient overload for a vector-Jacobian product.
-  ## Leaf gradients accumulate and the context tape is consumed.
-  v.backpropagate(v.value.ones_like)
+  ## Leaf gradients accumulate; intermediate gradients are recomputed.
+  ## ``retain_graph`` preserves traversed operations for another backward call;
+  ## independent graphs in the same context are always left intact.
+  v.backpropagate(v.value.ones_like, retain_graph)
 
 func newParents*[TT](num: Natural): Parents[TT] {.inline.} =
   newSeq[Variable[TT]](num)
