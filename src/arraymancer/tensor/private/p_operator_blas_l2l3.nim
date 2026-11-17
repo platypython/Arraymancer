@@ -148,6 +148,20 @@ proc blasMM_C_eq_aAB_p_bC*[T: SomeFloat|Complex[float32]|Complex[float64]](
     K = a.shape[1] # b.shape[0]
     N = b.shape[1]
 
+  if a.is_C_contiguous and b.is_C_contiguous and c.is_C_contiguous:
+    when T is Complex:
+      gemm(rowMajor, noTranspose, noTranspose, M, N, K,
+           unsafeAddr(alpha), a.get_offset_ptr, K,
+                              b.get_offset_ptr, N,
+           unsafeAddr(beta), c.get_offset_ptr, N)
+    else:
+      gemm(rowMajor, noTranspose, noTranspose, M, N, K,
+           alpha, a.get_offset_ptr, K,
+                  b.get_offset_ptr, N,
+           beta, c.get_offset_ptr, N)
+    return
+
+  let
     A = a.asContiguous()
     B = b.asContiguous()
 

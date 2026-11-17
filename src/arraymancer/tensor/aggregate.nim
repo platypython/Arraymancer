@@ -22,7 +22,8 @@ import  ./data_structure,
         ./accessors,
         ./accessors_macros_syntax,
         ./algorithms,
-        ./private/p_empty_tensors
+        ./private/p_empty_tensors,
+        ./private/p_accelerate
 import std / [math, macros]
 import complex except Complex64, Complex32
 
@@ -56,6 +57,11 @@ proc sumAlongAxis[T](arg: Tensor[T], axis: int): Tensor[T] =
 
 proc sum*[T](arg: Tensor[T]): T =
   ## Compute the sum of all elements
+  when defined(macosx) and T is float32:
+    if arg.size == 0: return 0'f32
+    if arg.is_C_contiguous:
+      vDSP_sve(arg.get_offset_ptr, 1.clong, addr result, arg.size.culong)
+      return
   arg.reduce_inline():
     x+=y
 

@@ -67,6 +67,18 @@ proc main() =
         expect IndexDefect:
           discard view.mean(axis)
 
+    test "Float32 whole reductions preserve offsets, strides and empty means":
+      let owner = [99'f32, 1, 2, 3, 4, 99].toTensor
+      check owner[1..4].sum == 10'f32
+      check owner[1..4].mean == 2.5'f32
+      check owner[4..1|-1].sum == 10'f32
+      check [[1'f32, 2, 3], [4'f32, 5, 6]].toTensor.transpose.sum == 21'f32
+      check [1'f32, 2, 3].toTensor.reshape(1, 3).broadcast(2, 3).sum == 12'f32
+      check newTensorWith[float32]([], 3'f32).sum == 3'f32
+      check newTensor[float32](0).sum == 0'f32
+      let emptyMean = newTensor[float32](0).mean
+      check emptyMean != emptyMean
+
     test "Sum":
       check: t.sum == 66
       check: t_c.sum == complex(66'f64)

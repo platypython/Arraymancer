@@ -34,6 +34,12 @@ proc main() =
       check (ones[float64](2, 3) * zeros[float64](3, 0)).shape == [2, 0]
       check zeros[float64](2, 0) * zeros[float64](0) == zeros[float64](2)
 
+    test "Dense matrix products preserve offsets and empty contractions":
+      let a = [[99'f32, 99], [1'f32, 2], [3'f32, 4]].toTensor[1..2, _]
+      let b = [[99'f32, 99], [5'f32, 6], [7'f32, 8]].toTensor[1..2, _]
+      check a * b == [[19'f32, 22], [43'f32, 50]].toTensor
+      check zeros[float32](2, 0) * zeros[float32](0, 3) == zeros[float32](2, 3)
+
     test "GEMM - General Matrix to Matrix Multiplication":
       ## TODO: test with slices
       let a = [[1.0,2,3],
