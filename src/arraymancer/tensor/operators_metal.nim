@@ -96,6 +96,10 @@ proc sqrt*[T](t: MetalTensor[T]): MetalTensor[T] =
   ## Element-wise float32 square root with IEEE domain results.
   scalarMath(t, 0, 12)
 
+proc tanh*[T](t: MetalTensor[T]): MetalTensor[T] =
+  ## Element-wise float32 hyperbolic tangent; preserves scalar, empty and strided shapes.
+  scalarMath(t, 0, 14)
+
 proc `*`*[T](a, b: MetalTensor[T]): MetalTensor[T] =
   ## Float32 matrix product with vector promotion and trailing-axis batch broadcasting.
   ## The result owns one GPU allocation; each matrix writes directly into its batch view.

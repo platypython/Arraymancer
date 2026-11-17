@@ -1,10 +1,10 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
-## Exercises GPU-resident view, matrix-product and loss cotangents on the existing tape.
+## Exercises GPU-resident view, activation, matrix-product and loss cotangents.
 import std/[unittest, math, json]
 import ../../src/arraymancer
 
 proc checkValues(t: MetalTensor[float32]; shape: openArray[int]; expected: openArray[float32];
-                 relativeTolerance = 0'f32) =
+                 relativeTolerance = 0'f32; checkZeroSign = false) =
   check t.storage != nil
   check t.storage.owner.handle != nil
   check t.shape == shape.toMetadata
@@ -15,7 +15,10 @@ proc checkValues(t: MetalTensor[float32]; shape: openArray[int]; expected: openA
     case value.classify
     of fcNan: check values[i].classify == fcNan
     of fcInf, fcNegInf: check values[i] == value
-    else: check abs(values[i] - value) < 1e-6'f32 + relativeTolerance * abs(value)
+    else:
+      check abs(values[i] - value) < 1e-6'f32 + relativeTolerance * abs(value)
+      if checkZeroSign and value == 0'f32:
+        check values[i].classify == value.classify
 
 proc fixtureData(spec: JsonNode): tuple[shape: seq[int], values: seq[float32]] =
   ## Cast pinned CPU observations to the dtype supported by native Metal arithmetic.
@@ -34,11 +37,93 @@ proc fixtureTensor(spec: JsonNode): MetalTensor[float32] =
   let data = fixtureData(spec)
   data.values.toTensor.reshape(data.shape).metal
 
-proc checkFixture(t: MetalTensor[float32], spec: JsonNode; relativeTolerance = 0'f32) =
+proc checkFixture(t: MetalTensor[float32], spec: JsonNode; relativeTolerance = 0'f32;
+                  checkZeroSign = false) =
   let data = fixtureData(spec)
-  t.checkValues(data.shape, data.values, relativeTolerance)
+  t.checkValues(data.shape, data.values, relativeTolerance, checkZeroSign)
 
 suite "Metal autograd on the existing tape":
+  test "Native ReLU, sigmoid and tanh match pinned nonfinite and masked-seed cases":
+    const fixtures = staticRead("../parity/fixtures.json")
+    var contract: JsonNode
+    for item in parseJson(fixtures)["cases"]:
+      if item["id"].getStr == "autograd.activation_math": contract = item
+    doAssert not contract.isNil
+    for name, spec in contract["inputs"]:
+      for operation in ["relu", "sigmoid", "tanh"]:
+        checkpoint name & ":" & operation
+        let ctx = newContext(MetalTensor[float32])
+        var value = fixtureTensor(spec["a"])
+        if name == "strided": value = value.transpose[_, 1..^1]
+        elif name == "empty": value = value.transpose(0, 2)
+        if spec.hasKey("transform"):
+          if spec["transform"].getStr == "ln": value = value.ln
+          else: value = 1'f32 /. value
+        var seed = fixtureTensor(spec["seed"])
+        if spec.hasKey("seed_transform"): seed = seed.ln
+        let x = ctx.variable(value, requires_grad = true)
+        let output = case operation
+                     of "relu": x.relu
+                     of "sigmoid": x.sigmoid
+                     else: x.tanh
+        output.backprop(seed)
+        let expected = contract["expected"][name][operation]
+        output.value.checkFixture(expected["output"], 2e-6'f32, true)
+        x.grad.checkFixture(expected["grad"], 2e-6'f32)
+        var inplace = value.clone
+        let owner = inplace.storage
+        case operation
+        of "relu": inplace.mrelu
+        of "sigmoid": inplace.msigmoid
+        else: inplace.mtanh
+        inplace.checkFixture(expected["output"], 2e-6'f32, true)
+        check inplace.storage == owner
+
+  test "Native activation no-grad leaves later tracing intact":
+    let ctx = newContext(MetalTensor[float32])
+    let x = ctx.variable(newTensorWith[float32]([], -0.0'f32).metal, requires_grad = true)
+    ctx.no_grad_mode:
+      check not x.relu.requires_grad
+      check not x.sigmoid.requires_grad
+      check not x.tanh.requires_grad
+    let output = x.sigmoid
+    output.backprop(newTensorWith[float32]([], 3'f32).metal)
+    output.value.checkValues([], [0.5'f32])
+    x.grad.checkValues([], [0.75'f32])
+
+  test "Native activation mutations preserve reversed aliases and reject overlap":
+    let packed = [-2'f32, -0.0'f32, 0'f32, 2'f32].toTensor.metal
+    var reverse = packed.metalView([4].toMetadata, [-1].toMetadata, 3)
+    let owner = reverse.storage
+    reverse.mrelu
+    check reverse.storage == owner
+    reverse.checkValues([4], [2'f32, 0'f32, -0.0'f32, 0'f32], checkZeroSign = true)
+    packed.checkValues([4], [0'f32, -0.0'f32, 0'f32, 2'f32], checkZeroSign = true)
+    var sigmoidView = [-1'f32, 0, 1].toTensor.metal
+    sigmoidView = sigmoidView.metalView([3].toMetadata, [-1].toMetadata, 2)
+    sigmoidView.msigmoid
+    sigmoidView.checkValues([3], [0.7310586'f32, 0.5'f32, 0.26894143'f32])
+    var tanhView = [-1'f32, -0.0'f32, 1'f32].toTensor.metal
+    tanhView = tanhView.metalView([3].toMetadata, [-1].toMetadata, 2)
+    tanhView.mtanh
+    tanhView.checkValues([3], [0.7615942'f32, -0.0'f32, -0.7615942'f32], checkZeroSign = true)
+    var overlap = packed.metalView([2, 2].toMetadata, [1, 1].toMetadata, 0)
+    expect MetalError: overlap.mrelu
+    expect MetalError: overlap.msigmoid
+    expect MetalError: overlap.mtanh
+
+  test "Native activation APIs reject integer storage without conversion":
+    var input = [0'i32, 1'i32].toTensor.metal
+    expect MetalDtypeError: discard input.relu
+    expect MetalDtypeError: discard input.sigmoid
+    expect MetalDtypeError: discard input.tanh
+    expect MetalDtypeError: input.mrelu
+    expect MetalDtypeError: input.msigmoid
+    expect MetalDtypeError: input.mtanh
+    expect MetalDtypeError: discard input.relu_backward(input)
+    expect MetalDtypeError: discard input.sigmoid_backward(input)
+    expect MetalDtypeError: discard input.tanh_backward(input)
+
   test "Native exp, ln and sqrt VJPs match pinned scalar, strided, empty and domain cases":
     const fixtures = staticRead("../parity/fixtures.json")
     var contract: JsonNode

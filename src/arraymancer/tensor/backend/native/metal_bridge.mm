@@ -1538,7 +1538,7 @@ static AMStatus runMathCommand(AMCompute *context,
   [encoder setComputePipelineState:pipeline];
   switch (operation) {
     case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9:
-    case 10: case 11: case 12: case 13: case 23:
+    case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 17: case 18: case 19: case 23:
       [encoder setBuffer:(a ? a.buffer : output.buffer) offset:0 atIndex:0];
       [encoder setBuffer:(b ? b.buffer : output.buffer) offset:0 atIndex:1];
       [encoder setBuffer:output.buffer offset:0 atIndex:2];
@@ -1708,7 +1708,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     if (status.code) return status;
 
     const int operation = parameters.operation;
-    const bool elementwise = (operation >= 1 && operation <= 13) || operation == 23;
+    const bool elementwise = (operation >= 1 && operation <= 19) || operation == 23;
     if (!elementwise && operation != 20 && operation != 21 && operation != 22)
       return failure(2, "unsupported Metal math operation");
 
@@ -1733,7 +1733,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     uint64_t dispatchCount = outputCount;
 
     if (elementwise) {
-      if (operation == 13 || operation == 23) {
+      if (operation == 13 || operation == 15 || operation == 17 || operation == 19 || operation == 23) {
         if (!b || parameters.scalar_input || !sameShape(ad, bd) || !sameShape(ad, od))
           return failure(2, "fused binary operation requires matching tensor shapes");
       } else if (operation == 5) {
@@ -1744,7 +1744,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
       } else if (operation == 8 || operation == 9) {
         if (b || !parameters.scalar_input || !sameShape(ad, od))
           return failure(2, "scalar-left operation requires matching tensor shape");
-      } else if (operation >= 10 && operation <= 12) {
+      } else if ((operation >= 10 && operation <= 12) || operation == 14 || operation == 16 || operation == 18) {
         if (b || !parameters.scalar_input || !sameShape(ad, od))
           return failure(2, "unary operation requires matching input and output shapes");
       } else {

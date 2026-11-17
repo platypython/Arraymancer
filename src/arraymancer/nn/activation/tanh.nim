@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+## Provides cached-output tanh VJPs for CPU and Metal variables.
 import ../../autograd,
        ../../tensor,
        ../../nn_primitives,
@@ -52,7 +53,11 @@ proc tanh*[TT](a: Variable[TT]): Variable[TT] =
   # Resulting var
   new result
   result.context = a.context
-  result.value = ufunc.tanh(a.value)
+  when TT is Tensor:
+    # Keep the existing CPU ufunc overload and its generic dispatch.
+    result.value = ufunc.tanh(a.value)
+  else:
+    result.value = tanh(a.value)
 
   # Caching for backprop
   if a.is_grad_needed:

@@ -1,6 +1,12 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add native Metal float32 ReLU, sigmoid and tanh forward/VJP kernels and checked
+  in-place updates. Read scalar, empty and strided views directly; fused backward
+  kernels allocate one result without derivative intermediates. Preserve NaN,
+  signed zero, masked upstream gradients and no-grad tracing. In-place updates
+  retain storage and reject overlapping layouts; integer storage is not silently
+  converted for activation math.
 - Preserve NaN and signed zero in CPU ReLU, including in-place updates, while
   masking inactive NaN gradients. Add pinned ReLU, sigmoid and tanh observations
   for scalar, strided, empty and nonfinite forward/VJP cases. The selected CPU

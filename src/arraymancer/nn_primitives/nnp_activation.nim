@@ -97,6 +97,69 @@ proc quick_gelu_backward*[T: SomeFloat](gradient: Tensor[T], cached_input: Tenso
     let s = sigmoid(1.702.T * x)
     y * s * (1.T + 1.702.T * x * (1.T - s))
 
+when defined(metal) or defined(coreai):
+  template requireMetalActivation(T: typedesc) =
+    if metalDtype[T]() != 1:
+      raise newException(MetalDtypeError, "Metal activations require float32")
+
+  proc metalActivation[T](t: MetalTensor[T]; operation: int32): MetalTensor[T] =
+    ## Validate before allocating; the kernel reads arbitrary supported views.
+    requireMetalActivation(T)
+    validateMetalView(t)
+    result = newMetalTensorUninit[T](t.shape, t.storage.device)
+    dispatchMetalMath(t, default(MetalTensor[T]), result, operation, scalarInput = true)
+
+  proc metalActivationBackward[T](gradient, cached_tensor: MetalTensor[T];
+                                  operation: int32): MetalTensor[T] =
+    ## Fuse the derivative with its upstream gradient instead of allocating intermediates.
+    requireMetalActivation(T)
+    validateMetalView(gradient)
+    validateMetalView(cached_tensor)
+    if gradient.shape != cached_tensor.shape:
+      raise newException(MetalError, "Metal activation gradients require equal shapes")
+    if gradient.storage.device.registryId != cached_tensor.storage.device.registryId:
+      raise newException(MetalError, "Metal device mismatch")
+    result = newMetalTensorUninit[T](gradient.shape, gradient.storage.device)
+    dispatchMetalMath(gradient, cached_tensor, result, operation)
+
+  proc metalActivationInplace[T](t: var MetalTensor[T]; operation: int32) =
+    ## Each thread must own its destination, including reversed strided views.
+    requireMetalActivation(T)
+    requireMetalMutable(t)
+    dispatchMetalMath(t, default(MetalTensor[T]), t, operation, scalarInput = true)
+
+  proc sigmoid*[T](t: MetalTensor[T]): MetalTensor[T] =
+    ## Float32 sigmoid with one GPU allocation; preserves scalar, empty and strided shapes.
+    metalActivation(t, 16)
+
+  proc relu*[T](t: MetalTensor[T]): MetalTensor[T] =
+    ## Float32 ReLU with one GPU allocation; preserves shape, NaN and signed zero.
+    metalActivation(t, 18)
+
+  proc msigmoid*[T](t: var MetalTensor[T]) =
+    ## Mutate a non-overlapping float32 Metal view without reallocating.
+    metalActivationInplace(t, 16)
+
+  proc mrelu*[T](t: var MetalTensor[T]) =
+    ## Mutate a non-overlapping float32 Metal view, preserving NaN and signed zero.
+    metalActivationInplace(t, 18)
+
+  proc mtanh*[T](t: var MetalTensor[T]) =
+    ## Mutate a non-overlapping float32 Metal view without reallocating.
+    metalActivationInplace(t, 14)
+
+  proc sigmoid_backward*[T](gradient, cached_tensor: MetalTensor[T]): MetalTensor[T] =
+    ## Allocate a float32 VJP from equal-shaped gradients and cached sigmoid outputs.
+    metalActivationBackward(gradient, cached_tensor, 17)
+
+  proc relu_backward*[T](gradient, cached_tensor: MetalTensor[T]): MetalTensor[T] =
+    ## Allocate a float32 VJP from equal-shaped gradients and cached ReLU outputs.
+    metalActivationBackward(gradient, cached_tensor, 19)
+
+  proc tanh_backward*[T](gradient, cached_tensor: MetalTensor[T]): MetalTensor[T] =
+    ## Allocate a float32 VJP from equal-shaped gradients and cached tanh outputs.
+    metalActivationBackward(gradient, cached_tensor, 15)
+
 # ####################################################################################################
 # Documentation
 

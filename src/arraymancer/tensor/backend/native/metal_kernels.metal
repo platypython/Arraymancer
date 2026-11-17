@@ -123,7 +123,8 @@ kernel void math_elementwise(
   float bv = parameters.scalar;
   if (!parameters.scalar_input &&
       (parameters.operation <= 4 || parameters.operation == 7 ||
-       parameters.operation == 13 || parameters.operation == 23))
+       parameters.operation == 13 || parameters.operation == 15 ||
+       parameters.operation == 17 || parameters.operation == 19 || parameters.operation == 23))
     bv = b[elementAddress(tid, bd)];
 
   float value;
@@ -141,6 +142,12 @@ kernel void math_elementwise(
     case 11: value = log(av); break;
     case 12: value = sqrt(av); break;
     case 13: value = av / (2.0f * bv); break;
+    case 14: value = tanh(av); break;
+    case 15: value = av * (1.0f - bv * bv); break;
+    case 16: value = 1.0f / (1.0f + exp(-av)); break;
+    case 17: value = bv * (1.0f - bv) * av; break;
+    case 18: value = av < 0.0f ? 0.0f : av; break;
+    case 19: value = bv <= 0.0f ? 0.0f : av; break;
     case 23: value = (av - bv) * (av - bv); break;
     default: return;
   }

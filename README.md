@@ -297,8 +297,10 @@ CPU unary functions, scalar arithmetic, casts and comparisons also preserve
 rank-zero and multi-axis empty shapes, including strided inputs.
 Real `exp`, `ln` and `sqrt` also support seeded backward on CPU float32/float64
 and native Metal float32, including scalar, empty and invalid-domain results.
-CPU ReLU preserves NaN and signed zero, including in-place views; inactive units
-mask NaN upstream gradients.
+ReLU, sigmoid and tanh support native Metal float32 forward, seeded backward and
+in-place updates. ReLU preserves NaN and signed zero on CPU and Metal; inactive
+units mask NaN upstream gradients. In-place Metal updates retain storage and
+reject overlapping layouts.
 
 The version pins and source provenance live in `tests/parity/`. Capability
 annotations describe inspected implementation evidence, not passing tests.
