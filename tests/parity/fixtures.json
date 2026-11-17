@@ -4016,6 +4016,738 @@
           }
         }
       }
+    },
+    {
+      "id": "tensor.reduction_edges",
+      "area": "api:torch",
+      "inputs": {
+        "scalar": {
+          "a": {
+            "shape": [],
+            "values": [
+              3
+            ]
+          },
+          "axes": [
+            0,
+            -1
+          ]
+        },
+        "empty_vector": {
+          "a": {
+            "shape": [
+              0
+            ],
+            "values": []
+          },
+          "axes": [
+            0,
+            -1
+          ]
+        },
+        "empty_axis": {
+          "a": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "values": []
+          },
+          "axes": [
+            1,
+            -2
+          ]
+        },
+        "empty_outer": {
+          "a": {
+            "shape": [
+              0,
+              2,
+              3
+            ],
+            "values": []
+          },
+          "axes": [
+            1,
+            -2
+          ]
+        },
+        "empty_both": {
+          "a": {
+            "shape": [
+              0,
+              0,
+              3
+            ],
+            "values": []
+          },
+          "axes": [
+            1,
+            -2
+          ]
+        },
+        "strided": {
+          "a": {
+            "shape": [
+              2,
+              3
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          "axes": [
+            0,
+            -1
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "scalar": {
+          "sum": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              3.0
+            ]
+          },
+          "prod": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              3.0
+            ]
+          },
+          "mean": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              3.0
+            ]
+          },
+          "axis_0": {
+            "sum": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                3.0
+              ]
+            },
+            "prod": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                3.0
+              ]
+            },
+            "mean": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                3.0
+              ]
+            }
+          },
+          "axis_-1": {
+            "sum": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                3.0
+              ]
+            },
+            "prod": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                3.0
+              ]
+            },
+            "mean": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                3.0
+              ]
+            }
+          }
+        },
+        "empty_vector": {
+          "sum": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              0.0
+            ]
+          },
+          "prod": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              1.0
+            ]
+          },
+          "mean": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "nan"
+            ]
+          },
+          "axis_0": {
+            "sum": {
+              "shape": [
+                1
+              ],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            },
+            "prod": {
+              "shape": [
+                1
+              ],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0
+              ]
+            },
+            "mean": {
+              "shape": [
+                1
+              ],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan"
+              ]
+            }
+          },
+          "axis_-1": {
+            "sum": {
+              "shape": [
+                1
+              ],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            },
+            "prod": {
+              "shape": [
+                1
+              ],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0
+              ]
+            },
+            "mean": {
+              "shape": [
+                1
+              ],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan"
+              ]
+            }
+          }
+        },
+        "empty_axis": {
+          "sum": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              0.0
+            ]
+          },
+          "prod": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              1.0
+            ]
+          },
+          "mean": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "nan"
+            ]
+          },
+          "axis_1": {
+            "sum": {
+              "shape": [
+                2,
+                1,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            "prod": {
+              "shape": [
+                2,
+                1,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            "mean": {
+              "shape": [
+                2,
+                1,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan",
+                "nan",
+                "nan",
+                "nan"
+              ]
+            }
+          },
+          "axis_-2": {
+            "sum": {
+              "shape": [
+                2,
+                1,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            "prod": {
+              "shape": [
+                2,
+                1,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            "mean": {
+              "shape": [
+                2,
+                1,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan",
+                "nan",
+                "nan",
+                "nan"
+              ]
+            }
+          }
+        },
+        "empty_outer": {
+          "sum": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              0.0
+            ]
+          },
+          "prod": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              1.0
+            ]
+          },
+          "mean": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "nan"
+            ]
+          },
+          "axis_1": {
+            "sum": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "prod": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "mean": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          "axis_-2": {
+            "sum": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "prod": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "mean": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          }
+        },
+        "empty_both": {
+          "sum": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              0.0
+            ]
+          },
+          "prod": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              1.0
+            ]
+          },
+          "mean": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "nan"
+            ]
+          },
+          "axis_1": {
+            "sum": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "prod": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "mean": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          "axis_-2": {
+            "sum": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "prod": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "mean": {
+              "shape": [
+                0,
+                1,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          }
+        },
+        "strided": {
+          "sum": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              15.0
+            ]
+          },
+          "prod": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              120.0
+            ]
+          },
+          "mean": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              5.0
+            ]
+          },
+          "axis_0": {
+            "sum": {
+              "shape": [
+                1,
+                1
+              ],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                15.0
+              ]
+            },
+            "prod": {
+              "shape": [
+                1,
+                1
+              ],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                120.0
+              ]
+            },
+            "mean": {
+              "shape": [
+                1,
+                1
+              ],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0
+              ]
+            }
+          },
+          "axis_-1": {
+            "sum": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                4.0,
+                5.0,
+                6.0
+              ]
+            },
+            "prod": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                4.0,
+                5.0,
+                6.0
+              ]
+            },
+            "mean": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                4.0,
+                5.0,
+                6.0
+              ]
+            }
+          }
+        }
+      }
     }
   ]
 }

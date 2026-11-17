@@ -29,9 +29,30 @@ import complex except Complex64, Complex32
 # ### Standard aggregate functions
 # TODO consider using stats from Nim standard lib: https://nim-lang.org/docs/stats.html#standardDeviation,RunningStat
 
-# Note: for aggregate that returns scalar, if the tensor is empty,
-#       Numpy seems to return the neutral element, do we want that?
+func reductionAxis(rank, axis: int): int =
+  ## Scalars accept axis 0 and -1 without acquiring a dimension.
+  let dimensions = max(1, rank)
+  if axis < -dimensions or axis >= dimensions:
+    raise newException(IndexDefect, "Reduction axis out of bounds")
+  if axis < 0: axis + dimensions else: axis
 
+func productIdentity[T](): T =
+  when T is Complex:
+    type F = T.T
+    complex(1.F, 0.F)
+  else:
+    1.T
+
+proc sumAlongAxis[T](arg: Tensor[T], axis: int): Tensor[T] =
+  if arg.rank == 0:
+    if arg.size == 0: return newTensor[T](0)
+    return arg.clone
+  if arg.size == 0:
+    var shape = arg.shape
+    shape[axis] = 1
+    return newTensor[T](shape)
+  arg.reduce_axis_inline(axis):
+    x+=y
 
 proc sum*[T](arg: Tensor[T]): T =
   ## Compute the sum of all elements
@@ -39,19 +60,27 @@ proc sum*[T](arg: Tensor[T]): T =
     x+=y
 
 proc sum*[T](arg: Tensor[T], axis: int): Tensor[T] {.noinit.} =
-  ## Compute the sum of all elements along an axis
-  returnEmptyIfEmpty(arg)
-  arg.reduce_axis_inline(axis):
-    x+=y
+  ## Sum along a positive or negative axis, retaining its dimension.
+  ## Empty reductions produce zeros; scalar results are independent copies.
+  sumAlongAxis(arg, reductionAxis(arg.rank, axis))
 
 proc product*[T](arg: Tensor[T]): T =
-  ## Compute the product of all elements
+  ## Compute the product of all elements; an empty product is one.
+  if arg.size == 0: return productIdentity[T]()
   arg.reduce_inline():
     x*=y
 
 proc product*[T](arg: Tensor[T], axis: int): Tensor[T] {.noinit.}=
-  ## Compute the product along an axis
-  returnEmptyIfEmpty(arg)
+  ## Product along a positive or negative axis, retaining its dimension.
+  ## Empty reductions produce ones; scalar results are independent copies.
+  let axis = reductionAxis(arg.rank, axis)
+  if arg.rank == 0:
+    if arg.size == 0: return newTensor[T](0)
+    return arg.clone
+  if arg.size == 0:
+    var shape = arg.shape
+    shape[axis] = 1
+    return newTensorWith[T](shape, productIdentity[T]())
   arg.reduce_axis_inline(axis):
     x.melwise_mul(y)
 
@@ -65,8 +94,11 @@ proc mean*[T: SomeInteger](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline
   ## Compute the mean along an axis
   ##
   ## Warning ⚠: Since input is integer, output will also be integer (using integer division)
-  returnEmptyIfEmpty(arg)
-  arg.sum(axis) div arg.shape[axis].T
+  let axis = reductionAxis(arg.rank, axis)
+  if arg.rank == 0: return sumAlongAxis(arg, axis)
+  if arg.shape[axis] == 0:
+    raise newException(ValueError, "Integer mean of an empty reduction is undefined")
+  sumAlongAxis(arg, axis) div arg.shape[axis].T
 
 proc mean*[T: SomeFloat](arg: Tensor[T]): T {.inline.}=
   ## Compute the mean of all elements
@@ -78,15 +110,18 @@ proc mean*[T: Complex[float32] or Complex[float64]](arg: Tensor[T]): T {.inline.
   arg.sum / complex(arg.size.F, 0.F)
 
 proc mean*[T: SomeFloat](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}=
-  ## Compute the mean along an axis
-  returnEmptyIfEmpty(arg)
-  arg.sum(axis) / arg.shape[axis].T
+  ## Mean along a positive or negative axis, retaining its dimension.
+  ## Empty reductions produce NaNs; unreduced empty dimensions are preserved.
+  let axis = reductionAxis(arg.rank, axis)
+  if arg.rank == 0: return sumAlongAxis(arg, axis)
+  sumAlongAxis(arg, axis) / arg.shape[axis].T
 
 proc mean*[T: Complex[float32] or Complex[float64]](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}=
-  ## Compute the mean along an axis
-  returnEmptyIfEmpty(arg)
+  ## Mean along a positive or negative axis, retaining its dimension.
+  let axis = reductionAxis(arg.rank, axis)
+  if arg.rank == 0: return sumAlongAxis(arg, axis)
   type F = T.T # Get float subtype of Complex[T]
-  arg.sum(axis) / complex(arg.shape[axis].F, 0.F)
+  sumAlongAxis(arg, axis) / complex(arg.shape[axis].F, 0.F)
 
 proc min*[T](arg: Tensor[T]): T =
   ## Compute the min of all elements

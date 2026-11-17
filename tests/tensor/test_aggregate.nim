@@ -23,6 +23,50 @@ proc main() =
             [9, 10, 11]].toTensor()
     let t_c = t.asType(Complex[float64])
 
+    test "Empty reductions retain unreduced dimensions and neutral elements":
+      let a = newTensor[float64](2, 0, 3)
+      check a.sum == 0.0
+      check a.product == 1.0
+      check a.sum(-2) == zeros[float64](2, 1, 3)
+      check a.product(-2) == ones[float64](2, 1, 3)
+      let average = a.mean(-2)
+      check average.shape == [2, 1, 3]
+      for value in average:
+        check value != value
+      let outer = newTensor[float64](0, 2, 3)
+      check outer.sum(1).shape == [0, 1, 3]
+      check outer.product(1).shape == [0, 1, 3]
+      check outer.mean(1).shape == [0, 1, 3]
+      check newTensor[int](0).product == 1
+      check newTensor[Complex[float64]](0).product == complex(1.0)
+      check newTensor[Complex[float64]](2, 0).product(-1) ==
+        ones[Complex[float64]](2, 1)
+      expect ValueError:
+        discard newTensor[int](2, 0).mean(1)
+
+    test "Scalar axis reductions copy and strided negative axes reduce":
+      let scalar = newTensorWith[float64]([], 3.0)
+      for axis in [0, -1]:
+        var total = scalar.sum(axis)
+        check total.shape == []
+        check total[] == 3.0
+        check scalar.product(axis)[] == 3.0
+        check scalar.mean(axis)[] == 3.0
+        for value in total.mitems:
+          value = 9.0
+        check scalar[] == 3.0
+      let view = [[1.0, 2, 3], [4.0, 5, 6]].toTensor.transpose[_, 1..^1]
+      check view.sum(-2) == [[15.0]].toTensor
+      check view.product(-2) == [[120.0]].toTensor
+      check view.mean(-2) == [[5.0]].toTensor
+      for axis in [-3, 2]:
+        expect IndexDefect:
+          discard view.sum(axis)
+        expect IndexDefect:
+          discard view.product(axis)
+        expect IndexDefect:
+          discard view.mean(axis)
+
     test "Sum":
       check: t.sum == 66
       check: t_c.sum == complex(66'f64)

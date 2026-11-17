@@ -1,6 +1,11 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Preserve CPU empty-axis reduction shapes and neutral elements for sum/product,
+  including a scalar empty product of one. Sum, product and mean accept negative
+  axes and rank-zero scalars; floating-point empty means produce NaNs. Preserve
+  integer mean division and reject an empty integer reduction explicitly.
+  The selected pinned CPU conformance gate now covers 30 cases.
 - Add native Metal float32 ReLU, sigmoid and tanh forward/VJP kernels and checked
   in-place updates. Read scalar, empty and strided views directly; fused backward
   kernels allocate one result without derivative intermediates. Preserve NaN,

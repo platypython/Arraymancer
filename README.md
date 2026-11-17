@@ -271,7 +271,7 @@ Detailed API is available at Arraymancer official [documentation](https://mratsi
 
 ## PyTorch conformance checks
 
-`nimble parity` compares twenty-nine native CPU cases with checked-in PyTorch 2.15.0
+`nimble parity` compares thirty native CPU cases with checked-in PyTorch 2.15.0
 observations and writes `build/pytorch-parity.json`. On macOS 27 arm64 it builds
 both native adapters and runs ten Metal training contracts and eight Core AI
 inference contracts. Elsewhere it compiles a CPU-only runner: unobserved Apple
@@ -301,6 +301,10 @@ ReLU, sigmoid and tanh support native Metal float32 forward, seeded backward and
 in-place updates. ReLU preserves NaN and signed zero on CPU and Metal; inactive
 units mask NaN upstream gradients. In-place Metal updates retain storage and
 reject overlapping layouts.
+CPU tensor `sum`, `product` and `mean` accept negative axes and rank-zero scalars.
+Axis reductions retain their dimension, preserve unreduced empty dimensions and
+return zeros, ones or floating-point NaNs for empty sums, products or means.
+Integer means retain integer division; an empty reduced axis is undefined.
 
 The version pins and source provenance live in `tests/parity/`. Capability
 annotations describe inspected implementation evidence, not passing tests.

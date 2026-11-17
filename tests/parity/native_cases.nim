@@ -82,6 +82,20 @@ proc runCase*(caseData: JsonNode): JsonNode =
         "reverse_divide": tensorObservation(2.0 /. a),
         "cast": tensorObservation(a.asType(float32)),
         "greater": tensorObservation(a >. 2.0), "isnan": tensorObservation(a.isNaN)}
+  of "tensor.reduction_edges":
+    for name, spec in inputs:
+      var a = getTensor(spec["a"])
+      if name == "strided": a = a.transpose[_, 1..^1]
+      result[name] = %*{
+        "sum": tensorObservation(newTensorWith[float64]([], a.sum)),
+        "prod": tensorObservation(newTensorWith[float64]([], a.product)),
+        "mean": tensorObservation(newTensorWith[float64]([], a.mean))}
+      for axisNode in spec["axes"]:
+        let axis = axisNode.getInt
+        result[name]["axis_" & $axis] = %*{
+          "sum": tensorObservation(a.sum(axis)),
+          "prod": tensorObservation(a.product(axis)),
+          "mean": tensorObservation(a.mean(axis))}
   of "autograd.unary_math":
     for name, spec in inputs:
       result[name] = newJObject()

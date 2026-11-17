@@ -411,6 +411,31 @@ def singleton_views(torch: Any) -> dict[str, Any]:
                   "shares_storage": output.untyped_storage().data_ptr() == x.untyped_storage().data_ptr()})
 
 
+def reduction_edges(torch: Any) -> dict[str, Any]:
+    specs = {
+        "scalar": ([], [3], [0, -1]),
+        "empty_vector": ([0], [], [0, -1]),
+        "empty_axis": ([2, 0, 3], [], [1, -2]),
+        "empty_outer": ([0, 2, 3], [], [1, -2]),
+        "empty_both": ([0, 0, 3], [], [1, -2]),
+        "strided": ([2, 3], [1, 2, 3, 4, 5, 6], [0, -1]),
+    }
+    inputs, expected = {}, {}
+    for name, (shape, values, axes) in specs.items():
+        a = _tensor(values, shape, torch)
+        if name == "strided":
+            a = a.transpose(0, 1)[:, 1:]
+        inputs[name] = {"a": {"shape": shape, "values": values}, "axes": axes}
+        observed = {op: _observe(getattr(torch, op)(a)) for op in ("sum", "prod", "mean")}
+        for axis in axes:
+            observed[f"axis_{axis}"] = {
+                op: _observe(getattr(torch, op)(a, dim=axis, keepdim=True))
+                for op in ("sum", "prod", "mean")
+            }
+        expected[name] = observed
+    return _case("tensor.reduction_edges", "api:torch", inputs, expected)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -418,7 +443,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
     axis_options, broadcast_multiply, broadcast_divide,
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
-    unary_math, activation_math,
+    unary_math, activation_math, reduction_edges,
 )
 
 
