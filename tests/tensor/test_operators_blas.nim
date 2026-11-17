@@ -19,6 +19,21 @@ import std / [unittest, sugar]
 
 proc main() =
   suite "BLAS (Basic Linear Algebra Subprograms)":
+    test "Vector promotion preserves signed strides and empty contraction shapes":
+      let a = [99.0, 1, 2, 3, 99].toTensor
+      let reversed = a[3..1|-1]
+      let dot = reversed * [1.0, 2, 3].toTensor
+      check dot.rank == 0
+      check dot.atContiguousIndex(0) == 10.0
+      check ([1, 2, 3].toTensor * [3, 2, 1].toTensor).atContiguousIndex(0) == 10
+      check [2.0, 3].toTensor * [[1.0, 2], [3.0, 4]].toTensor == [11.0, 16].toTensor
+      let emptyDot = zeros[float64](0) * zeros[float64](0)
+      check emptyDot.rank == 0
+      check emptyDot.atContiguousIndex(0) == 0.0
+      check (zeros[float64](0, 3) * ones[float64](3, 2)).shape == [0, 2]
+      check (ones[float64](2, 3) * zeros[float64](3, 0)).shape == [2, 0]
+      check zeros[float64](2, 0) * zeros[float64](0) == zeros[float64](2)
+
     test "GEMM - General Matrix to Matrix Multiplication":
       ## TODO: test with slices
       let a = [[1.0,2,3],
@@ -107,14 +122,14 @@ proc main() =
       check: n1.asType(float) * n2.asType(float) == n1n2.asType(float)
       check: n1.asType(Complex[float64]) * n2.asType(Complex[float64]) == n1n2.asType(Complex[float64])
 
-    when compileOption("boundChecks") and not defined(openmp):
-      test "GEMM - Bounds checking":
-        let c = @[@[1'f32,2,3],@[4'f32,5,6]].toTensor()
-
-        expect(IndexDefect):
-          discard c * c
-    else:
-      echo "Bound-checking is disabled or OpenMP is used. The out-of-bounds checking test has been skipped."
+    test "Matrix product rejects scalar, inner and batch mismatches":
+      let c = [[1'f32, 2, 3], [4'f32, 5, 6]].toTensor
+      expect ValueError:
+        discard c * c
+      expect ValueError:
+        discard newTensorWith[float32]([], 1'f32) * c
+      expect ValueError:
+        discard ones[float32](2, 2, 3) * ones[float32](3, 3, 2)
 
     test "GEMV - General Matrix to Vector Multiplication":
       ## TODO: test with slices

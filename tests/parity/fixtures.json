@@ -1432,6 +1432,674 @@
           ]
         }
       }
+    },
+    {
+      "id": "autograd.matmul_ranks",
+      "area": "api:autograd",
+      "inputs": {
+        "dot": {
+          "a": {
+            "shape": [
+              3
+            ],
+            "values": [
+              1,
+              2,
+              3
+            ]
+          },
+          "b": {
+            "shape": [
+              3
+            ],
+            "values": [
+              3,
+              2,
+              1
+            ]
+          },
+          "seed": {
+            "shape": [],
+            "values": [
+              1
+            ]
+          }
+        },
+        "matrix_vector": {
+          "a": {
+            "shape": [
+              2,
+              2
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "b": {
+            "shape": [
+              2
+            ],
+            "values": [
+              2,
+              3
+            ]
+          },
+          "seed": {
+            "shape": [
+              2
+            ],
+            "values": [
+              1,
+              2
+            ]
+          }
+        },
+        "vector_matrix": {
+          "a": {
+            "shape": [
+              2
+            ],
+            "values": [
+              2,
+              3
+            ]
+          },
+          "b": {
+            "shape": [
+              2,
+              2
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "seed": {
+            "shape": [
+              2
+            ],
+            "values": [
+              1,
+              2
+            ]
+          }
+        },
+        "batch_vector": {
+          "a": {
+            "shape": [
+              2,
+              2,
+              2
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          },
+          "b": {
+            "shape": [
+              2
+            ],
+            "values": [
+              2,
+              3
+            ]
+          },
+          "seed": {
+            "shape": [
+              2,
+              2
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        },
+        "vector_batch": {
+          "a": {
+            "shape": [
+              2
+            ],
+            "values": [
+              2,
+              3
+            ]
+          },
+          "b": {
+            "shape": [
+              2,
+              2,
+              2
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          },
+          "seed": {
+            "shape": [
+              2,
+              2
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        },
+        "broadcast_batches": {
+          "a": {
+            "shape": [
+              2,
+              1,
+              2,
+              2
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          },
+          "b": {
+            "shape": [
+              1,
+              3,
+              2,
+              1
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          "seed": {
+            "shape": [
+              2,
+              3,
+              2,
+              1
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12
+            ]
+          }
+        },
+        "empty_contract": {
+          "a": {
+            "shape": [
+              2,
+              0
+            ],
+            "values": []
+          },
+          "b": {
+            "shape": [
+              0,
+              3
+            ],
+            "values": []
+          },
+          "seed": {
+            "shape": [
+              2,
+              3
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          }
+        },
+        "empty_batch": {
+          "a": {
+            "shape": [
+              1,
+              2,
+              3
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          "b": {
+            "shape": [
+              0,
+              3,
+              4
+            ],
+            "values": []
+          },
+          "seed": {
+            "shape": [
+              0,
+              2,
+              4
+            ],
+            "values": []
+          }
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "dot": {
+          "output": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              10.0
+            ]
+          },
+          "grad_a": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              3.0,
+              2.0,
+              1.0
+            ]
+          },
+          "grad_b": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              1.0,
+              2.0,
+              3.0
+            ]
+          }
+        },
+        "matrix_vector": {
+          "output": {
+            "shape": [
+              2
+            ],
+            "numel": 2,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              8.0,
+              18.0
+            ]
+          },
+          "grad_a": {
+            "shape": [
+              2,
+              2
+            ],
+            "numel": 4,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              2.0,
+              3.0,
+              4.0,
+              6.0
+            ]
+          },
+          "grad_b": {
+            "shape": [
+              2
+            ],
+            "numel": 2,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              7.0,
+              10.0
+            ]
+          }
+        },
+        "vector_matrix": {
+          "output": {
+            "shape": [
+              2
+            ],
+            "numel": 2,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              11.0,
+              16.0
+            ]
+          },
+          "grad_a": {
+            "shape": [
+              2
+            ],
+            "numel": 2,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              5.0,
+              11.0
+            ]
+          },
+          "grad_b": {
+            "shape": [
+              2,
+              2
+            ],
+            "numel": 4,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              2.0,
+              4.0,
+              3.0,
+              6.0
+            ]
+          }
+        },
+        "batch_vector": {
+          "output": {
+            "shape": [
+              2,
+              2
+            ],
+            "numel": 4,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              8.0,
+              18.0,
+              28.0,
+              38.0
+            ]
+          },
+          "grad_a": {
+            "shape": [
+              2,
+              2,
+              2
+            ],
+            "numel": 8,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              2.0,
+              3.0,
+              4.0,
+              6.0,
+              6.0,
+              9.0,
+              8.0,
+              12.0
+            ]
+          },
+          "grad_b": {
+            "shape": [
+              2
+            ],
+            "numel": 2,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              50.0,
+              60.0
+            ]
+          }
+        },
+        "vector_batch": {
+          "output": {
+            "shape": [
+              2,
+              2
+            ],
+            "numel": 4,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              11.0,
+              16.0,
+              31.0,
+              36.0
+            ]
+          },
+          "grad_a": {
+            "shape": [
+              2
+            ],
+            "numel": 2,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              44.0,
+              64.0
+            ]
+          },
+          "grad_b": {
+            "shape": [
+              2,
+              2,
+              2
+            ],
+            "numel": 8,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              2.0,
+              4.0,
+              3.0,
+              6.0,
+              6.0,
+              8.0,
+              9.0,
+              12.0
+            ]
+          }
+        },
+        "broadcast_batches": {
+          "output": {
+            "shape": [
+              2,
+              3,
+              2,
+              1
+            ],
+            "numel": 12,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              5.0,
+              11.0,
+              11.0,
+              25.0,
+              17.0,
+              39.0,
+              17.0,
+              23.0,
+              39.0,
+              53.0,
+              61.0,
+              83.0
+            ]
+          },
+          "grad_a": {
+            "shape": [
+              2,
+              1,
+              2,
+              2
+            ],
+            "numel": 8,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              35.0,
+              44.0,
+              44.0,
+              56.0,
+              89.0,
+              116.0,
+              98.0,
+              128.0
+            ]
+          },
+          "grad_b": {
+            "shape": [
+              1,
+              3,
+              2,
+              1
+            ],
+            "numel": 6,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              98.0,
+              116.0,
+              130.0,
+              156.0,
+              162.0,
+              196.0
+            ]
+          }
+        },
+        "empty_contract": {
+          "output": {
+            "shape": [
+              2,
+              3
+            ],
+            "numel": 6,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "grad_a": {
+            "shape": [
+              2,
+              0
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "grad_b": {
+            "shape": [
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          }
+        },
+        "empty_batch": {
+          "output": {
+            "shape": [
+              0,
+              2,
+              4
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "grad_a": {
+            "shape": [
+              1,
+              2,
+              3
+            ],
+            "numel": 6,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "grad_b": {
+            "shape": [
+              0,
+              3,
+              4
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          }
+        }
+      }
     }
   ]
 }

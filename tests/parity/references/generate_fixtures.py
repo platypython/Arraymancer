@@ -267,13 +267,41 @@ def mse_broadcast_none(torch: Any) -> dict[str, Any]:
     return _mse_broadcast(torch, "none")
 
 
+def matmul_ranks(torch: Any) -> dict[str, Any]:
+    specs = {
+        "dot": ([3], [1, 2, 3], [3], [3, 2, 1]),
+        "matrix_vector": ([2, 2], [1, 2, 3, 4], [2], [2, 3]),
+        "vector_matrix": ([2], [2, 3], [2, 2], [1, 2, 3, 4]),
+        "batch_vector": ([2, 2, 2], list(range(1, 9)), [2], [2, 3]),
+        "vector_batch": ([2], [2, 3], [2, 2, 2], list(range(1, 9))),
+        "broadcast_batches": ([2, 1, 2, 2], list(range(1, 9)), [1, 3, 2, 1], list(range(1, 7))),
+        "empty_contract": ([2, 0], [], [0, 3], []),
+        "empty_batch": ([1, 2, 3], list(range(1, 7)), [0, 3, 4], []),
+    }
+    inputs: dict[str, Any] = {}
+    expected: dict[str, Any] = {}
+    for name, (a_shape, a_values, b_shape, b_values) in specs.items():
+        a = _tensor(a_values, a_shape, torch).requires_grad_(True)
+        b = _tensor(b_values, b_shape, torch).requires_grad_(True)
+        output = torch.matmul(a, b)
+        seed_values = list(range(1, output.numel() + 1))
+        seed_shape = list(output.shape)
+        output.backward(_tensor(seed_values, seed_shape, torch))
+        inputs[name] = {"a": {"shape": a_shape, "values": a_values},
+                        "b": {"shape": b_shape, "values": b_values},
+                        "seed": {"shape": seed_shape, "values": seed_values}}
+        expected[name] = {"output": _observe(output), "grad_a": _observe(a.grad),
+                          "grad_b": _observe(b.grad)}
+    return _case("autograd.matmul_ranks", "api:autograd", inputs, expected)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
     no_grad_exception, seeded_vjp, retained_vjp, independent_graphs, chunk_seed,
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
     axis_options, broadcast_multiply, broadcast_divide,
-    mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none,
+    mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks,
 )
 
 

@@ -15,6 +15,7 @@
 import  ../tensor,
         ./autograd_common,
         ./private/p_broadcast
+import ../tensor/private/p_matmul
 
 type MatMulGate*[TT] {.final.} = ref object of Gate[TT]
   ## TODO: generalize to C <- alpha AB + C
@@ -23,14 +24,25 @@ type MatMulGate*[TT] {.final.} = ref object of Gate[TT]
 
 proc matmul_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
   let self = MatMulGate[TT](self)
-  let gradient = payload.variable.grad
+  let a = promoteMatmulOperand(self.a.value, false)
+  let b = promoteMatmulOperand(self.b.value, true)
+  let gradient = promoteMatmulGradient(payload.variable.grad,
+    self.a.value.rank == 1, self.b.value.rank == 1)
   result = newDiffs[TT](2)
   if self.a.requires_grad:
-    let rawA = gradient * self.b.value.transpose2d
-    result[0] = reduce_broadcast_dims(rawA, self.a.value.shape)
+    var adjointB = b.transpose2d
+    when TT is Tensor[Complex[float32]] or TT is Tensor[Complex[float64]]:
+      adjointB = adjointB.conjugate
+    let rawA = gradient * adjointB
+    result[0] = reduce_broadcast_dims(rawA, a.shape)
+    if self.a.value.rank == 1: result[0] = result[0].reshape(self.a.value.shape)
   if self.b.requires_grad:
-    let rawB = self.a.value.transpose2d * gradient
-    result[1] = reduce_broadcast_dims(rawB, self.b.value.shape)
+    var adjointA = a.transpose2d
+    when TT is Tensor[Complex[float32]] or TT is Tensor[Complex[float64]]:
+      adjointA = adjointA.conjugate
+    let rawB = adjointA * gradient
+    result[1] = reduce_broadcast_dims(rawB, b.shape)
+    if self.b.value.rank == 1: result[1] = result[1].reshape(self.b.value.shape)
 
 proc matmul_cache[TT](result: Variable[TT], a, b: Variable[TT]) =
   # Gate

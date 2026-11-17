@@ -101,6 +101,15 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result["loss"] = tensorObservation(loss.value)
     result["grad_prediction"] = tensorObservation(prediction.grad)
     result["grad_target"] = tensorObservation(target.grad)
+  of "autograd.matmul_ranks":
+    for name, operands in inputs:
+      let ctx = newContext Tensor[float64]
+      let a = ctx.variable(getTensor(operands["a"]), requires_grad = true)
+      let b = ctx.variable(getTensor(operands["b"]), requires_grad = true)
+      let output = a * b
+      output.backprop(getTensor(operands["seed"]))
+      result[name] = %*{"output": tensorObservation(output.value),
+                        "grad_a": tensorObservation(a.grad), "grad_b": tensorObservation(b.grad)}
   of "autograd.no_grad_exception":
     let ctx = newContext Tensor[float64]
     let x = ctx.variable(getTensor(inputs["x"]), requires_grad = true)

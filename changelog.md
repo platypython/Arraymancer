@@ -1,6 +1,12 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Extend CPU matrix products to vector-vector scalar results, vector-matrix and
+  batched vector products. Restore promoted axes in backward, reduce broadcast
+  batch gradients, and conjugate complex operands in VJPs. Empty contractions
+  return zeros without BLAS calls; invalid scalar/inner/batch shapes raise
+  `ValueError` even without bounds checks. Batch metadata no longer needs heap
+  sequences. A twenty-fifth pinned CPU case covers eight matrix-product shapes.
 - Add CPU/Metal MSE `mseMean`, `mseSum` and `mseNone` reductions, trailing-axis
   broadcasting and gradients for trainable targets. Empty losses retain their
   shapes and produce zero operand gradients. CPU scalar losses reduce without
