@@ -1,6 +1,8 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Fuse CPU MSE reductions over broadcast spans and accumulate requested gradients
+  directly in their original shapes, without expanded-gradient temporaries.
 - Add storage-reusing `applyUnary` for float32 exp/ln/sqrt; allocating tensor
   functions share bulk vForce exp/log and hardware sqrt paths on macOS while
   retaining scalar, empty and alias behavior.

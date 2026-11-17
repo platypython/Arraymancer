@@ -14,7 +14,8 @@
 
 import  ../../tensor,
         ../../autograd,
-        ../../autograd/private/p_broadcast
+        ../../autograd/private/p_broadcast,
+        ../../tensor/private/p_inner_spans
 
 when defined(metal) or defined(coreai):
   import ../../nn_primitives/nnp_mse_metal
@@ -29,21 +30,79 @@ proc mseForward[T: SomeFloat](prediction, target: Tensor[T], reduction: MseReduc
     return map2_inline(p, t):
       let difference = x - y
       difference * difference
+  if p.size == 0:
+    return newTensorWith[T]([], if reduction == mseMean: T(0) / T(p.size) else: T(0))
   var loss = T(0)
-  for x, y in zip(p, t):
-    let difference = x - y
-    loss += difference * difference
+  # Independent accumulators permit SIMD without relaxing IEEE arithmetic.
+  var partials: array[4, T]
+  let strides = [p.strides, t.strides]
+  let span = innerSpan(p.shape, strides)
+  let origins = [p.offset, t.offset]
+  let predictionData = p.storage.raw_buffer
+  let targetData = t.storage.raw_buffer
+  for outer in 0 ..< p.size div span.length:
+    let offsets = spanOffsets(p.shape, strides, origins, span.outerRank, outer)
+    let predictionOffset = offsets[0]
+    let targetOffset = offsets[1]
+    let count = uint(span.length)
+    withSpanStep(span.steps[0], predictionStep):
+      withSpanStep(span.steps[1], targetStep):
+        var cursor = 0'u
+        while cursor + 4'u <= count:
+          for lane in 0 ..< 4:
+            let i = cast[int](cursor) +% lane
+            let difference = predictionData[predictionOffset +% (i *% predictionStep)] -
+              targetData[targetOffset +% (i *% targetStep)]
+            partials[lane] += difference * difference
+          cursor += 4'u
+        while cursor < count:
+          let i = cast[int](cursor)
+          let difference = predictionData[predictionOffset +% (i *% predictionStep)] -
+            targetData[targetOffset +% (i *% targetStep)]
+          loss += difference * difference
+          inc cursor
+  for partial in partials: loss += partial
   if reduction == mseMean: loss /= T(p.size)
   result = newTensorUninit[T]([])
   result.unsafe_raw_offset[0] = loss
 
-proc mseBackward[T: SomeFloat](upstream, prediction, target: Tensor[T],
-                              reduction: MseReduction): Tensor[T] =
+proc mseBackwardCpu[T: SomeFloat](upstream, prediction, target: Tensor[T],
+    reduction: MseReduction, needPrediction, needTarget: bool):
+    tuple[prediction, target: Tensor[T]] =
+  ## Accumulate each requested gradient directly in its original shape.
   let (p, t) = broadcast2(prediction, target)
+  if needPrediction: result.prediction = zeros[T](prediction.shape)
+  if needTarget: result.target = zeros[T](target.shape)
+  if p.size == 0: return
   let gradient = broadcast2(upstream, p).a
+  var predictionStrides, targetStrides: Metadata
+  predictionStrides.len = p.rank
+  targetStrides.len = p.rank
+  var predictionGradient, targetGradient: ptr UncheckedArray[T]
+  if needPrediction:
+    predictionStrides = broadcast2(result.prediction, p).a.strides
+    predictionGradient = result.prediction.storage.raw_buffer
+  if needTarget:
+    targetStrides = broadcast2(result.target, p).a.strides
+    targetGradient = result.target.storage.raw_buffer
+  let strides = [p.strides, t.strides, gradient.strides, predictionStrides, targetStrides]
+  let origins = [p.offset, t.offset, gradient.offset, 0, 0]
+  let span = innerSpan(p.shape, strides)
+  let predictionData = p.storage.raw_buffer
+  let targetData = t.storage.raw_buffer
+  let upstreamData = gradient.storage.raw_buffer
   let norm = if reduction == mseMean: T(2) / T(p.size) else: T(2)
-  result = map3_inline(p, t, gradient):
-    norm * (x - y) * z
+  for outer in 0 ..< p.size div span.length:
+    let offsets = spanOffsets(p.shape, strides, origins, span.outerRank, outer)
+    for cursor in 0'u ..< uint(span.length):
+      let i = cast[int](cursor)
+      let difference = predictionData[offsets[0] +% (i *% span.steps[0])] -
+        targetData[offsets[1] +% (i *% span.steps[1])]
+      let value = norm * difference * upstreamData[offsets[2] +% (i *% span.steps[2])]
+      if needPrediction:
+        predictionGradient[offsets[3] +% (i *% span.steps[3])] += value
+      if needTarget:
+        targetGradient[offsets[4] +% (i *% span.steps[4])] -= value
 
 when defined(metal) or defined(coreai):
   proc mseForward(prediction, target: MetalTensor[float32],
@@ -72,14 +131,20 @@ proc mse_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
   let self = MSELoss[TT](self)
   let targetNeedsGrad = not self.targetVariable.isNil and self.targetVariable.requires_grad
   result = newDiffs[TT](if self.targetVariable.isNil: 1 else: 2)
-  if self.cache.requires_grad:
-    let gradient = mseBackward(payload.variable.grad, self.cache.value, self.target, self.reduction)
-    result[0] = reduce_broadcast_dims(gradient, self.cache.value.shape)
-    if targetNeedsGrad:
-      result[1] = reduce_broadcast_dims(-gradient, self.target.shape)
-  elif targetNeedsGrad:
-    let gradient = mseBackward(payload.variable.grad, self.target, self.cache.value, self.reduction)
-    result[1] = reduce_broadcast_dims(gradient, self.target.shape)
+  when TT is Tensor:
+    let gradients = mseBackwardCpu(payload.variable.grad, self.cache.value, self.target,
+                                  self.reduction, self.cache.requires_grad, targetNeedsGrad)
+    if self.cache.requires_grad: result[0] = gradients.prediction
+    if targetNeedsGrad: result[1] = gradients.target
+  else:
+    if self.cache.requires_grad:
+      let gradient = mseBackward(payload.variable.grad, self.cache.value, self.target, self.reduction)
+      result[0] = reduce_broadcast_dims(gradient, self.cache.value.shape)
+      if targetNeedsGrad:
+        result[1] = reduce_broadcast_dims(-gradient, self.target.shape)
+    elif targetNeedsGrad:
+      let gradient = mseBackward(payload.variable.grad, self.target, self.cache.value, self.reduction)
+      result[1] = reduce_broadcast_dims(gradient, self.target.shape)
 
 proc mseLoss[TT](input: Variable[TT], target: TT, targetVariable: Variable[TT],
                  reduction: MseReduction): Variable[TT] =
