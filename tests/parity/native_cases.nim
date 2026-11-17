@@ -99,6 +99,16 @@ proc runCase*(caseData: JsonNode): JsonNode =
     except ValueError:
       discard
     result["tracking_after_exception"] = %x.is_grad_needed
+  of "autograd.axis_options":
+    let ctx = newContext Tensor[float64]
+    let x = ctx.variable(getTensor(inputs["x"]).transpose, requires_grad = true)
+    let total = x.sum(axis = -1, keepdim = false)
+    let average = x.mean(axis = -1, keepdim = false)
+    total.backprop(getTensor(inputs["first"]))
+    average.backprop(getTensor(inputs["second"]))
+    result["sum"] = tensorObservation(total.value)
+    result["mean"] = tensorObservation(average.value)
+    result["grad"] = tensorObservation(x.grad)
   of "autograd.seeded_vjp", "autograd.retained_vjp", "autograd.independent_graphs",
       "autograd.chunk_seed", "autograd.slice_overlap", "autograd.index_select",
       "autograd.mask_select", "autograd.axis_mean", "autograd.reduction_scalars":

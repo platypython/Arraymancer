@@ -208,11 +208,24 @@ def reduction_scalars(torch: Any) -> dict[str, Any]:
 
 
 
+def axis_options(torch: Any) -> dict[str, Any]:
+    x = _tensor([1, 2, 3, 4, 5, 6], [2, 3], torch).transpose(0, 1).requires_grad_(True)
+    total, average = x.sum(dim=-1), x.mean(dim=-1)
+    total.backward(_tensor([2, 4, 6], [3], torch))
+    average.backward(_tensor([4, 8, 12], [3], torch))
+    return _case("autograd.axis_options", "api:autograd",
+                 {"x": {"shape": [2, 3], "values": [1, 2, 3, 4, 5, 6]},
+                  "first": {"shape": [3], "values": [2, 4, 6]},
+                  "second": {"shape": [3], "values": [4, 8, 12]}},
+                 {"sum": _observe(total), "mean": _observe(average), "grad": _observe(x.grad)})
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
     no_grad_exception, seeded_vjp, retained_vjp, independent_graphs, chunk_seed,
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
+    axis_options,
 )
 
 

@@ -13,10 +13,54 @@
 # limitations under the License.
 
 import ../../src/arraymancer
-import std / [unittest, sequtils]
+import std / [unittest, sequtils, math]
 
 proc main() =
   suite "Autograd of basic operations":
+    test "Negative-axis reductions squeeze outputs and restore VJP dimensions":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([[1.0, 2, 3], [4.0, 5, 6]].toTensor.transpose,
+                           requires_grad = true)
+      let total = x.sum(axis = -1, keepdim = false)
+      let average = x.mean(axis = -1, keepdim = false)
+      check total.value == [5.0, 7, 9].toTensor
+      check average.value == [2.5, 3.5, 4.5].toTensor
+      total.backprop([2.0, 4, 6].toTensor)
+      average.backprop([4.0, 8, 12].toTensor)
+      check x.grad == [[4.0, 4], [8.0, 8], [12.0, 12]].toTensor
+
+    test "Rank-one and scalar axis reductions preserve scalar semantics":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([2.0, 4].toTensor, requires_grad = true)
+      let average = x.mean(axis = 0, keepdim = false)
+      check average.value.rank == 0
+      check average.value.atContiguousIndex(0) == 3.0
+      let scalar = average.sum(axis = -1)
+      check scalar.value.rank == 0
+      scalar.backprop()
+      check x.grad == [0.5, 0.5].toTensor
+      expect ValueError:
+        discard x.mean(axis = -2)
+      expect ValueError:
+        discard x.sum(axis = 1)
+
+    test "Empty reduced axes produce zero sums and NaN means with correct shapes":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable(zeros[float64](0, 3), requires_grad = true)
+      let total = x.sum(axis = 0, keepdim = false)
+      let average = x.mean(axis = 0, keepdim = false)
+      check total.value == zeros[float64](3)
+      check average.value.shape == [3]
+      for value in average.value: check value.classify == fcNan
+      total.backprop()
+      average.backprop()
+      check x.grad.shape == [0, 3]
+      check x.grad.size == 0
+      let unreduced = x.sum(axis = 1)
+      check unreduced.value.shape == [0, 1]
+      unreduced.backprop()
+      check x.grad.size == 0
+
     test "No-grad mode disables chunk, squeeze and unsqueeze backward edges":
       let ctx = newContext Tensor[float64]
       let x = ctx.variable([[[2.0], [3.0]]].toTensor, requires_grad = true)

@@ -13,6 +13,18 @@ proc checkValues(t: MetalTensor[float32]; shape: openArray[int]; expected: openA
   for i, value in expected: check abs(values[i] - value) < 1e-6'f32
 
 suite "Metal autograd on the existing tape":
+  test "Negative-axis mean and sum restore squeezed GPU gradient dimensions":
+    let ctx = newContext(MetalTensor[float32])
+    let x = ctx.variable([[1'f32, 2, 3], [4'f32, 5, 6]].toTensor.metal,
+                         requires_grad = true)
+    let total = x.sum(axis = -1, keepdim = false)
+    let average = x.mean(axis = -1, keepdim = false)
+    total.value.checkValues([2], [6'f32, 15])
+    average.value.checkValues([2], [2'f32, 5])
+    total.backprop([2'f32, 4].toTensor.metal)
+    average.backprop([3'f32, 6].toTensor.metal)
+    x.grad.checkValues([2, 3], [3'f32, 3, 3, 6, 6, 6])
+
   test "Retained seeded VJPs recompute GPU intermediates and accumulate leaves":
     let ctx = newContext(MetalTensor[float32])
     let x = ctx.variable([2'f32, 3].toTensor.metal, requires_grad = true)

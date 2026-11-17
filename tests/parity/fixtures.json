@@ -942,6 +942,93 @@
           ]
         }
       }
+    },
+    {
+      "id": "autograd.axis_options",
+      "area": "api:autograd",
+      "inputs": {
+        "x": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "first": {
+          "shape": [
+            3
+          ],
+          "values": [
+            2,
+            4,
+            6
+          ]
+        },
+        "second": {
+          "shape": [
+            3
+          ],
+          "values": [
+            4,
+            8,
+            12
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "sum": {
+          "shape": [
+            3
+          ],
+          "numel": 3,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            5.0,
+            7.0,
+            9.0
+          ]
+        },
+        "mean": {
+          "shape": [
+            3
+          ],
+          "numel": 3,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            2.5,
+            3.5,
+            4.5
+          ]
+        },
+        "grad": {
+          "shape": [
+            3,
+            2
+          ],
+          "numel": 6,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            4.0,
+            4.0,
+            8.0,
+            8.0,
+            12.0,
+            12.0
+          ]
+        }
+      }
     }
   ]
 }

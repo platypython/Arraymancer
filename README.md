@@ -271,7 +271,7 @@ Detailed API is available at Arraymancer official [documentation](https://mratsi
 
 ## PyTorch conformance checks
 
-`nimble parity` compares eighteen native CPU cases with checked-in PyTorch 2.15.0
+`nimble parity` compares nineteen native CPU cases with checked-in PyTorch 2.15.0
 observations and writes `build/pytorch-parity.json`. On macOS 27 arm64 it builds
 both native adapters and runs ten Metal training contracts and eight Core AI
 inference contracts. Elsewhere it compiles a CPU-only runner: unobserved Apple

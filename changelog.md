@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add autograd axis `sum`, negative axes and `keepdim` options for CPU and Metal
+  sum/mean reductions. Squeezed VJPs restore reduced dimensions; CPU empty axes
+  preserve zero-sum and NaN-mean shapes. A nineteenth pinned CPU case covers the
+  negative-axis, non-contiguous-input contract.
 - Respect `no_grad_mode` when creating autograd chunks, squeezed views and
   unsqueezed views; they no longer record backward edges while tracing is disabled.
 - Expand pinned CPU conformance from nine to eighteen real PyTorch observations,
