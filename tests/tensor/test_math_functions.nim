@@ -409,5 +409,14 @@ proc main() =
         check: all(almostEqual(correlate(a, b, mode=ConvolveMode.same, down=2), expected_down2_same))
         check: all(almostEqual(correlate(a, b, down=2), expected_down2_valid))
 
+    test "Singleton consumers retain vector semantics":
+      let singleton = [[3]].toTensor
+      check convolve(singleton, singleton) == [9].toTensor
+      check correlate(singleton, singleton) == [9].toTensor
+      check singleton.percentile(50) == 3.0
+      let scalar = singleton.squeeze
+      check scalar.percentile(50) == 3.0
+      check scalar.percentile(50, isSorted = true) == 3.0
+
 main()
 GC_fullCollect()

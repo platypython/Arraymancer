@@ -169,24 +169,22 @@ proc squeezeImpl*(t: var AnyTensor) {.noSideEffect.} =
         t.strides[idx_real_dim] = t.strides[i]
       inc idx_real_dim
 
-  idx_real_dim = max(idx_real_dim, 1)
-  t.shape = t.shape[0..<idx_real_dim]
-  t.strides = t.strides[0..<idx_real_dim]
+  t.shape.len = idx_real_dim
+  t.strides.len = idx_real_dim
 
 proc squeezeImpl*(t: var AnyTensor, axis: int) {.noSideEffect.} =
-  when compileOption("boundChecks"):
-    check_squeezeAxis(t, axis)
-
-  # Removing a single axis preserves at least one dimension.
-  if t.rank > 1 and t.shape[axis] == 1:
+  check_squeezeAxis(t, axis)
+  if t.rank == 0: return
+  let axis = if axis < 0: axis + t.rank else: axis
+  if t.shape[axis] == 1:
     t.shape.delete(axis)
     t.strides.delete(axis)
 
 proc unsqueezeImpl*(t: var AnyTensor, axis: int) {.noSideEffect.} =
-  when compileOption("boundChecks"):
-    check_unsqueezeAxis(t, axis)
+  check_unsqueezeAxis(t, axis)
+  let axis = if axis < 0: axis + t.rank + 1 else: axis
 
-  # set the stride to be consistent with the rest of the lib
+  # Keep inserted singleton strides consistent with reshape and PyTorch.
   var stride: int
   if axis >= t.rank:
     stride = 1

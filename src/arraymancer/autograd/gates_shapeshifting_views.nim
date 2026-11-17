@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import  typetraits, macros,
+import  macros,
         ../tensor,
         ../private/ast_utils,
         ../tensor/private/[p_accessors_macros_desugar, p_accessors_macros_read,
@@ -262,45 +262,37 @@ proc flatten*[TT](a: Variable[TT]): Variable[TT] =
 #
 # ############################################################
 
-template squeezeUnsqueeze(GateName, forward_proc, backward_proc: untyped): untyped =
+type SingletonViewGate[TT] {.final.} = ref object of Gate[TT]
+  input_shape: Metadata
 
-  type GateName[TT] {.final.} = ref object of Gate[TT]
-    axis: int
+proc singletonViewBackward[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
+  let self = SingletonViewGate[TT](self)
+  result = newDiffs[TT](1)
+  result[0] = payload.variable.grad.reshape(self.input_shape)
 
-  proc `forward_proc _ backward _ ag`[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
-    let self = GateName[TT](self)
-    result = newDiffs[TT](1)
-    result[0] = payload.variable.grad.backward_proc(self.axis)
-
-  proc `forward_proc _ cache`[TT](result: Variable[TT], x: Variable[TT], axis: Natural) =
+proc singletonView[TT](v: Variable[TT], value: TT): Variable[TT] =
+  ## Restoring the input shape also handles squeeze axes that were non-singleton no-ops.
+  new result
+  result.context = v.context
+  result.value = value
+  if v.is_grad_needed:
+    let gate = SingletonViewGate[TT](input_shape: v.value.shape)
     result.requires_grad = true
-    result.grad = zeros_like result.value
+    result.grad = result.value.zeros_like
+    register_node("SingletonView", gate, singletonViewBackward[TT], result, v)
 
-    # Gate
-    var gate: GateName[TT]
-    new gate
-    gate.axis = axis
+proc squeeze*[TT](v: Variable[TT]): Variable[TT] =
+  ## Remove every singleton axis as a storage-sharing view; all-singleton inputs become scalar.
+  singletonView(v, v.value.squeeze)
 
-    register_node(
-      GateName.name,
-      gate,
-      `forward_proc _ backward _ ag`[TT],
-      result,
-      x
-    )
+proc squeeze*[TT](v: Variable[TT], axis: int): Variable[TT] =
+  ## Remove a singleton axis, accepting negative axes; non-singleton axes are unchanged.
+  ## Backward always restores the original input shape.
+  singletonView(v, v.value.squeeze(axis))
 
-  proc forward_proc*[TT](v: Variable[TT], axis: Natural): Variable[TT] =
-    # Resulting var
-    new result
-    result.context = v.context
-    result.value = forward_proc(v.value, axis)
-
-    # Caching for backprop
-    if v.is_grad_needed:
-      result.`forward_proc _ cache`(v, axis)
-
-squeezeUnsqueeze(SqueezeGate, squeeze, unsqueeze)
-squeezeUnsqueeze(UnsqueezeGate, unsqueeze, squeeze)
+proc unsqueeze*[TT](v: Variable[TT], axis: int): Variable[TT] =
+  ## Insert a storage-sharing singleton axis in ``[-rank-1, rank]``, including into scalars.
+  singletonView(v, v.value.unsqueeze(axis))
 
 # ############################################################
 #

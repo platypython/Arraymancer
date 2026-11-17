@@ -154,15 +154,45 @@ proc broadcast2*[T](a, b: MetalTensor[T]): tuple[a, b: MetalTensor[T]] =
     else: raise newException(MetalError, "Incompatible Metal broadcast")
   (a.broadcast(shape), b.broadcast(shape))
 
-proc squeeze*[T](t: MetalTensor[T]; axis: int): MetalTensor[T] =
-  ## Remove a singleton axis without copying; a one-element vector may become scalar.
+proc squeeze*[T](t: MetalTensor[T]): MetalTensor[T] =
+  ## Remove all singleton axes as a storage-sharing view, possibly returning a scalar.
   validateMetalView(t)
-  if axis < 0 or axis >= t.rank:
+  result = t
+  var rank = 0
+  for axis in 0 ..< t.rank:
+    if t.shape[axis] != 1:
+      result.shape[rank] = t.shape[axis]
+      result.strides[rank] = t.strides[axis]
+      inc rank
+  result.shape.len = rank
+  result.strides.len = rank
+  validateMetalView(result)
+
+proc squeeze*[T](t: MetalTensor[T]; axis: int): MetalTensor[T] =
+  ## Remove one singleton axis without copying; negative axes align from the right.
+  ## Scalars accept 0/-1 as no-ops, and non-singleton axes stay unchanged.
+  validateMetalView(t)
+  let axes = max(1, t.rank)
+  if axis < -axes or axis >= axes:
     raise newException(MetalError, "Metal squeeze axis out of range")
   result = t
+  if t.rank == 0: return
+  let axis = if axis < 0: axis + t.rank else: axis
   if result.shape[axis] == 1:
     result.shape.delete(axis)
     result.strides.delete(axis)
+  validateMetalView(result)
+
+proc unsqueeze*[T](t: MetalTensor[T]; axis: int): MetalTensor[T] =
+  ## Insert a shared singleton axis in ``[-rank-1, rank]``, including into scalars.
+  validateMetalView(t)
+  if axis < -t.rank - 1 or axis > t.rank or t.rank >= min(LASER_MAXRANK, 8):
+    raise newException(MetalError, "Metal unsqueeze axis or resulting rank is out of range")
+  let axis = if axis < 0: axis + t.rank + 1 else: axis
+  let stride = if axis == t.rank: 1 else: t.shape[axis] * t.strides[axis]
+  result = t
+  result.shape.insert(1, axis)
+  result.strides.insert(stride, axis)
   validateMetalView(result)
 
 proc requireMetalMutable*[T](t: MetalTensor[T]) =

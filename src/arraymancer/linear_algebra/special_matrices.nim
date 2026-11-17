@@ -48,8 +48,9 @@ proc vandermonde*[T](x: Tensor[T], orders: Tensor[SomeNumber]): Tensor[float] =
   ##   - orders: The "exponents" tensor (which must also be a rank-1 tensor)
   ## Result:
   ##   - The constructed Vandermonde matrix
-  assert x.squeeze.rank == 1
-  let x = x.squeeze.asType(float)
+  let squeezed = x.squeeze
+  assert squeezed.rank == 1 or squeezed.rank == 0
+  let x = (if squeezed.rank == 0: squeezed.reshape(1) else: squeezed).asType(float)
   result = newTensorUninit[float]([x.size.int, orders.size])
   for i, ax in enumerateAxis(result, axis = 1):
     result[_, i] = (x ^. orders[i].float).unsqueeze(axis = 1)

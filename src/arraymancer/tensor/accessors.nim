@@ -280,26 +280,26 @@ iterator menumerateZip*[T,U](t1: var Tensor[T], t2: Tensor[U], offset, size: int
 
 template axisIterator[T](t: Tensor[T], axis, iter_offset, iter_size: int): untyped =
   when compileOption("boundChecks"):
-    check_axis_index(t, axis, iter_offset, iter_size-1)
+    check_axis_index(t, axis, iter_offset, iter_size)
 
-  var out_t = t.atAxisIndex(axis, iter_offset)
-
-  for _ in 0..<iter_size:
-    yield out_t
-    out_t.offset += t.strides[axis]
+  if iter_size > 0:
+    var out_t = t.atAxisIndex(axis, iter_offset)
+    for _ in 0..<iter_size:
+      yield out_t
+      out_t.offset += t.strides[axis]
 
 template dualAxisIterator[T, U](a: Tensor[T], b: Tensor[U], axis, iter_offset, iter_size: int): untyped =
   when compileOption("boundChecks"):
-    check_axis_index(a, axis, iter_offset, iter_size-1)
+    check_axis_index(a, axis, iter_offset, iter_size)
     assert a.shape[axis] == b.shape[axis] # TODO use a proper check
 
-  var out_a = a.atAxisIndex(axis, iter_offset)
-  var out_b = b.atAxisIndex(axis, iter_offset)
-
-  for _ in 0..<iter_size:
-    yield (out_a, out_b)
-    out_a.offset += a.strides[axis]
-    out_b.offset += b.strides[axis]
+  if iter_size > 0:
+    var out_a = a.atAxisIndex(axis, iter_offset)
+    var out_b = b.atAxisIndex(axis, iter_offset)
+    for _ in 0..<iter_size:
+      yield (out_a, out_b)
+      out_a.offset += a.strides[axis]
+      out_b.offset += b.strides[axis]
 
 iterator axis*[T](t: Tensor[T], axis: int): Tensor[T] {.inline.}=
   ## Inline iterator over an axis.
@@ -335,11 +335,13 @@ iterator zipAxis*[T, U](a: Tensor[T], b: Tensor[U], axis: int): tuple[a: Tensor[
   dualAxisIterator(a, b, axis, 0, a.shape[axis])
 
 template enumerateAxisIterator[T](t: Tensor[T], axis, iter_offset, iter_size: int): untyped =
-  var out_t = t.atAxisIndex(axis, iter_offset) # do we need a clone there?
-
-  for i in 0..<iter_size:
-    yield (i + iter_offset, out_t)
-    out_t.offset += t.strides[axis]
+  when compileOption("boundChecks"):
+    check_axis_index(t, axis, iter_offset, iter_size)
+  if iter_size > 0:
+    var out_t = t.atAxisIndex(axis, iter_offset)
+    for i in 0..<iter_size:
+      yield (i + iter_offset, out_t)
+      out_t.offset += t.strides[axis]
 
 iterator enumerateAxis*[T](t: Tensor[T], axis: int): (int, Tensor[T]) {.inline.}=
   ## Inline iterator over an axis.

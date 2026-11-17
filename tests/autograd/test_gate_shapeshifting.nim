@@ -17,6 +17,34 @@ import std / [unittest, random, sequtils]
 
 proc main() =
   suite "Autograd of shapeshifting operations":
+    test "No-op squeeze backward preserves the original rank":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([[1.0, 2], [3.0, 4]].toTensor, requires_grad = true)
+      let output = x.squeeze(-1)
+      check output.value.shape == x.value.shape
+      output.backprop([[1.0, 2], [3.0, 4]].toTensor)
+      check x.grad == [[1.0, 2], [3.0, 4]].toTensor
+
+    test "Scalar singleton chains restore every original axis":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable([[[2.0]]].toTensor, requires_grad = true)
+      let output = x.squeeze.unsqueeze(-1).squeeze(0).squeeze(-1)
+      check output.value.rank == 0
+      output.backprop(newTensorWith[float64]([], 3.0))
+      check x.grad == [[[3.0]]].toTensor
+      ctx.no_grad_mode:
+        check not x.squeeze.requires_grad
+        check not x.unsqueeze(-1).requires_grad
+
+    test "Negative singleton axes restore empty gradient shapes":
+      let ctx = newContext Tensor[float64]
+      let x = ctx.variable(zeros[float64](2, 0, 1), requires_grad = true)
+      let output = x.squeeze(-1).unsqueeze(-1)
+      check output.value.shape == [2, 0, 1]
+      output.backprop()
+      check x.grad.shape == [2, 0, 1]
+      check x.grad.size == 0
+
     test "Gradient of stack operation":
       let
         height = rand(1..20)

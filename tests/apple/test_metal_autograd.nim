@@ -1,5 +1,5 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
-## Exercises the existing tape with GPU-resident reductions and fused MSE gradients.
+## Exercises GPU-resident view, matrix-product and loss cotangents on the existing tape.
 import std/[unittest, math, json]
 import ../../src/arraymancer
 
@@ -26,6 +26,47 @@ proc checkFixture(t: MetalTensor[float32], spec: JsonNode) =
   t.checkValues(data.shape, data.values)
 
 suite "Metal autograd on the existing tape":
+  test "Native singleton views match pinned PyTorch values, aliases and VJPs":
+    const fixtures = staticRead("../parity/fixtures.json")
+    var contract: JsonNode
+    for item in parseJson(fixtures)["cases"]:
+      if item["id"].getStr == "autograd.singleton_views": contract = item
+    doAssert not contract.isNil
+    let inputs = contract["inputs"]
+    let expected = contract["expected"]
+    let ctx = newContext(MetalTensor[float32])
+    let x = ctx.variable(fixtureTensor(inputs["x"]).transpose(0, 2), requires_grad = true)
+    let output = x.squeeze(-2).unsqueeze(-1).squeeze(-1)
+    output.backprop(fixtureTensor(inputs["seed"]))
+    let noop = x.squeeze(-1)
+    noop.backprop(noop.value.ones_like)
+    output.value.checkFixture(expected["output"])
+    noop.value.checkFixture(expected["noop"])
+    x.grad.checkFixture(expected["grad"])
+    check (output.value.storage == x.value.storage) == expected["shares_storage"].getBool
+    let scalar = ctx.variable(fixtureTensor(inputs["scalar"]), requires_grad = true)
+    let scalarOutput = scalar.squeeze.unsqueeze(-1).squeeze(0).squeeze(-1)
+    scalarOutput.backprop(newTensorWith[float32]([], 3'f32).metal)
+    scalarOutput.value.checkFixture(expected["scalar"])
+    scalar.grad.checkFixture(expected["scalar_grad"])
+    ctx.no_grad_mode:
+      check not scalar.squeeze.requires_grad
+      check not scalar.unsqueeze(-1).requires_grad
+
+  test "Native singleton views preserve empty shapes and bound inserted ranks":
+    let ctx = newContext(MetalTensor[float32])
+    let x = ctx.variable(newMetalTensorUninit[float32](2, 0, 1), requires_grad = true)
+    let output = x.squeeze(-1).unsqueeze(-1)
+    output.backprop()
+    x.grad.checkValues([2, 0, 1], [])
+    expect MetalError: discard x.value.squeeze(-4)
+    expect MetalError: discard x.value.unsqueeze(-5)
+    var shape: Metadata
+    shape.len = min(LASER_MAXRANK, 8)
+    for i in 0 ..< shape.len: shape[i] = 1
+    let fullRank = newMetalTensorUninit[float32](shape)
+    expect MetalError: discard fullRank.unsqueeze(0)
+
   test "Native matrix product ranks and VJPs match all eight pinned PyTorch shapes":
     const fixtures = staticRead("../parity/fixtures.json")
     var contract: JsonNode

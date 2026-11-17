@@ -286,6 +286,15 @@ proc main() =
                         [1, 1]].toTensor
         check r == expected
 
+    test "Masked axis selectors keep a singleton mask vector":
+      let x = [42].toTensor
+      let mask = [[true]].toTensor
+      check x.masked_axis_select(mask, axis = 0) == [42].toTensor
+
+      var filled = [0].toTensor
+      filled.masked_axis_fill(mask, axis = 0, 7)
+      check filled == [7].toTensor
+
     test "Masked_axis_fill with single value":
       block: # Numpy
             # Fill all columns which sum up to greater than 1

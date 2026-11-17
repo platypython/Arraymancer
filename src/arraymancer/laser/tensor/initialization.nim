@@ -362,6 +362,7 @@ func item*[T_IN, T_OUT](t: Tensor[T_IN], _: typedesc[T_OUT]): T_OUT =
   ## This only works for Tensors (of any rank) that contain one single element.
   ## If the tensor has more than one element IndexDefect is raised.
   if likely(t.size == 1):
+    let val = t.storage.raw_buffer[t.offset]
     when T_IN is Complex and T_OUT is Complex:
       # When the input and the output types are Complex, we need to find
       # the "base" type of the output type (e.g. float32 or float64),
@@ -372,14 +373,13 @@ func item*[T_IN, T_OUT](t: Tensor[T_IN], _: typedesc[T_OUT]): T_OUT =
           var tmp: T_OUT
           tmp.re
       )
-      let val = t.squeeze[0]
       result = complex(TT(val.re), TT(val.im))
     elif T_OUT is Complex64:
-      result = complex(float64(t.squeeze[0]))
+      result = complex(float64(val))
     elif T_OUT is Complex32:
-      result = complex(float32(t.squeeze[0]))
+      result = complex(float32(val))
     else:
-      result = T_OUT(t.squeeze[0])
+      result = T_OUT(val)
   elif t.size > 1:
     raise newException(IndexDefect, "You cannot convert a Tensor that has more than 1 element into a scalar")
   else:

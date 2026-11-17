@@ -110,6 +110,22 @@ proc runCase*(caseData: JsonNode): JsonNode =
       output.backprop(getTensor(operands["seed"]))
       result[name] = %*{"output": tensorObservation(output.value),
                         "grad_a": tensorObservation(a.grad), "grad_b": tensorObservation(b.grad)}
+  of "autograd.singleton_views":
+    let ctx = newContext Tensor[float64]
+    let x = ctx.variable(getTensor(inputs["x"]).transpose(0, 2), requires_grad = true)
+    let output = x.squeeze(-2).unsqueeze(-1).squeeze(-1)
+    output.backprop(getTensor(inputs["seed"]))
+    let noop = x.squeeze(-1)
+    noop.backprop(noop.value.ones_like)
+    let scalar = ctx.variable(getTensor(inputs["scalar"]), requires_grad = true)
+    let scalarOutput = scalar.squeeze.unsqueeze(-1).squeeze(0).squeeze(-1)
+    scalarOutput.backprop(newTensorWith[float64]([], 3.0))
+    result["output"] = tensorObservation(output.value)
+    result["noop"] = tensorObservation(noop.value)
+    result["grad"] = tensorObservation(x.grad)
+    result["scalar"] = tensorObservation(scalarOutput.value)
+    result["scalar_grad"] = tensorObservation(scalar.grad)
+    result["shares_storage"] = %(output.value.get_offset_ptr == x.value.get_offset_ptr)
   of "autograd.no_grad_exception":
     let ctx = newContext Tensor[float64]
     let x = ctx.variable(getTensor(inputs["x"]), requires_grad = true)

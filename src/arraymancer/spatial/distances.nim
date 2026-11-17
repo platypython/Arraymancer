@@ -19,8 +19,8 @@ proc distance*(metric: typedesc[Manhattan], v, w: Tensor[float]): float =
   ## The Manhattan metric is defined as:
   ##
   ## ``d = Σ_i | v_i - w_i |``
-  assert v.squeeze.rank == 1
-  assert w.squeeze.rank == 1
+  assert v.squeeze.rank == 1 or v.size == 1
+  assert w.squeeze.rank == 1 or w.size == 1
   result = sum(abs(v -. w))
 
 proc distance*(metric: typedesc[Minkowski], v, w: Tensor[float], p = 2.0,
@@ -38,8 +38,8 @@ proc distance*(metric: typedesc[Minkowski], v, w: Tensor[float], p = 2.0,
   ##
   ## If `squared` is true returns the `p`-th power of the metric. For the Euclidean case
   ## this is the square of the distance, hence the name.
-  assert v.squeeze.rank == 1
-  assert w.squeeze.rank == 1
+  assert v.squeeze.rank == 1 or v.size == 1
+  assert w.squeeze.rank == 1 or w.size == 1
   if classify(p) == fcInf:
     result = max(abs(v -. w))
   elif p == 1:
@@ -60,8 +60,8 @@ proc distance*(metric: typedesc[Euclidean], v, w: Tensor[float], squared: static
   ## ``d = ( Σ_i | v_i - w_i |^2 )^(1/2)``
   ##
   ## If `squared` is true returns the square of the distance
-  assert v.squeeze.rank == 1
-  assert w.squeeze.rank == 1
+  assert v.squeeze.rank == 1 or v.size == 1
+  assert w.squeeze.rank == 1 or w.size == 1
   # Note: possibly faster by writing `let uv = u -. v; dot(uv, uv);` ?
   #result = Minkowski.distance(v, w, p = 2.0, squared = squared)
   ## NOTE: this is the branch used in the kd-tree. It's very performance critical there,

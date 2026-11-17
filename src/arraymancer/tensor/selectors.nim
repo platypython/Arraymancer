@@ -375,8 +375,10 @@ proc masked_axis_select*[T](t: Tensor[T], mask: Tensor[bool], axis: int): Tensor
   ##
   ## The result does not share input storage.
   returnEmptyIfEmpty(t, mask)
-  let mask = mask.squeeze() # make 1D if coming from unreduced axis aggregation like sum
-  masked_axis_select_impl(result, t, mask, axis)
+  var squeezedMask = mask.squeeze() # make 1D if coming from unreduced axis aggregation like sum
+  if squeezedMask.rank == 0:
+    squeezedMask = squeezedMask.reshape([1])
+  masked_axis_select_impl(result, t, squeezedMask, axis)
 
 proc masked_axis_select*[T](t: Tensor[T], mask: openArray[bool], axis: int): Tensor[T] {.noinit.} =
   ## Take elements from a tensor according to the provided boolean mask.
@@ -445,9 +447,10 @@ proc masked_axis_fill*[T](t: var Tensor[T], mask: Tensor[bool], axis: int, value
   when value is Tensor:
     if value.size == 0:
       return
-  let mask = mask.squeeze() # make 1D if coming from unreduced axis aggregation like sum
-                            # TODO: squeeze exactly depending on axis to prevent accepting invalid values
-  masked_axis_fill_impl(t, mask, axis, value)
+  var squeezedMask = mask.squeeze() # make 1D if coming from unreduced axis aggregation like sum
+  if squeezedMask.rank == 0:
+    squeezedMask = squeezedMask.reshape([1])
+  masked_axis_fill_impl(t, squeezedMask, axis, value)
 
 proc masked_axis_fill*[T](t: var Tensor[T], mask: openArray[bool], axis: int, value: T or Tensor[T]) =
   ## Take a 1D boolean mask tensor with size equal to the `t.shape[axis]`

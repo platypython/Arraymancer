@@ -288,7 +288,11 @@ proc percentile*[T](arg: Tensor[T], p: int, isSorted = false): float =
   elif p <= 0: result = min(arg).float
   elif p >= 100: result = max(arg).float
   else:
-    let a = if not isSorted: sorted(arg.reshape([1, arg.size]).squeeze) else: arg
+    let a =
+      if isSorted:
+        (if arg.rank == 0: arg.reshape(arg.size.int) else: arg)
+      else:
+        sorted(arg.reshape(arg.size.int))
     let f = (arg.size - 1) * p / 100
     let i = floor(f).int
     if f == i.float: result = a[i].float

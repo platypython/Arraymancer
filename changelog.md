@@ -1,6 +1,12 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Align CPU and Metal singleton views with PyTorch: all-axis squeeze produces
+  rank-zero scalars, squeeze/unsqueeze accept negative axes, and no-op squeeze
+  backward preserves the input shape. Migrate logical-vector consumers, keep
+  singleton masks and one-feature spatial queries working, and avoid constructing
+  nonexistent slices for empty axis iterators. Add a pinned singleton-view oracle;
+  the selected CPU conformance gate now covers 26 cases.
 - Extend native Metal matrix products to scalar vector-dot results, vector/matrix
   combinations and broadcast batches. Each batch writes directly into one shared
   output allocation. GPU-resident VJPs match all eight pinned CPU PyTorch product

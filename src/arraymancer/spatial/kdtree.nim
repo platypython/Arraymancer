@@ -115,7 +115,7 @@ proc build[T](tree: KDTree[T],
   else:
     var data = tree.data[idx]
     # select dimension with largest difference in mins / maxes
-    let d = argmax((maxes -. mins).squeeze, axis = 0)[0]
+    let d = argmax(maxes -. mins, axis = 0)[0]
     let maxVal = maxes[d]
     let minVal = mins[d]
     if maxVal == minVal:
@@ -159,10 +159,9 @@ proc build[T](tree: KDTree[T],
     var greatermins = mins.clone()
     greatermins[d] = split
 
-    # Note: cannot squeeze with args in `[]`, currently broken in accessor macro
-    let lesserArg = lessIdx.squeeze(axis = 0)
+    let lesserArg = lessIdx.reshape(lessIdx.size.int)
     let lesser = tree.build(idx[lesserArg], nodeId, level + 1, lessmaxes, mins, useMedian = useMedian)
-    let greaterArg = greaterIdx.squeeze(axis = 0)
+    let greaterArg = greaterIdx.reshape(greaterIdx.size.int)
     let greater = tree.build(idx[greaterArg], nodeId, level + 1, maxes, greatermins, useMedian = useMedian)
     result = Node[T](id: nodeId,
                      level: level,
@@ -210,8 +209,8 @@ proc kdTree*[T](data: Tensor[T],
   result.leafSize = leafSize
   doAssert leafSize > 0, "leafSize must be at least 1!"
 
-  result.maxes = data.max(axis = 0).squeeze
-  result.mins = data.min(axis = 0).squeeze
+  result.maxes = data.max(axis = 0).reshape(result.k)
+  result.mins = data.min(axis = 0).reshape(result.k)
 
   result.buildKdTree(arange[int](result.n),
                      useMedian = balancedTree)

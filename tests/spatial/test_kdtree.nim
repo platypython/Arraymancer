@@ -1,4 +1,5 @@
 import ../../src/arraymancer
+import ../../src/arraymancer/spatial/neighbors
 import std / [unittest, random, sequtils, algorithm]
 
 proc `=~=`(x, y: float, eps = 1e-6): bool =
@@ -29,6 +30,7 @@ when false:
   import nimpy
 
 suite "k-d tree: k = 2":
+
   # choose fixed randomization
   randomize(42)
   # create 1000 random x/y points and combine to (1000, 2) tensor
@@ -177,3 +179,24 @@ suite "k-d tree: k = 5":
         dists.add minkowski_distance(t[idx, _].squeeze, ps)[0]
       echo dists
       echo pdt
+suite "k-d tree: k = 1":
+  test "Build and query one-feature points":
+    let data = [[0.0], [2.0], [4.0]].toTensor
+    let kd = kdTree(data, leafSize = 1)
+    let (dists, idxs) = kd.query([1.1].toTensor, k = 2)
+    compare((dists, idxs), @[0.9, 1.1], @[1, 0])
+  test "Nearest neighbors preserve one-element observation vectors":
+    let data = [[0.0]].toTensor
+    let actual = nearestNeighbors(data, 0.1, Euclidean, useNaiveNearestNeighbor = true)
+    check actual.len == 1
+    let treeResult = nearestNeighbors(data, 0.1, Euclidean)
+    check treeResult.len == 1
+    check treeResult[0] == [0].toTensor
+    check actual[0] == [0].toTensor
+    let points = [[0.0], [2.0], [4.0]].toTensor
+    let naive = nearestNeighbors(points, 2.1, Euclidean, useNaiveNearestNeighbor = true)
+    let tree = nearestNeighbors(points, 2.1, Euclidean)
+    let expected = [@[0, 1], @[0, 1, 2], @[1, 2]]
+    for i in 0 ..< points.shape[0]:
+      check naive[i].toSeq1D.sorted == expected[i]
+      check tree[i].toSeq1D.sorted == expected[i]

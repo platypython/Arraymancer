@@ -32,6 +32,13 @@ suite "Distances: Manhattan distance":
     check Manhattan.pairwiseDistances(t, u) == [3.0, 5.0].toTensor
 
 suite "Distances: Euclidean distance":
+
+  test "Euclidean distance - One-dimensional points":
+    let t = [3.0].toTensor
+    let u = [0.0].toTensor
+    check Euclidean.distance(t, u) == 3.0
+    check Euclidean.distance(t, u, squared = true) == 9.0
+    check Euclidean.pairwiseDistances([[3.0]].toTensor, [[0.0]].toTensor) == [3.0].toTensor
   test "Euclidean distance - Individual points":
     let t = [3.0, 4.0].toTensor
     let u = [0.0, 0.0].toTensor

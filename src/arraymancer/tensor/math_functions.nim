@@ -422,8 +422,8 @@ proc correlateImpl[T](f, g: Tensor[T],
   mixin `_`
   gemm(one, kernel_col, input_shifts, zero, result)
 
-  # Now remove the unnecessary dimension of the result
-  result = result.squeeze()
+  # The convolution result is semantically a vector, even when it has one value.
+  result = result.reshape([result_len])
 
   # And remove the extra samples that sometimes are added because `array2shiftColMatrix`
   # works with symmetric paddings at the start and end of input_shifts
@@ -472,9 +472,11 @@ proc convolve*[T](
   ##     and is more efficient than applying the downsampling after the
   ##     convolution step (which requires `down` times more operations).
 
-  # Ensure that both arrays are 1-dimensional
-  let f = if t1.rank > 1: t1.squeeze else: t1
-  let g = if t2.rank > 1: t2.squeeze else: t2
+  # Ensure that both arrays are 1-dimensional.
+  var f = if t1.rank > 1: t1.squeeze else: t1
+  var g = if t2.rank > 1: t2.squeeze else: t2
+  if f.rank == 0: f = f.reshape([1])
+  if g.rank == 0: g = g.reshape([1])
   if f.rank > 1:
     raise newException(ValueError,
       "convolve input tensors must be 1D, but first input tensor is multi-dimensional (shape=" & $t1.shape & ")")
@@ -528,9 +530,11 @@ proc correlate*[T: SomeNumber | Complex32 | Complex64](
   ##     and is more efficient than applying the downsampling after the
   ##     correlation step (which requires `down` times more operations).
 
-  # Ensure that both arrays are 1-dimensional
-  let f = if t1.rank > 1: t1.squeeze else: t1
-  let g = if t2.rank > 1: t2.squeeze else: t2
+  # Ensure that both arrays are 1-dimensional.
+  var f = if t1.rank > 1: t1.squeeze else: t1
+  var g = if t2.rank > 1: t2.squeeze else: t2
+  if f.rank == 0: f = f.reshape([1])
+  if g.rank == 0: g = g.reshape([1])
   if f.rank > 1:
     raise newException(ValueError,
       "correlate input tensors must be 1D, but first input tensor is multi-dimensional (shape=" & $t1.shape & ")")

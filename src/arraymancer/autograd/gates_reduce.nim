@@ -54,14 +54,6 @@ when defined(metal) or defined(coreai):
   proc meanAlongAxis(value: MetalTensor[float32], axis: int): MetalTensor[float32] =
     value.sum(axis) / float32(value.shape[axis])
 
-proc withoutReductionAxis[TT](value: TT, axis: int): TT =
-  ## Native squeeze preserves rank one; reductions must also allow scalar shapes.
-  var shape = value.shape
-  for i in axis ..< shape.len - 1:
-    shape[i] = shape[i + 1]
-  dec shape.len
-  value.reshape(shape)
-
 type MeanGate*[TT] {.final.} = ref object of Gate[TT]
   ## TODO: generalize to C <- alpha AB + C
   cached_input_shape: Metadata
@@ -146,7 +138,7 @@ proc mean*[TT](a: Variable[TT], axis: int, keepdim = true): Variable[TT] =
   result.context = a.context
   result.value = meanAlongAxis(a.value, normalized)
   if not keepdim:
-    result.value = withoutReductionAxis(result.value, normalized)
+    result.value = result.value.squeeze(normalized)
   if a.is_grad_needed:
     result.mean_cache(a, normalized)
 
@@ -207,6 +199,6 @@ proc sum*[TT](a: Variable[TT], axis: int, keepdim = true): Variable[TT] =
   result.context = a.context
   result.value = sumAlongAxis(a.value, normalized)
   if not keepdim:
-    result.value = withoutReductionAxis(result.value, normalized)
+    result.value = result.value.squeeze(normalized)
   if a.is_grad_needed:
     result.sum_cache(a, normalized)

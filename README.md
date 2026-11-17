@@ -271,7 +271,7 @@ Detailed API is available at Arraymancer official [documentation](https://mratsi
 
 ## PyTorch conformance checks
 
-`nimble parity` compares twenty-five native CPU cases with checked-in PyTorch 2.15.0
+`nimble parity` compares twenty-six native CPU cases with checked-in PyTorch 2.15.0
 observations and writes `build/pytorch-parity.json`. On macOS 27 arm64 it builds
 both native adapters and runs ten Metal training contracts and eight Core AI
 inference contracts. Elsewhere it compiles a CPU-only runner: unobserved Apple
@@ -288,8 +288,11 @@ and axis reductions, direct chunk backward, overlapping slices, repeated integer
 selectors and boolean masks. MSE supports broadcasted prediction/target gradients
 and `reduction = mseMean`, `mseSum` or `mseNone` on CPU and Metal. These are selected
 contracts, not complete autograd coverage. CPU and Metal matrix products include
-vector, batched and empty-contraction VJPs; higher-order differentiation and
-mutation version checks remain gaps.
+vector, batched and empty-contraction VJPs. Singleton views support negative axes,
+rank-zero scalars, storage sharing and backward through no-op squeezes on CPU and
+Metal. All-axis `squeeze()` now removes every singleton dimension; use
+`squeeze(axis)` to remove only a known singleton axis. Higher-order differentiation
+and mutation version checks remain gaps.
 
 The version pins and source provenance live in `tests/parity/`. Capability
 annotations describe inspected implementation evidence, not passing tests.

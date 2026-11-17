@@ -154,12 +154,14 @@ func check_concat*(t1, t2: Tensor, axis: int) {.inline.}=
     raise newException(ValueError, "Concatenation Error: Except along the concatenation axis tensors must have the same shape")
 
 func check_squeezeAxis*(t: AnyTensor, axis: int) {.inline.}=
-  if unlikely(axis >= t.rank):
-    raise newException(ValueError, "The axis is out of range, axis is " & $axis & " while the tensor rank is " & $t.rank )
+  let axes = max(1, t.rank)
+  if unlikely(axis < -axes or axis >= axes):
+    raise newException(ValueError, "Squeeze axis is out of range")
 
 func check_unsqueezeAxis*(t: AnyTensor, axis: int) {.inline.}=
-  if unlikely(t.rank == 0 or axis > t.rank or axis < 0):
-    raise newException(ValueError, "The new axis is out of range, axis is " & $axis & " while the tensor rank is " & $t.rank )
+  if unlikely(axis < -t.rank - 1 or axis > t.rank or t.rank >= LASER_MAXRANK or
+              (t.rank == 0 and t.size == 0)):
+    raise newException(ValueError, "Unsqueeze axis or resulting tensor rank is out of range")
 
 func check_dot_prod*(a, b:AnyTensor) {.inline.}=
   if unlikely(a.rank != 1 or b.rank != 1): raise newException(ValueError, "Dot product is only supported for vectors (tensors of rank 1)")

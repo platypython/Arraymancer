@@ -295,13 +295,31 @@ def matmul_ranks(torch: Any) -> dict[str, Any]:
     return _case("autograd.matmul_ranks", "api:autograd", inputs, expected)
 
 
+def singleton_views(torch: Any) -> dict[str, Any]:
+    x = _tensor([1, 2, 3, 4, 5, 6], [2, 1, 3], torch).transpose(0, 2).requires_grad_(True)
+    output = x.squeeze(-2).unsqueeze(-1).squeeze(-1)
+    output.backward(_tensor([1, 2, 3, 4, 5, 6], [3, 2], torch))
+    noop = x.squeeze(-1)
+    noop.backward(torch.ones_like(noop))
+    scalar = _tensor([7], [1, 1], torch).requires_grad_(True)
+    scalar_output = scalar.squeeze().unsqueeze(-1).squeeze(0).squeeze(-1)
+    scalar_output.backward(_tensor([3], [], torch))
+    return _case("autograd.singleton_views", "api:autograd",
+                 {"x": {"shape": [2, 1, 3], "values": [1, 2, 3, 4, 5, 6]},
+                  "seed": {"shape": [3, 2], "values": [1, 2, 3, 4, 5, 6]},
+                  "scalar": {"shape": [1, 1], "values": [7]}},
+                 {"output": _observe(output), "noop": _observe(noop), "grad": _observe(x.grad),
+                  "scalar": _observe(scalar_output), "scalar_grad": _observe(scalar.grad),
+                  "shares_storage": output.untyped_storage().data_ptr() == x.untyped_storage().data_ptr()})
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
     no_grad_exception, seeded_vjp, retained_vjp, independent_graphs, chunk_seed,
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
     axis_options, broadcast_multiply, broadcast_divide,
-    mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks,
+    mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
 )
 
 

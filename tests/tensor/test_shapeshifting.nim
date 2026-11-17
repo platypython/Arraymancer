@@ -176,28 +176,41 @@ proc main() =
 
         check: b == [4, 3, 2, 1, 8, 7, 6, 5].toTensor.reshape(2,1,4)
 
-    test "Squeezing a single element tensor keeps rank one":
-      # Squeeze deliberately keeps at least one dimension for compatibility.
-      block:
-        let a = [1].toTensor
-        let b = a.squeeze()
-        check: a.rank == 1
-        check: b.rank == 1
-      block:
-        let a = [[1]].toTensor
-        let b = a.squeeze()
-        check: a.rank == 2
-        check: b.rank == 1
-      block:
-        let a = [[[1]]].toTensor
-        let b = a.squeeze()
-        check: a.rank == 3
-        check: b.rank == 1
-      block:
-        let a = [[[[1]]]].toTensor
-        let b = a.squeeze()
-        check: a.rank == 4
-        check: b.rank == 1
+    test "Squeezing all singleton axes returns a scalar alias":
+      for rank in 1..4:
+        let a = [1].toTensor.reshape(newSeqWith(rank, 1))
+        let b = a.squeeze
+        check a.rank == rank
+        check b.rank == 0
+        check b.item == 1
+        check b.get_offset_ptr == a.get_offset_ptr
+      let a = [10, 20].toTensor
+      let scalar = a[1..1].squeeze
+      check scalar.rank == 0
+      check scalar.offset == 1
+      scalar.unsafe_raw_offset[0] = 30
+      check a == [10, 30].toTensor
+      check scalar.squeeze(0).rank == 0
+      check scalar.squeeze(-1).rank == 0
+      check scalar.unsqueeze(-1) == [30].toTensor
+      check scalar.unsqueeze(0) == [30].toTensor
+
+    test "Negative singleton axes preserve strided and empty views":
+      let a = toSeq(1..6).toTensor.reshape(2, 1, 3).transpose(0, 2)
+      let b = a.squeeze(-2)
+      check b == [[1, 4], [2, 5], [3, 6]].toTensor
+      check b.unsqueeze(-2).strides == [1, 6, 3].toMetadata
+      check a.squeeze(-1).shape == a.shape
+      check a.squeeze(-1).get_offset_ptr == a.get_offset_ptr
+      let empty = zeros[int](2, 0, 1).squeeze(-1).unsqueeze(-1)
+      check empty.shape == [2, 0, 1]
+      expect ValueError: discard a.squeeze(-4)
+      expect ValueError: discard a.squeeze(3)
+      expect ValueError: discard a.unsqueeze(-5)
+      expect ValueError: discard a.unsqueeze(4)
+      expect ValueError: discard default(Tensor[int]).unsqueeze(0)
+      let fullRank = ones[int](newSeqWith(LASER_MAXRANK, 1))
+      expect ValueError: discard fullRank.unsqueeze(0)
 
     test "Getting the item out of a single element tensor":
       block:

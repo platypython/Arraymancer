@@ -5,9 +5,10 @@ import kdtree
 proc neighborsFromDistanceMatrix[T](X: Tensor[T], eps: float): seq[int] =
   ## Computes the nearest neighbors from a naive distance matrix between all points
   ## in `X` that are within a distance of `eps`.
-  result = newSeqOfCap[int](X.shape[0])
-  for j in argsort(X.transpose.squeeze, toCopy = true):
-    if X[j, 0] > eps:
+  let distances = X.squeeze(0)
+  result = newSeqOfCap[int](distances.size)
+  for j in argsort(distances):
+    if distances[j] > eps:
       break
     result.add(j)
 
@@ -31,7 +32,7 @@ proc nearestNeighbors*[T](X: Tensor[T], eps: float, metric: typedesc[AnyMetric],
     result = newSeq[Tensor[int]](X.shape[0])
     var idx = 0
     for i in 0 ..< X.shape[0]:
-      let (dist, idxs) = kd.query_ball_point(X[i, _].squeeze, radius = eps, metric = metric)
+      let (dist, idxs) = kd.query_ball_point(X[i, _].squeeze(0), radius = eps, metric = metric)
       result[idx] = idxs
       inc idx
   else:
@@ -39,8 +40,8 @@ proc nearestNeighbors*[T](X: Tensor[T], eps: float, metric: typedesc[AnyMetric],
       let distances = distanceMatrix(metric, X, X, p = 2)
     else:
       let distances = distanceMatrix(metric, X, X)
-    result = newSeq[seq[int]](X.shape[0])
+    result = newSeq[Tensor[int]](X.shape[0])
     var idx = 0
     for v in axis(distances, 0):
-      result[idx] = neighborsFromDistanceMatrix(v, eps)
+      result[idx] = neighborsFromDistanceMatrix(v, eps).toTensor
       inc idx

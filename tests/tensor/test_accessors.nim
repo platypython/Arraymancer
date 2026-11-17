@@ -21,6 +21,20 @@ template failsCT(body: untyped): untyped =
 
 proc main() =
   suite "Accessing and setting tensor values":
+    test "Empty axis ranges do not initialize a nonexistent slice":
+      let empty = zeros[int](0, 3)
+      var slices = 0
+      for _ in empty.axis(0): inc slices
+      for _ in zipAxis(empty, empty, 0): inc slices
+      for _ in empty.enumerateAxis(0): inc slices
+      let singleton = [3].toTensor
+      for _ in singleton.axis(0, 1, 0): inc slices
+      for _ in singleton.enumerateAxis(0, 1, 0): inc slices
+      check slices == 0
+      let (indices, values) = singleton.argmax_max(0)
+      check indices == [0].toTensor
+      check values == [3].toTensor
+
     test "Accessing and setting a single value":
       var a = zeros[int](@[2,3,4])
       a[1,2,2] = 122

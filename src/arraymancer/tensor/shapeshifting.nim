@@ -413,32 +413,22 @@ proc append*[T](t: Tensor[T], values: varargs[T]): Tensor[T] {.noinit.} =
   result[t.size ..< result.size] = values
 
 func squeeze*(t: AnyTensor): AnyTensor {.noinit.}=
-  ## Squeeze tensors. For example a Tensor of shape [4,1,3] will become [4,3]
-  ## Input:
-  ##   - a tensor
-  ## Returns:
-  ##   - a tensor with singleton dimensions collapsed
+  ## Remove every singleton axis without copying or changing the offset.
+  ## An all-singleton tensor becomes rank zero; a scalar stays scalar.
   result = t
   result.squeezeImpl
 
-func squeeze*(t: Tensor, axis: Natural): Tensor {.noinit.}=
-  ## Collapse the given axis, if the dimension is not 1, it does nothing.
-  ## Input:
-  ##   - a tensor
-  ##   - an axis (dimension)
-  ## Returns:
-  ##   - a tensor with that axis collapsed, if it was a singleton dimension
+func squeeze*(t: Tensor, axis: int): Tensor {.noinit.}=
+  ## Remove one singleton axis, or leave a non-singleton axis unchanged.
+  ## Negative axes align from the right. Scalars accept axis 0 or -1 as no-ops.
+  ## Storage, offset and surviving strides stay shared; invalid axes raise ValueError.
   result = t
   result.squeezeImpl(axis)
 
-func unsqueeze*(t: Tensor, axis: Natural): Tensor {.noinit.}=
-  ## Insert a new axis just before the given axis, increasing the tensor
-  ## dimension (rank) by 1
-  ## Input:
-  ##   - a tensor
-  ##   - an axis (dimension)
-  ## Returns:
-  ##   - a tensor with that new axis
+func unsqueeze*(t: Tensor, axis: int): Tensor {.noinit.}=
+  ## Insert a singleton axis without copying, including into a rank-zero scalar.
+  ## Axes lie in ``[-rank-1, rank]``; negative axes align from the right.
+  ## Invalid axes or a rank beyond the metadata capacity raise ValueError.
   result = t
   result.unsqueezeImpl(axis)
 
