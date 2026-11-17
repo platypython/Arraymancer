@@ -99,6 +99,15 @@ proc runCase*(caseData: JsonNode): JsonNode =
     except ValueError:
       discard
     result["tracking_after_exception"] = %x.is_grad_needed
+  of "autograd.broadcast_multiply", "autograd.broadcast_divide":
+    let ctx = newContext Tensor[float64]
+    let a = ctx.variable(getTensor(inputs["a"]), requires_grad = true)
+    let b = ctx.variable(getTensor(inputs["b"]), requires_grad = true)
+    let output = if id == "autograd.broadcast_divide": a /. b else: a *. b
+    output.backprop(getTensor(inputs["seed"]))
+    result["output"] = tensorObservation(output.value)
+    result["grad_a"] = tensorObservation(a.grad)
+    result["grad_b"] = tensorObservation(b.grad)
   of "autograd.axis_options":
     let ctx = newContext Tensor[float64]
     let x = ctx.variable(getTensor(inputs["x"]).transpose, requires_grad = true)

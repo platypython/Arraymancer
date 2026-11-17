@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Reduce broadcasted CPU multiplication and CPU/Metal division gradients back to
+  each operand shape. CPU scalar targets terminate correctly and empty broadcast
+  axes produce zero gradients. Two pinned arithmetic cases bring CPU coverage to
+  twenty-one observations.
 - Add autograd axis `sum`, negative axes and `keepdim` options for CPU and Metal
   sum/mean reductions. Squeezed VJPs restore reduced dimensions; CPU empty axes
   preserve zero-sum and NaN-mean shapes. A nineteenth pinned CPU case covers the

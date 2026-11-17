@@ -13,6 +13,15 @@ proc checkValues(t: MetalTensor[float32]; shape: openArray[int]; expected: openA
   for i, value in expected: check abs(values[i] - value) < 1e-6'f32
 
 suite "Metal autograd on the existing tape":
+  test "Broadcast division reduces both GPU gradients to their operand shapes":
+    let ctx = newContext(MetalTensor[float32])
+    let a = ctx.variable([[2'f32], [4'f32]].toTensor.metal, requires_grad = true)
+    let b = ctx.variable([1'f32, 2, 4].toTensor.metal, requires_grad = true)
+    let output = a /. b
+    output.backprop([[1'f32, 2, 3], [4'f32, 5, 6]].toTensor.metal)
+    a.grad.checkValues([2, 1], [2.75'f32, 8])
+    b.grad.checkValues([3], [-18'f32, -6, -1.875])
+
   test "Negative-axis mean and sum restore squeezed GPU gradient dimensions":
     let ctx = newContext(MetalTensor[float32])
     let x = ctx.variable([[1'f32, 2, 3], [4'f32, 5, 6]].toTensor.metal,

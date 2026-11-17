@@ -17,6 +17,46 @@ import std / [unittest, sequtils, math]
 
 proc main() =
   suite "Autograd of basic operations":
+    test "Broadcast multiplication and division reduce both seeded gradients":
+      let seed = [[1.0, 2, 3], [4.0, 5, 6]].toTensor
+      for divide in [false, true]:
+        let ctx = newContext Tensor[float64]
+        let a = ctx.variable([[2.0], [4.0]].toTensor, requires_grad = true)
+        let b = ctx.variable([1.0, 2, 4].toTensor, requires_grad = true)
+        let output = if divide: a /. b else: a *. b
+        output.backprop(seed)
+        if divide:
+          check a.grad == [[2.75], [8.0]].toTensor
+          check b.grad == [-18.0, -6, -1.875].toTensor
+        else:
+          check a.grad == [[17.0], [38.0]].toTensor
+          check b.grad == [18.0, 24, 30].toTensor
+
+    test "Scalar broadcast gradients terminate and preserve rank zero":
+      let ctx = newContext Tensor[float64]
+      let scalar = ctx.variable(newTensorWith[float64]([], 2.0), requires_grad = true)
+      let x = ctx.variable([[1.0, 2, 4], [1.0, 2, 4]].toTensor)
+      let product = scalar *. x
+      product.sum.backprop()
+      check scalar.grad.rank == 0
+      check scalar.grad.atContiguousIndex(0) == 14.0
+      scalar.grad.setZero()
+      let quotient = scalar /. x
+      quotient.sum.backprop()
+      check scalar.grad.rank == 0
+      check scalar.grad.atContiguousIndex(0) == 3.5
+
+    test "Empty broadcast products and quotients accumulate zero gradients":
+      for divide in [false, true]:
+        let ctx = newContext Tensor[float64]
+        let a = ctx.variable(ones[float64](1, 3), requires_grad = true)
+        let b = ctx.variable(zeros[float64](0, 3), requires_grad = true)
+        let output = if divide: a /. b else: a *. b
+        output.backprop(zeros[float64](0, 3))
+        check a.grad == zeros[float64](1, 3)
+        check b.grad.shape == [0, 3]
+        check b.grad.size == 0
+
     test "Negative-axis reductions squeeze outputs and restore VJP dimensions":
       let ctx = newContext Tensor[float64]
       let x = ctx.variable([[1.0, 2, 3], [4.0, 5, 6]].toTensor.transpose,

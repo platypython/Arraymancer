@@ -1029,6 +1029,180 @@
           ]
         }
       }
+    },
+    {
+      "id": "autograd.broadcast_multiply",
+      "area": "api:autograd",
+      "inputs": {
+        "a": {
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            2,
+            4
+          ]
+        },
+        "b": {
+          "shape": [
+            3
+          ],
+          "values": [
+            1,
+            2,
+            4
+          ]
+        },
+        "seed": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "output": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            2.0,
+            4.0,
+            8.0,
+            4.0,
+            8.0,
+            16.0
+          ]
+        },
+        "grad_a": {
+          "shape": [
+            2,
+            1
+          ],
+          "numel": 2,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            17.0,
+            38.0
+          ]
+        },
+        "grad_b": {
+          "shape": [
+            3
+          ],
+          "numel": 3,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            18.0,
+            24.0,
+            30.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "autograd.broadcast_divide",
+      "area": "api:autograd",
+      "inputs": {
+        "a": {
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            2,
+            4
+          ]
+        },
+        "b": {
+          "shape": [
+            3
+          ],
+          "values": [
+            1,
+            2,
+            4
+          ]
+        },
+        "seed": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "output": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            2.0,
+            1.0,
+            0.5,
+            4.0,
+            2.0,
+            1.0
+          ]
+        },
+        "grad_a": {
+          "shape": [
+            2,
+            1
+          ],
+          "numel": 2,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            2.75,
+            8.0
+          ]
+        },
+        "grad_b": {
+          "shape": [
+            3
+          ],
+          "numel": 3,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            -18.0,
+            -6.0,
+            -1.875
+          ]
+        }
+      }
     }
   ]
 }

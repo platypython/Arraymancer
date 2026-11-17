@@ -220,12 +220,33 @@ def axis_options(torch: Any) -> dict[str, Any]:
                  {"sum": _observe(total), "mean": _observe(average), "grad": _observe(x.grad)})
 
 
+def _broadcast_arithmetic(torch: Any, *, divide: bool) -> dict[str, Any]:
+    a = _tensor([2, 4], [2, 1], torch).requires_grad_(True)
+    b = _tensor([1, 2, 4], [3], torch).requires_grad_(True)
+    output = a / b if divide else a * b
+    output.backward(_tensor([1, 2, 3, 4, 5, 6], [2, 3], torch))
+    name = "autograd.broadcast_divide" if divide else "autograd.broadcast_multiply"
+    return _case(name, "api:autograd",
+                 {"a": {"shape": [2, 1], "values": [2, 4]},
+                  "b": {"shape": [3], "values": [1, 2, 4]},
+                  "seed": {"shape": [2, 3], "values": [1, 2, 3, 4, 5, 6]}},
+                 {"output": _observe(output), "grad_a": _observe(a.grad), "grad_b": _observe(b.grad)})
+
+
+def broadcast_multiply(torch: Any) -> dict[str, Any]:
+    return _broadcast_arithmetic(torch, divide=False)
+
+
+def broadcast_divide(torch: Any) -> dict[str, Any]:
+    return _broadcast_arithmetic(torch, divide=True)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
     no_grad_exception, seeded_vjp, retained_vjp, independent_graphs, chunk_seed,
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
-    axis_options,
+    axis_options, broadcast_multiply, broadcast_divide,
 )
 
 

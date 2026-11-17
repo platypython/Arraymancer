@@ -18,9 +18,15 @@ proc reduce_broadcast_dims*[T](grad: Tensor[T], target_shape: Metadata): Tensor[
   ## Sum a broadcasted gradient back to `target_shape`.
   if grad.shape == target_shape:
     return grad
+  if grad.size == 0:
+    return zeros[T](target_shape)
   result = grad
   while result.rank > target_shape.len:
-    result = result.sum(axis = 0).squeeze(0)
+    var shape = result.shape
+    for i in 0 ..< shape.len - 1:
+      shape[i] = shape[i + 1]
+    dec shape.len
+    result = result.sum(axis = 0).reshape(shape)
   for i in 0 ..< target_shape.len:
     if target_shape[i] == 1 and result.shape[i] > 1:
       result = result.sum(axis = i)

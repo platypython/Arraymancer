@@ -24,12 +24,20 @@ proc hadamard_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[
   let self = HadamardGate[TT](self)
   let gradient = payload.variable.grad
   result = newSeq[TT](2)
-  result[0] = gradient     *. self.b.value
-  result[1] = self.a.value *. gradient
-  when defined(metal) or defined(coreai):
-    when TT is MetalTensor:
+  if self.a.requires_grad:
+    result[0] = gradient *. self.b.value
+    when TT is Tensor:
       result[0] = reduce_broadcast_dims(result[0], self.a.value.shape)
+    when defined(metal) or defined(coreai):
+      when TT is MetalTensor:
+        result[0] = reduce_broadcast_dims(result[0], self.a.value.shape)
+  if self.b.requires_grad:
+    result[1] = self.a.value *. gradient
+    when TT is Tensor:
       result[1] = reduce_broadcast_dims(result[1], self.b.value.shape)
+    when defined(metal) or defined(coreai):
+      when TT is MetalTensor:
+        result[1] = reduce_broadcast_dims(result[1], self.b.value.shape)
 
 proc hadamard_cache[TT](result: Variable[TT], a, b: Variable[TT]) =
   # Gate
