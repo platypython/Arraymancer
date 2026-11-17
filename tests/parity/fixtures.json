@@ -2727,6 +2727,419 @@
         },
         "shares_storage": true
       }
+    },
+    {
+      "id": "autograd.unary_math",
+      "area": "api:autograd",
+      "inputs": {
+        "scalar": {
+          "a": {
+            "shape": [],
+            "values": [
+              4
+            ]
+          },
+          "seed": {
+            "shape": [],
+            "values": [
+              3
+            ]
+          }
+        },
+        "strided": {
+          "a": {
+            "shape": [
+              2,
+              3
+            ],
+            "values": [
+              0.25,
+              1,
+              4,
+              9,
+              16,
+              25
+            ]
+          },
+          "seed": {
+            "shape": [
+              3,
+              1
+            ],
+            "values": [
+              1,
+              2,
+              3
+            ]
+          }
+        },
+        "empty": {
+          "a": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "values": []
+          },
+          "seed": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "values": []
+          }
+        },
+        "domain": {
+          "a": {
+            "shape": [
+              4
+            ],
+            "values": [
+              -1,
+              -0.0,
+              0,
+              4
+            ]
+          },
+          "seed": {
+            "shape": [
+              4
+            ],
+            "values": [
+              1,
+              1,
+              0,
+              2
+            ]
+          }
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "scalar": {
+          "exp": {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                54.598150033144236
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                163.7944500994327
+              ]
+            }
+          },
+          "ln": {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.3862943611198906
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.75
+              ]
+            }
+          },
+          "sqrt": {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.75
+              ]
+            }
+          }
+        },
+        "strided": {
+          "exp": {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                8103.083927575384,
+                8886110.520507872,
+                72004899337.38588
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                8103.083927575384,
+                17772221.041015744,
+                216014698012.15765
+              ]
+            }
+          },
+          "ln": {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.1972245773362196,
+                2.772588722239781,
+                3.2188758248682006
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.1111111111111111,
+                0.125,
+                0.12
+              ]
+            }
+          },
+          "sqrt": {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                3.0,
+                4.0,
+                5.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.16666666666666666,
+                0.25,
+                0.3
+              ]
+            }
+          }
+        },
+        "empty": {
+          "exp": {
+            "output": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          "ln": {
+            "output": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          "sqrt": {
+            "output": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          }
+        },
+        "domain": {
+          "exp": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.36787944117144233,
+                1.0,
+                1.0,
+                54.598150033144236
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.36787944117144233,
+                1.0,
+                0.0,
+                109.19630006628847
+              ]
+            }
+          },
+          "ln": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "-inf",
+                "-inf",
+                1.3862943611198906
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -1.0,
+                "-inf",
+                "nan",
+                0.5
+              ]
+            }
+          },
+          "sqrt": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                -0.0,
+                0.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "-inf",
+                "nan",
+                0.5
+              ]
+            }
+          }
+        }
+      }
     }
   ]
 }

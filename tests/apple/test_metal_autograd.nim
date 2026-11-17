@@ -3,29 +3,76 @@
 import std/[unittest, math, json]
 import ../../src/arraymancer
 
-proc checkValues(t: MetalTensor[float32]; shape: openArray[int]; expected: openArray[float32]) =
+proc checkValues(t: MetalTensor[float32]; shape: openArray[int]; expected: openArray[float32];
+                 relativeTolerance = 0'f32) =
   check t.storage != nil
   check t.storage.owner.handle != nil
   check t.shape == shape.toMetadata
   check t.size == expected.len
   let host = t.cpu
   let values = cast[ptr UncheckedArray[float32]](host.get_offset_ptr)
-  for i, value in expected: check abs(values[i] - value) < 1e-6'f32
+  for i, value in expected:
+    case value.classify
+    of fcNan: check values[i].classify == fcNan
+    of fcInf, fcNegInf: check values[i] == value
+    else: check abs(values[i] - value) < 1e-6'f32 + relativeTolerance * abs(value)
 
 proc fixtureData(spec: JsonNode): tuple[shape: seq[int], values: seq[float32]] =
   ## Cast pinned CPU observations to the dtype supported by native Metal arithmetic.
   for dim in spec["shape"]: result.shape.add(dim.getInt)
-  for value in spec["values"]: result.values.add(float32(value.getFloat))
+  for value in spec["values"]:
+    if value.kind == JString:
+      case value.getStr
+      of "nan": result.values.add(NaN.float32)
+      of "+inf": result.values.add(Inf.float32)
+      of "-inf": result.values.add(-Inf.float32)
+      else: raise newException(ValueError, "unsupported fixture float observation")
+    else:
+      result.values.add(float32(value.getFloat))
 
 proc fixtureTensor(spec: JsonNode): MetalTensor[float32] =
   let data = fixtureData(spec)
   data.values.toTensor.reshape(data.shape).metal
 
-proc checkFixture(t: MetalTensor[float32], spec: JsonNode) =
+proc checkFixture(t: MetalTensor[float32], spec: JsonNode; relativeTolerance = 0'f32) =
   let data = fixtureData(spec)
-  t.checkValues(data.shape, data.values)
+  t.checkValues(data.shape, data.values, relativeTolerance)
 
 suite "Metal autograd on the existing tape":
+  test "Native exp, ln and sqrt VJPs match pinned scalar, strided, empty and domain cases":
+    const fixtures = staticRead("../parity/fixtures.json")
+    var contract: JsonNode
+    for item in parseJson(fixtures)["cases"]:
+      if item["id"].getStr == "autograd.unary_math": contract = item
+    doAssert not contract.isNil
+    for name, spec in contract["inputs"]:
+      for operation in ["exp", "ln", "sqrt"]:
+        checkpoint name & ":" & operation
+        let ctx = newContext(MetalTensor[float32])
+        var value = fixtureTensor(spec["a"])
+        if name == "strided": value = value.transpose[_, 1..^1]
+        elif name == "empty": value = value.transpose(0, 2)
+        let x = ctx.variable(value, requires_grad = true)
+        let output = case operation
+                     of "exp": x.exp
+                     of "ln": x.ln
+                     else: x.sqrt
+        output.backprop(fixtureTensor(spec["seed"]))
+        output.value.checkFixture(contract["expected"][name][operation]["output"], 2e-6'f32)
+        x.grad.checkFixture(contract["expected"][name][operation]["grad"], 2e-6'f32)
+
+  test "Native unary chains honor no-grad and scalar cotangents":
+    let ctx = newContext(MetalTensor[float32])
+    let x = ctx.variable(newTensorWith[float32]([], 4'f32).metal, requires_grad = true)
+    ctx.no_grad_mode:
+      check not x.exp.requires_grad
+      check not x.ln.requires_grad
+      check not x.sqrt.requires_grad
+    let output = x.exp.ln.sqrt
+    output.backprop(newTensorWith[float32]([], 3'f32).metal)
+    output.value.checkValues([], [2'f32])
+    x.grad.checkValues([], [0.75'f32])
+
   test "Native singleton views match pinned PyTorch values, aliases and VJPs":
     const fixtures = staticRead("../parity/fixtures.json")
     var contract: JsonNode

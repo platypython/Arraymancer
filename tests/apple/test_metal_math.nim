@@ -4,6 +4,21 @@ import std/[unittest, math]
 import ../../src/arraymancer
 
 suite "Native Metal float32 math":
+  test "Unary kernels preserve negative strides, scalars and empty shapes":
+    let packed = [0.25'f32, 1, 4, 9].toTensor.metal
+    let reverse = packed.metalView([4].toMetadata, [-1].toMetadata, 3)
+    let expected = [9'f32, 4, 1, 0.25].toTensor
+    check reverse.sqrt.cpu == [3'f32, 2, 1, 0.5].toTensor
+    check reverse.exp.cpu.mean_relative_error(expected.exp) < 2e-6
+    check reverse.ln.cpu.mean_relative_error(expected.ln) < 2e-6
+    let scalar = newTensorWith[float32]([], 4'f32).metal
+    check scalar.sqrt.cpu == newTensorWith[float32]([], 2'f32)
+    let empty = newMetalTensorUninit[float32](2, 0, 3)
+    for output in [empty.exp, empty.ln, empty.sqrt]:
+      check output.shape == [2, 0, 3].toMetadata
+      check output.size == 0
+    expect MetalDtypeError: discard [1'i32].toTensor.metal.exp
+
   test "Trailing-axis broadcasting and matmul preserve inputs":
     let a = [[0'f32], [10'f32]].toTensor.metal
     let b = [[0'f32, 1, 2]].toTensor.metal
@@ -17,7 +32,7 @@ suite "Native Metal float32 math":
     check (left * right).cpu == [[19'f32, 22], [43'f32, 50]].toTensor
     check left.cpu == [[1'f32, 2], [3'f32, 4]].toTensor
     expect MetalError: discard matrix +. [1'f32, 2].toTensor.metal
-    expect MetalError: discard vector * vector
+    check (vector * vector).cpu == newTensorWith[float32]([], 1400'f32)
   test "Signed-stride arithmetic and tile edges stay native":
     let packed = [1'f32, 2, 3, 4].toTensor.metal
     let reverse = packed.metalView([4].toMetadata, [-1].toMetadata, 3)

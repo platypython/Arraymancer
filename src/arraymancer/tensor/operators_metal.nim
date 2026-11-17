@@ -84,6 +84,18 @@ proc `-.`*[T](a: float32; b: MetalTensor[T]): MetalTensor[T] = scalarMath(b, a, 
 proc `*.`*[T](a: float32; b: MetalTensor[T]): MetalTensor[T] = scalarMath(b, a, 3)
 proc `/.`*[T](a: float32; b: MetalTensor[T]): MetalTensor[T] = scalarMath(b, a, 9)
 
+proc exp*[T](t: MetalTensor[T]): MetalTensor[T] =
+  ## Element-wise float32 exponential; preserves scalar, empty and strided shapes.
+  scalarMath(t, 0, 10)
+
+proc ln*[T](t: MetalTensor[T]): MetalTensor[T] =
+  ## Element-wise float32 natural logarithm with IEEE domain results.
+  scalarMath(t, 0, 11)
+
+proc sqrt*[T](t: MetalTensor[T]): MetalTensor[T] =
+  ## Element-wise float32 square root with IEEE domain results.
+  scalarMath(t, 0, 12)
+
 proc `*`*[T](a, b: MetalTensor[T]): MetalTensor[T] =
   ## Float32 matrix product with vector promotion and trailing-axis batch broadcasting.
   ## The result owns one GPU allocation; each matrix writes directly into its batch view.

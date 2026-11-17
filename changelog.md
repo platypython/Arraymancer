@@ -1,6 +1,11 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add real `exp`, `ln` and `sqrt` autograd gates for CPU float32/float64 and Metal
+  float32. Native Metal unary kernels read strided views directly, and square-root
+  backward uses one fused dispatch. Preserve no-grad, scalar/empty shapes, signed
+  zero and invalid-domain VJPs; verify them against pinned PyTorch observations.
+  The selected CPU conformance gate now covers 28 cases.
 - Preserve multi-axis empty shapes in CPU unary functions, scalar arithmetic,
   dtype conversions, scalar comparisons and NaN predicates. Keep legacy
   uninitialized-tensor handling separate from real rank-zero scalars. Add pinned

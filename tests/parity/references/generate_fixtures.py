@@ -89,6 +89,34 @@ def elementwise_shapes(torch: Any) -> dict[str, Any]:
     return _case("tensor.elementwise_shapes", "api:torch", inputs, expected)
 
 
+def unary_math(torch: Any) -> dict[str, Any]:
+    """Observe real unary VJPs, including zero and invalid-domain derivatives."""
+    inputs: dict[str, Any] = {
+        "scalar": {"a": {"shape": [], "values": [4]},
+                   "seed": {"shape": [], "values": [3]}},
+        "strided": {"a": {"shape": [2, 3], "values": [0.25, 1, 4, 9, 16, 25]},
+                    "seed": {"shape": [3, 1], "values": [1, 2, 3]}},
+        "empty": {"a": {"shape": [2, 0, 3], "values": []},
+                  "seed": {"shape": [3, 0, 2], "values": []}},
+        "domain": {"a": {"shape": [4], "values": [-1, -0.0, 0, 4]},
+                   "seed": {"shape": [4], "values": [1, 1, 0, 2]}},
+    }
+    expected: dict[str, Any] = {}
+    for name, spec in inputs.items():
+        expected[name] = {}
+        for operation, function in (("exp", torch.exp), ("ln", torch.log), ("sqrt", torch.sqrt)):
+            a = _tensor(spec["a"]["values"], spec["a"]["shape"], torch)
+            if name == "strided":
+                a = a.transpose(0, 1)[:, 1:]
+            elif name == "empty":
+                a = a.transpose(0, 2)
+            a.requires_grad_(True)
+            output = function(a)
+            output.backward(_tensor(spec["seed"]["values"], spec["seed"]["shape"], torch))
+            expected[name][operation] = {"output": _observe(output), "grad": _observe(a.grad)}
+    return _case("autograd.unary_math", "api:autograd", inputs, expected)
+
+
 def scalar_metadata(torch: Any) -> dict[str, Any]:
     result = torch.empty((), dtype=torch.float64, device="cpu")
     return _case("tensor.scalar_metadata", "api:tensors", {"shape": []}, {"result": _observe(result, include_values=False)})
@@ -347,7 +375,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     no_grad_exception, seeded_vjp, retained_vjp, independent_graphs, chunk_seed,
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
     axis_options, broadcast_multiply, broadcast_divide,
-    mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
+    mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views, unary_math,
 )
 
 

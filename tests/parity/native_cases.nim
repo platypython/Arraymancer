@@ -82,6 +82,22 @@ proc runCase*(caseData: JsonNode): JsonNode =
         "reverse_divide": tensorObservation(2.0 /. a),
         "cast": tensorObservation(a.asType(float32)),
         "greater": tensorObservation(a >. 2.0), "isnan": tensorObservation(a.isNaN)}
+  of "autograd.unary_math":
+    for name, spec in inputs:
+      result[name] = newJObject()
+      var value = getTensor(spec["a"])
+      if name == "strided": value = value.transpose[_, 1..^1]
+      elif name == "empty": value = value.transpose(0, 2)
+      for operation in ["exp", "ln", "sqrt"]:
+        let ctx = newContext Tensor[float64]
+        let x = ctx.variable(value, requires_grad = true)
+        let output = case operation
+                     of "exp": x.exp
+                     of "ln": x.ln
+                     else: x.sqrt
+        output.backprop(getTensor(spec["seed"]))
+        result[name][operation] = %*{"output": tensorObservation(output.value),
+                                    "grad": tensorObservation(x.grad)}
   of "tensor.scalar_metadata":
     let scalar = newTensorUninit[float64]([])
     result["result"] = tensorObservation(scalar, false)

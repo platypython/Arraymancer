@@ -14,6 +14,7 @@
 
 import  ./autograd/autograd_common,
         ./autograd/gates_basic,
+        ./autograd/gates_unary,
         ./autograd/gates_blas,
         ./autograd/gates_reduce,
         ./autograd/gates_shapeshifting_views,
@@ -22,6 +23,7 @@ import  ./autograd/autograd_common,
 
 export  autograd_common,
         gates_basic,
+        gates_unary,
         gates_blas,
         gates_reduce,
         gates_shapeshifting_views,
