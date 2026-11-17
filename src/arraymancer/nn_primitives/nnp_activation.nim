@@ -16,8 +16,7 @@ import std / math
 import  ../tensor,
         ./private/p_activation
 
-# Neural net activation functions that works directly on Tensors
-# TODO: tests
+## Provides tensor activation functions and cached-output derivatives.
 
 # ##################################################################################################
 # Forward
@@ -33,7 +32,8 @@ proc sigmoid*[T: SomeFloat](t: Tensor[T]): Tensor[T] {.noinit.}=
     sigmoid(x)
 
 proc relu*[T](t: Tensor[T]): Tensor[T] {.noinit.}=
-  t.map_inline max(0.T,x)
+  ## Allocate a ReLU result, preserving NaN, signed zero and input shape.
+  t.map_inline relu(x)
 
 proc tanh*[T: SomeFloat](t: Tensor[T]): Tensor[T] {.noinit.}=
   t.map_inline tanh(x)
@@ -61,7 +61,8 @@ proc msigmoid*[T: SomeFloat](t: var Tensor[T]) =
     sigmoid(x)
 
 proc mrelu*[T](t: var Tensor[T]) =
-  t.apply_inline max(0.T, x)
+  ## Zero negative elements in place, preserving NaN and signed zero.
+  t.apply_inline relu(x)
 
 proc mtanh*[T: SomeFloat](t: var Tensor[T]) =
   t.apply_inline tanh(x)

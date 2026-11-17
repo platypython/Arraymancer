@@ -98,6 +98,28 @@ proc runCase*(caseData: JsonNode): JsonNode =
         output.backprop(getTensor(spec["seed"]))
         result[name][operation] = %*{"output": tensorObservation(output.value),
                                     "grad": tensorObservation(x.grad)}
+  of "autograd.activation_math":
+    for name, spec in inputs:
+      result[name] = newJObject()
+      var value = getTensor(spec["a"])
+      if name == "strided": value = value.transpose[_, 1..^1]
+      elif name == "empty": value = value.transpose(0, 2)
+      if spec.hasKey("transform"):
+        if spec["transform"].getStr == "ln": value = value.ln
+        else: value = 1.0 /. value
+      var seed = getTensor(spec["seed"])
+      if spec.hasKey("seed_transform"): seed = seed.ln
+      for operation in ["relu", "sigmoid", "tanh"]:
+        let ctx = newContext Tensor[float64]
+        let x = ctx.variable(value, requires_grad = true)
+        let output = case operation
+                     of "relu": x.relu
+                     of "sigmoid": x.sigmoid
+                     else: x.tanh
+        output.backprop(seed)
+        let negativeZero = output.value.map_inline(x.classify == fcNegZero)
+        result[name][operation] = %*{"output": tensorObservation(output.value),
+          "grad": tensorObservation(x.grad), "negative_zero": tensorObservation(negativeZero)}
   of "tensor.scalar_metadata":
     let scalar = newTensorUninit[float64]([])
     result["result"] = tensorObservation(scalar, false)

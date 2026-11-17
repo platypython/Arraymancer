@@ -12,10 +12,47 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+## Checks classic activation edge cases and GELU numerical gradients.
 import ../../src/arraymancer
 import std / [unittest, math]
 
 proc main() =
+  suite "Classic activation IEEE behavior":
+    test "ReLU preserves NaNs and signed zero while masking inactive NaN seeds":
+      let input = [-0.0'f32, NaN.float32, -1'f32, 1'f32].toTensor
+      let ctx = newContext Tensor[float32]
+      let x = ctx.variable(input, requires_grad = true)
+      let output = x.relu
+      output.backprop([NaN.float32, 1'f32, NaN.float32, NaN.float32].toTensor)
+      check output.value[0].classify == fcNegZero
+      check output.value[1].classify == fcNan
+      check output.value[2] == 0'f32
+      check output.value[3] == 1'f32
+      check x.grad[0] == 0'f32
+      check x.grad[1] == 1'f32
+      check x.grad[2] == 0'f32
+      check x.grad[3].classify == fcNan
+      var inplace = input.clone
+      inplace.mrelu
+      check inplace[0].classify == fcNegZero
+      check inplace[1].classify == fcNan
+      check inplace[2] == 0'f32
+      check inplace[3] == 1'f32
+
+    test "ReLU retains integer types and mutates transposed views in place":
+      let original = [[low(int32), 0'i32, 2'i32],
+                      [4'i32, -5'i32, high(int32)]].toTensor
+      var view = original.transpose
+      let expected = [[0'i32, 4'i32], [0'i32, 0'i32],
+                      [2'i32, high(int32)]].toTensor
+      check view.relu == expected
+      check original[0, 0] == low(int32)
+      view.mrelu
+      check view == expected
+      check original == expected.transpose
+      let unsigned = [0'u64, high(uint64)].toTensor
+      check unsigned.relu == [0'u64, high(uint64)].toTensor
+
   suite "GELU activation":
     test "GELU forward matches the closed form":
       let ctx = newContext Tensor[float64]

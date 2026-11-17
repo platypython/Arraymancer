@@ -271,7 +271,7 @@ Detailed API is available at Arraymancer official [documentation](https://mratsi
 
 ## PyTorch conformance checks
 
-`nimble parity` compares twenty-eight native CPU cases with checked-in PyTorch 2.15.0
+`nimble parity` compares twenty-nine native CPU cases with checked-in PyTorch 2.15.0
 observations and writes `build/pytorch-parity.json`. On macOS 27 arm64 it builds
 both native adapters and runs ten Metal training contracts and eight Core AI
 inference contracts. Elsewhere it compiles a CPU-only runner: unobserved Apple
@@ -297,6 +297,8 @@ CPU unary functions, scalar arithmetic, casts and comparisons also preserve
 rank-zero and multi-axis empty shapes, including strided inputs.
 Real `exp`, `ln` and `sqrt` also support seeded backward on CPU float32/float64
 and native Metal float32, including scalar, empty and invalid-domain results.
+CPU ReLU preserves NaN and signed zero, including in-place views; inactive units
+mask NaN upstream gradients.
 
 The version pins and source provenance live in `tests/parity/`. Capability
 annotations describe inspected implementation evidence, not passing tests.

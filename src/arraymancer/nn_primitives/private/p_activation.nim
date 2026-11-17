@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+## Provides scalar activation helpers shared by tensor kernels.
 import std / math
 
 proc sigmoid*[T: SomeFloat](x: T): T {.inline, noSideEffect.} =
   1 / (1 + exp(-x))
+
+proc relu*[T](x: T): T {.inline.} =
+  ## Preserve NaN and signed zero; max can discard either.
+  if x < 0.T: 0.T else: x

@@ -3140,6 +3140,882 @@
           }
         }
       }
+    },
+    {
+      "id": "autograd.activation_math",
+      "area": "api:autograd",
+      "inputs": {
+        "scalar": {
+          "a": {
+            "shape": [],
+            "values": [
+              -0.0
+            ]
+          },
+          "seed": {
+            "shape": [],
+            "values": [
+              3
+            ]
+          }
+        },
+        "strided": {
+          "a": {
+            "shape": [
+              2,
+              3
+            ],
+            "values": [
+              -4,
+              -2,
+              0,
+              1,
+              2,
+              4
+            ]
+          },
+          "seed": {
+            "shape": [
+              3,
+              1
+            ],
+            "values": [
+              1,
+              2,
+              3
+            ]
+          }
+        },
+        "empty": {
+          "a": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "values": []
+          },
+          "seed": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "values": []
+          }
+        },
+        "domain": {
+          "a": {
+            "shape": [
+              4
+            ],
+            "values": [
+              -1,
+              0,
+              1,
+              4
+            ]
+          },
+          "seed": {
+            "shape": [
+              4
+            ],
+            "values": [
+              1,
+              1,
+              0,
+              2
+            ]
+          },
+          "transform": "ln"
+        },
+        "infinities": {
+          "a": {
+            "shape": [
+              4
+            ],
+            "values": [
+              0,
+              -0.0,
+              -1,
+              1
+            ]
+          },
+          "seed": {
+            "shape": [
+              4
+            ],
+            "values": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "transform": "reciprocal"
+        },
+        "masked_nan": {
+          "a": {
+            "shape": [
+              4
+            ],
+            "values": [
+              -1,
+              0,
+              1,
+              4
+            ]
+          },
+          "seed": {
+            "shape": [
+              4
+            ],
+            "values": [
+              -1,
+              -1,
+              -1,
+              -1
+            ]
+          },
+          "seed_transform": "ln"
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "scalar": {
+          "relu": {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            },
+            "negative_zero": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                true
+              ]
+            }
+          },
+          "sigmoid": {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.5
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.75
+              ]
+            },
+            "negative_zero": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false
+              ]
+            }
+          },
+          "tanh": {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                3.0
+              ]
+            },
+            "negative_zero": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                true
+              ]
+            }
+          }
+        },
+        "strided": {
+          "relu": {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                2.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                2.0,
+                3.0
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false
+              ]
+            }
+          },
+          "sigmoid": {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.7310585786300049,
+                0.8807970779778823,
+                0.9820137900379085
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.19661193324148185,
+                0.20998717080701323,
+                0.05298811863987332
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false
+              ]
+            }
+          },
+          "tanh": {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.7615941559557649,
+                0.9640275800758169,
+                0.999329299739067
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.41997434161402614,
+                0.14130164970632886,
+                0.004022852049077749
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false
+              ]
+            }
+          }
+        },
+        "empty": {
+          "relu": {
+            "output": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "negative_zero": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          "sigmoid": {
+            "output": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "negative_zero": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          "tanh": {
+            "output": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "negative_zero": {
+              "shape": [
+                3,
+                0,
+                2
+              ],
+              "numel": 0,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": []
+            }
+          }
+        },
+        "domain": {
+          "relu": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                0.0,
+                0.0,
+                1.3862943611198906
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                0.0,
+                0.0,
+                2.0
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false,
+                false
+              ]
+            }
+          },
+          "sigmoid": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                0.0,
+                0.5,
+                0.8
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                0.0,
+                0.0,
+                0.31999999999999995
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false,
+                false
+              ]
+            }
+          },
+          "tanh": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                -1.0,
+                0.0,
+                0.8823529411764706
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                0.0,
+                0.0,
+                0.4429065743944638
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false,
+                false
+              ]
+            }
+          }
+        },
+        "infinities": {
+          "relu": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "+inf",
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                0.0,
+                0.0,
+                4.0
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false,
+                false
+              ]
+            }
+          },
+          "sigmoid": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                0.0,
+                0.2689414213699951,
+                0.7310585786300049
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.5898357997244456,
+                0.7864477329659274
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false,
+                false
+              ]
+            }
+          },
+          "tanh": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                -1.0,
+                -0.7615941559557649,
+                0.7615941559557649
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                1.2599230248420783,
+                1.6798973664561045
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false,
+                false
+              ]
+            }
+          }
+        },
+        "masked_nan": {
+          "relu": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                1.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                "nan",
+                "nan"
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false,
+                false
+              ]
+            }
+          },
+          "sigmoid": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.2689414213699951,
+                0.5,
+                0.7310585786300049,
+                0.9820137900379085
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan",
+                "nan"
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false,
+                false
+              ]
+            }
+          },
+          "tanh": {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.7615941559557649,
+                0.0,
+                0.7615941559557649,
+                0.999329299739067
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan",
+                "nan"
+              ]
+            },
+            "negative_zero": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "bool",
+              "device": "cpu",
+              "values": [
+                false,
+                false,
+                false,
+                false
+              ]
+            }
+          }
+        }
+      }
     }
   ]
 }

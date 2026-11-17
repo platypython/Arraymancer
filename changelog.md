@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Preserve NaN and signed zero in CPU ReLU, including in-place updates, while
+  masking inactive NaN gradients. Add pinned ReLU, sigmoid and tanh observations
+  for scalar, strided, empty and nonfinite forward/VJP cases. The selected CPU
+  conformance gate now covers 29 cases.
 - Add real `exp`, `ln` and `sqrt` autograd gates for CPU float32/float64 and Metal
   float32. Native Metal unary kernels read strided views directly, and square-root
   backward uses one fused dispatch. Preserve no-grad, scalar/empty shapes, signed
