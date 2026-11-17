@@ -271,7 +271,7 @@ Detailed API is available at Arraymancer official [documentation](https://mratsi
 
 ## PyTorch conformance checks
 
-`nimble parity` compares twenty-one native CPU cases with checked-in PyTorch 2.15.0
+`nimble parity` compares twenty-four native CPU cases with checked-in PyTorch 2.15.0
 observations and writes `build/pytorch-parity.json`. On macOS 27 arm64 it builds
 both native adapters and runs ten Metal training contracts and eight Core AI
 inference contracts. Elsewhere it compiles a CPU-only runner: unobserved Apple
@@ -285,8 +285,10 @@ differences or unobserved required coverage, and 2 for invalid input or I/O erro
 CPU-only checks need no Python, reference checkout, Apple SDK, or accelerator.
 CPU backward cases include seeded and retained VJPs, independent graphs, scalar
 and axis reductions, direct chunk backward, overlapping slices, repeated integer
-selectors and boolean masks. These are selected contracts, not complete autograd
-coverage; higher-order differentiation and mutation version checks remain gaps.
+selectors and boolean masks. MSE supports broadcasted prediction/target gradients
+and `reduction = mseMean`, `mseSum` or `mseNone` on CPU and Metal. These are selected
+contracts, not complete autograd coverage; higher-order differentiation and
+mutation version checks remain gaps.
 
 The version pins and source provenance live in `tests/parity/`. Capability
 annotations describe inspected implementation evidence, not passing tests.

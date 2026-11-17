@@ -29,17 +29,6 @@ proc dispatchMetalMath*[T](a, b: MetalTensor[T]; output: MetalTensor[T]; operati
     AMMathParameters(operation: operation, scalar: scalar, scalarInput: int32(scalarInput), axis: int32(axis)),
     arraymancerAppleLibDir.cstring)
 
-proc aligned[T](t: MetalTensor[T]; shape: Metadata): MetalTensor[T] =
-  var strides: Metadata
-  strides.len = shape.len
-  let leading = shape.len - t.rank
-  for axis in 0 ..< shape.len:
-    if axis >= leading:
-      let source = axis - leading
-      if t.shape[source] == shape[axis]: strides[axis] = t.strides[source]
-      elif t.shape[source] != 1: raise newException(MetalError, "Incompatible Metal broadcast")
-  t.metalView(shape, strides, t.offset)
-
 proc binary[T](a, b: MetalTensor[T]; operation: int32; broadcastInputs = true): MetalTensor[T] =
   ## Share one dispatch path for equal-shape arithmetic and trailing-axis broadcasting.
   requireMath(T)
@@ -55,19 +44,9 @@ proc binary[T](a, b: MetalTensor[T]; operation: int32; broadcastInputs = true): 
     result = newMetalTensorUninit[T](a.shape, a.storage.device)
     dispatchMetalMath(a, b, result, operation)
     return
-  var shape: Metadata
-  shape.len = max(a.rank, b.rank)
-  for axis in 0 ..< shape.len:
-    let ai = axis - (shape.len - a.rank)
-    let bi = axis - (shape.len - b.rank)
-    let x = if ai < 0: 1 else: a.shape[ai]
-    let y = if bi < 0: 1 else: b.shape[bi]
-    if x == y: shape[axis] = x
-    elif x == 1: shape[axis] = y
-    elif y == 1: shape[axis] = x
-    else: raise newException(MetalError, "Incompatible Metal broadcast")
-  result = newMetalTensorUninit[T](shape, a.storage.device)
-  dispatchMetalMath(aligned(a, shape), aligned(b, shape), result, operation)
+  let (left, right) = broadcast2(a, b)
+  result = newMetalTensorUninit[T](left.shape, a.storage.device)
+  dispatchMetalMath(left, right, result, operation)
 
 proc scalarMath[T](t: MetalTensor[T]; scalar: float32; operation: int32): MetalTensor[T] =
   requireMath(T)

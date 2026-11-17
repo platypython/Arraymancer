@@ -13,77 +13,99 @@
 # limitations under the License.
 
 import  ../../tensor,
-        ../../ml,
-        ../../autograd
+        ../../autograd,
+        ../../autograd/private/p_broadcast
 
 when defined(metal) or defined(coreai):
   import ../../nn_primitives/nnp_mse_metal
 
-proc mseForward[TT](prediction, target: TT): TT =
-  let loss = mean_squared_error(prediction, target)
-  result = newTensorUninit[typeof(loss)]([])
+type MseReduction* = enum
+  ## Reduction over broadcasted squared errors.
+  mseMean, mseSum, mseNone
+
+proc mseForward[T: SomeFloat](prediction, target: Tensor[T], reduction: MseReduction): Tensor[T] =
+  let (p, t) = broadcast2(prediction, target)
+  if reduction == mseNone:
+    return map2_inline(p, t):
+      let difference = x - y
+      difference * difference
+  var loss = T(0)
+  for x, y in zip(p, t):
+    let difference = x - y
+    loss += difference * difference
+  if reduction == mseMean: loss /= T(p.size)
+  result = newTensorUninit[T]([])
   result.unsafe_raw_offset[0] = loss
 
-proc mseBackward[TT](upstream, prediction, target: TT): TT =
-  assert upstream.rank == 0
-  let grad = upstream.unsafe_raw_offset[0]
-  type T = typeof(grad)
-  let norm = grad * T(2) / T(prediction.size)
-  result = map2_inline(prediction, target):
-    norm * (x - y)
+proc mseBackward[T: SomeFloat](upstream, prediction, target: Tensor[T],
+                              reduction: MseReduction): Tensor[T] =
+  let (p, t) = broadcast2(prediction, target)
+  let gradient = broadcast2(upstream, p).a
+  let norm = if reduction == mseMean: T(2) / T(p.size) else: T(2)
+  result = map3_inline(p, t, gradient):
+    norm * (x - y) * z
 
 when defined(metal) or defined(coreai):
-  proc mseForward(prediction, target: MetalTensor[float32]): MetalTensor[float32] =
-    mse_forward_metal(prediction, target)
+  proc mseForward(prediction, target: MetalTensor[float32],
+                  reduction: MseReduction): MetalTensor[float32] =
+    let (p, t) = broadcast2(prediction, target)
+    if reduction == mseMean: return mse_forward_metal(p, t)
+    let squaredDifference = newMetalTensorUninit[float32](p.shape, p.storage.device)
+    dispatchMetalMath(p, t, squaredDifference, 23)
+    if reduction == mseSum: squaredDifference.sum else: squaredDifference
 
-  proc mseBackward(upstream, prediction, target: MetalTensor[float32]): MetalTensor[float32] =
-    mse_backward_metal(upstream, prediction, target)
+  proc mseBackward(upstream, prediction, target: MetalTensor[float32],
+                   reduction: MseReduction): MetalTensor[float32] =
+    let (p, t) = broadcast2(prediction, target)
+    if reduction == mseMean: return mse_backward_metal(upstream, p, t)
+    result = p -. t
+    dispatchMetalMath(result, upstream.broadcast(p.shape), result, 3)
+    dispatchMetalMath(result, default(MetalTensor[float32]), result, 3, 2'f32, true)
 
 type MSELoss*[TT] {.final.} = ref object of Gate[TT]
   target: TT
   cache: Variable[TT]
+  targetVariable: Variable[TT]
+  reduction: MseReduction
 
 proc mse_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
   let self = MSELoss[TT](self)
-  let gradient = payload.variable.grad
-  result = newDiffs[TT](1)
-  result[0] = mseBackward(gradient, self.cache.value, self.target)
+  let targetNeedsGrad = not self.targetVariable.isNil and self.targetVariable.requires_grad
+  result = newDiffs[TT](if self.targetVariable.isNil: 1 else: 2)
+  if self.cache.requires_grad:
+    let gradient = mseBackward(payload.variable.grad, self.cache.value, self.target, self.reduction)
+    result[0] = reduce_broadcast_dims(gradient, self.cache.value.shape)
+    if targetNeedsGrad:
+      result[1] = reduce_broadcast_dims(-gradient, self.target.shape)
+  elif targetNeedsGrad:
+    let gradient = mseBackward(payload.variable.grad, self.target, self.cache.value, self.reduction)
+    result[1] = reduce_broadcast_dims(gradient, self.target.shape)
 
-proc mse_cache[TT](result: Variable[TT], input: Variable[TT], target: TT) =
-  ## We expect input with shape [batch_size, features]
-
-  # Gate
-  var gate: MSELoss[TT]
-  new gate
-  gate.cache = input
-  gate.target = target
-
-  # Result setup
-  result.grad = zeros_like result.value
-  result.requires_grad = true
-
-  # Add to graph
-  register_node(
-    "Mean Squared Error",
-    gate,
-    mse_backward_ag[TT],
-    result,
-    input
-  )
-
-proc mse_loss*[TT](input: Variable[TT], target: TT): Variable[TT] =
-  ## Mean square error loss function.
-  ## Input:
-  ##   - An input variable of predicted values of shape [batch_size, features]
-  ##   - The ground truth of the same shape
-  ## The returned value is an initialized rank-zero tensor (shape `[]`) containing one scalar.
-  ## The loss averages over every input element; backward uses the same divisor.
-
-  # Resulting var
+proc mseLoss[TT](input: Variable[TT], target: TT, targetVariable: Variable[TT],
+                 reduction: MseReduction): Variable[TT] =
   new result
   result.context = input.context
-  result.value = mseForward(input.value, target)
+  result.value = mseForward(input.value, target, reduction)
+  if input.is_grad_needed or (not targetVariable.isNil and targetVariable.is_grad_needed):
+    let gate = MSELoss[TT](cache: input, target: target,
+                           targetVariable: targetVariable, reduction: reduction)
+    result.grad = result.value.zeros_like
+    result.requires_grad = true
+    if targetVariable.isNil:
+      register_node("Mean Squared Error", gate, mse_backward_ag[TT], result, input)
+    else:
+      register_node("Mean Squared Error", gate, mse_backward_ag[TT], result, input, targetVariable)
 
-  # Caching for backprop
-  if input.is_grad_needed:
-    result.mse_cache(input, target)
+proc mse_loss*[TT](input: Variable[TT], target: TT, reduction = mseMean): Variable[TT] =
+  ## Squared-error loss with trailing-axis broadcasting.
+  ## ``mseMean`` averages all broadcasted errors; ``mseSum`` sums them.
+  ## Both return rank-zero tensors. ``mseNone`` retains the broadcasted shape.
+  ## Backward reduces prediction gradients to the original input shape.
+  mseLoss(input, target, nil, reduction)
+
+proc mse_loss*[TT](input, target: Variable[TT], reduction = mseMean): Variable[TT] =
+  ## Differentiate squared errors with respect to either or both variables.
+  ## Inputs must share a context; reduction and broadcasting match the tensor-target
+  ## overload. Each trainable gradient is reduced to its original operand shape.
+  check_ctx(input, target)
+  mseLoss(input, target.value, target, reduction)

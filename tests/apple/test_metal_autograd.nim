@@ -13,6 +13,41 @@ proc checkValues(t: MetalTensor[float32]; shape: openArray[int]; expected: openA
   for i, value in expected: check abs(values[i] - value) < 1e-6'f32
 
 suite "Metal autograd on the existing tape":
+  test "MSE reductions broadcast prediction and target VJPs on the GPU":
+    for reduction in [mseMean, mseSum, mseNone]:
+      let ctx = newContext(MetalTensor[float32])
+      let prediction = ctx.variable([[2'f32], [4'f32]].toTensor.metal, requires_grad = true)
+      let target = ctx.variable([1'f32, 2, 3].toTensor.metal, requires_grad = true)
+      let loss = prediction.mse_loss(target, reduction)
+      if reduction == mseNone:
+        loss.value.checkValues([2, 3], [1'f32, 0, 1, 9, 4, 1])
+        loss.backprop([[1'f32, 2, 3], [4'f32, 5, 6]].toTensor.metal)
+        prediction.grad.checkValues([2, 1], [-4'f32, 56])
+        target.grad.checkValues([3], [-26'f32, -20, -6])
+      else:
+        let divisor = if reduction == mseMean: 6'f32 else: 1'f32
+        loss.value.checkValues([], [16'f32 / divisor])
+        loss.backprop()
+        prediction.grad.checkValues([2, 1], [0'f32, 12'f32 / divisor])
+        target.grad.checkValues([3], [-8'f32 / divisor, -4'f32 / divisor, 0])
+
+  test "Empty broadcast MSE reduces to zero sums and NaN means on the GPU":
+    for reduction in [mseMean, mseSum, mseNone]:
+      let ctx = newContext(MetalTensor[float32])
+      let prediction = ctx.variable(ones[float32](1, 3).metal, requires_grad = true)
+      let target = ctx.variable(newMetalTensorUninit[float32](0, 3), requires_grad = true)
+      let loss = prediction.mse_loss(target, reduction)
+      if reduction == mseNone:
+        loss.value.checkValues([0, 3], [])
+      elif reduction == mseSum:
+        loss.value.checkValues([], [0'f32])
+      else:
+        check loss.value.rank == 0
+        check cast[ptr float32](loss.value.cpu.get_offset_ptr)[].classify == fcNan
+      loss.backprop()
+      prediction.grad.checkValues([1, 3], [0'f32, 0, 0])
+      target.grad.checkValues([0, 3], [])
+
   test "Broadcast division reduces both GPU gradients to their operand shapes":
     let ctx = newContext(MetalTensor[float32])
     let a = ctx.variable([[2'f32], [4'f32]].toTensor.metal, requires_grad = true)

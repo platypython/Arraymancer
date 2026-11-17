@@ -1203,6 +1203,235 @@
           ]
         }
       }
+    },
+    {
+      "id": "loss.mse_mean_broadcast",
+      "area": "api:nn.functional",
+      "inputs": {
+        "prediction": {
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            2,
+            4
+          ]
+        },
+        "target": {
+          "shape": [
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        "seed": {
+          "shape": [],
+          "values": [
+            1
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "loss": {
+          "shape": [],
+          "numel": 1,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            2.6666666666666665
+          ]
+        },
+        "grad_prediction": {
+          "shape": [
+            2,
+            1
+          ],
+          "numel": 2,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            0.0,
+            1.9999999999999998
+          ]
+        },
+        "grad_target": {
+          "shape": [
+            3
+          ],
+          "numel": 3,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            -1.3333333333333333,
+            -0.6666666666666666,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "loss.mse_sum_broadcast",
+      "area": "api:nn.functional",
+      "inputs": {
+        "prediction": {
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            2,
+            4
+          ]
+        },
+        "target": {
+          "shape": [
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        "seed": {
+          "shape": [],
+          "values": [
+            1
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "loss": {
+          "shape": [],
+          "numel": 1,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            16.0
+          ]
+        },
+        "grad_prediction": {
+          "shape": [
+            2,
+            1
+          ],
+          "numel": 2,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            0.0,
+            12.0
+          ]
+        },
+        "grad_target": {
+          "shape": [
+            3
+          ],
+          "numel": 3,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            -8.0,
+            -4.0,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "loss.mse_none_broadcast",
+      "area": "api:nn.functional",
+      "inputs": {
+        "prediction": {
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            2,
+            4
+          ]
+        },
+        "target": {
+          "shape": [
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        "seed": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "loss": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            1.0,
+            0.0,
+            1.0,
+            9.0,
+            4.0,
+            1.0
+          ]
+        },
+        "grad_prediction": {
+          "shape": [
+            2,
+            1
+          ],
+          "numel": 2,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            -4.0,
+            56.0
+          ]
+        },
+        "grad_target": {
+          "shape": [
+            3
+          ],
+          "numel": 3,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            -26.0,
+            -20.0,
+            -6.0
+          ]
+        }
+      }
     }
   ]
 }

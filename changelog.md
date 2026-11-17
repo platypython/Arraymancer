@@ -1,6 +1,11 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add CPU/Metal MSE `mseMean`, `mseSum` and `mseNone` reductions, trailing-axis
+  broadcasting and gradients for trainable targets. Empty losses retain their
+  shapes and produce zero operand gradients. CPU scalar losses reduce without
+  allocating an intermediate error tensor. Three pinned loss cases bring CPU
+  conformance coverage to twenty-four observations.
 - Reduce broadcasted CPU multiplication and CPU/Metal division gradients back to
   each operand shape. CPU scalar targets terminate correctly and empty broadcast
   axes produce zero gradients. Two pinned arithmetic cases bring CPU coverage to

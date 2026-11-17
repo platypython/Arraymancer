@@ -241,12 +241,39 @@ def broadcast_divide(torch: Any) -> dict[str, Any]:
     return _broadcast_arithmetic(torch, divide=True)
 
 
+def _mse_broadcast(torch: Any, reduction: str) -> dict[str, Any]:
+    prediction = _tensor([2, 4], [2, 1], torch).requires_grad_(True)
+    target = _tensor([1, 2, 3], [3], torch).requires_grad_(True)
+    seed_spec = {"shape": [2, 3], "values": [1, 2, 3, 4, 5, 6]} if reduction == "none" else {
+        "shape": [], "values": [1]}
+    loss = torch.nn.functional.mse_loss(prediction, target, reduction=reduction)
+    loss.backward(_tensor(seed_spec["values"], seed_spec["shape"], torch))
+    return _case("loss.mse_" + reduction + "_broadcast", "api:nn.functional",
+                 {"prediction": {"shape": [2, 1], "values": [2, 4]},
+                  "target": {"shape": [3], "values": [1, 2, 3]}, "seed": seed_spec},
+                 {"loss": _observe(loss), "grad_prediction": _observe(prediction.grad),
+                  "grad_target": _observe(target.grad)})
+
+
+def mse_broadcast_mean(torch: Any) -> dict[str, Any]:
+    return _mse_broadcast(torch, "mean")
+
+
+def mse_broadcast_sum(torch: Any) -> dict[str, Any]:
+    return _mse_broadcast(torch, "sum")
+
+
+def mse_broadcast_none(torch: Any) -> dict[str, Any]:
+    return _mse_broadcast(torch, "none")
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
     no_grad_exception, seeded_vjp, retained_vjp, independent_graphs, chunk_seed,
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
     axis_options, broadcast_multiply, broadcast_divide,
+    mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none,
 )
 
 

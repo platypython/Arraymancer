@@ -137,6 +137,23 @@ proc broadcast*[T](t: MetalTensor[T]; shape: varargs[int]): MetalTensor[T] =
     metadata[axis] = dim
   t.broadcast(metadata)
 
+proc broadcast2*[T](a, b: MetalTensor[T]): tuple[a, b: MetalTensor[T]] =
+  ## Align trailing axes as shared zero-stride views, including scalar and empty inputs.
+  validateMetalView(a)
+  validateMetalView(b)
+  var shape: Metadata
+  shape.len = max(a.rank, b.rank)
+  for axis in 0 ..< shape.len:
+    let ai = axis - (shape.len - a.rank)
+    let bi = axis - (shape.len - b.rank)
+    let x = if ai < 0: 1 else: a.shape[ai]
+    let y = if bi < 0: 1 else: b.shape[bi]
+    if x == y: shape[axis] = x
+    elif x == 1: shape[axis] = y
+    elif y == 1: shape[axis] = x
+    else: raise newException(MetalError, "Incompatible Metal broadcast")
+  (a.broadcast(shape), b.broadcast(shape))
+
 proc squeeze*[T](t: MetalTensor[T]; axis: int): MetalTensor[T] =
   ## Remove a singleton axis without copying; a one-element vector may become scalar.
   validateMetalView(t)

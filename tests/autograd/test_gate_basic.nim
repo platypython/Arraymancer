@@ -17,6 +17,60 @@ import std / [unittest, sequtils, math]
 
 proc main() =
   suite "Autograd of basic operations":
+    test "MSE reductions broadcast and differentiate both operands":
+      for reduction in [mseMean, mseSum, mseNone]:
+        let ctx = newContext Tensor[float64]
+        let prediction = ctx.variable([[2.0], [4.0]].toTensor, requires_grad = true)
+        let target = ctx.variable([1.0, 2, 3].toTensor, requires_grad = true)
+        let loss = prediction.mse_loss(target, reduction)
+        if reduction == mseNone:
+          check loss.value == [[1.0, 0, 1], [9.0, 4, 1]].toTensor
+          loss.backprop([[1.0, 4], [2.0, 5], [3.0, 6]].toTensor.transpose)
+          check prediction.grad == [[-4.0], [56.0]].toTensor
+          check target.grad == [-26.0, -20, -6].toTensor
+        else:
+          let divisor = if reduction == mseMean: 6.0 else: 1.0
+          check loss.value.rank == 0
+          check abs(loss.value.atContiguousIndex(0) - 16.0 / divisor) < 1e-12
+          loss.backprop()
+          check mean_relative_error(prediction.grad, [[0.0], [12.0 / divisor]].toTensor) < 1e-12
+          check mean_relative_error(target.grad, [-8.0 / divisor, -4.0 / divisor, 0.0].toTensor) < 1e-12
+
+    test "MSE target-only gradients, shared operands and no-grad mode":
+      let ctx = newContext Tensor[float64]
+      let prediction = ctx.variable([[2.0], [4.0]].toTensor)
+      let target = ctx.variable([1.0, 2, 3].toTensor, requires_grad = true)
+      prediction.mse_loss(target, mseSum).backprop()
+      check target.grad == [-8.0, -4, 0].toTensor
+      target.mse_loss(target, mseSum).backprop()
+      check target.grad == [-8.0, -4, 0].toTensor
+      ctx.no_grad_mode:
+        check not prediction.mse_loss(target, mseNone).requires_grad
+      let scalar = ctx.variable(newTensorWith[float64]([], 2.0), requires_grad = true)
+      scalar.mse_loss([1.0, 3].toTensor, mseSum).backprop()
+      check scalar.grad.rank == 0
+      check scalar.grad.atContiguousIndex(0) == 0.0
+
+    test "Empty broadcast MSE preserves shapes and produces zero gradients":
+      for reduction in [mseMean, mseSum, mseNone]:
+        let ctx = newContext Tensor[float64]
+        let prediction = ctx.variable(ones[float64](1, 3), requires_grad = true)
+        let target = ctx.variable(zeros[float64](0, 3), requires_grad = true)
+        let loss = prediction.mse_loss(target, reduction)
+        case reduction
+        of mseMean:
+          check loss.value.rank == 0
+          check loss.value.atContiguousIndex(0).classify == fcNan
+        of mseSum:
+          check loss.value.rank == 0
+          check loss.value.atContiguousIndex(0) == 0.0
+        of mseNone:
+          check loss.value.shape == [0, 3]
+        loss.backprop()
+        check prediction.grad == zeros[float64](1, 3)
+        check target.grad.shape == [0, 3]
+        check target.grad.size == 0
+
     test "Broadcast multiplication and division reduce both seeded gradients":
       let seed = [[1.0, 2, 3], [4.0, 5, 6]].toTensor
       for divide in [false, true]:

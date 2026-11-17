@@ -90,6 +90,17 @@ proc runCase*(caseData: JsonNode): JsonNode =
     loss.backprop
     result["loss"] = tensorObservation(loss.value)
     result["grad"] = tensorObservation(prediction.grad)
+  of "loss.mse_mean_broadcast", "loss.mse_sum_broadcast", "loss.mse_none_broadcast":
+    let ctx = newContext Tensor[float64]
+    let prediction = ctx.variable(getTensor(inputs["prediction"]), requires_grad = true)
+    let target = ctx.variable(getTensor(inputs["target"]), requires_grad = true)
+    let reduction = if id == "loss.mse_mean_broadcast": mseMean
+                    elif id == "loss.mse_sum_broadcast": mseSum else: mseNone
+    let loss = prediction.mse_loss(target, reduction)
+    loss.backprop(getTensor(inputs["seed"]))
+    result["loss"] = tensorObservation(loss.value)
+    result["grad_prediction"] = tensorObservation(prediction.grad)
+    result["grad_target"] = tensorObservation(target.grad)
   of "autograd.no_grad_exception":
     let ctx = newContext Tensor[float64]
     let x = ctx.variable(getTensor(inputs["x"]), requires_grad = true)
