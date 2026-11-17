@@ -112,11 +112,107 @@ def no_grad_exception(torch: Any) -> dict[str, Any]:
             raise
     return _case("autograd.no_grad_exception", "api:autograd", {"x": {"shape": [1], "values": [1]}}, {"tracking_after_exception": bool(torch.is_grad_enabled())})
 
+def seeded_vjp(torch: Any) -> dict[str, Any]:
+    values, seed_values = [1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6]
+    x = _tensor(values, [2, 3], torch).requires_grad_(True)
+    seed = _tensor(seed_values, [2, 3], torch)
+    output = x * x + x
+    output.backward(seed)
+    return _case("autograd.seeded_vjp", "api:autograd",
+                 {"x": {"shape": [2, 3], "values": values}, "seed": {"shape": [2, 3], "values": seed_values}},
+                 {"output": _observe(output), "grad": _observe(x.grad)})
+
+
+def retained_vjp(torch: Any) -> dict[str, Any]:
+    x = _tensor([2, 3], [2], torch).requires_grad_(True)
+    squared = x * x
+    output = squared * squared
+    output.backward(_tensor([1, 2], [2], torch), retain_graph=True)
+    output.backward(_tensor([3, 4], [2], torch))
+    return _case("autograd.retained_vjp", "api:autograd",
+                 {"x": {"shape": [2], "values": [2, 3]},
+                  "first": {"shape": [2], "values": [1, 2]}, "second": {"shape": [2], "values": [3, 4]}},
+                 {"grad": _observe(x.grad)})
+
+
+def independent_graphs(torch: Any) -> dict[str, Any]:
+    x = _tensor([2, 3], [2], torch).requires_grad_(True)
+    unused = x / torch.zeros_like(x)
+    earlier, later = x * x, x + x
+    earlier.backward(torch.ones_like(x))
+    later.backward(torch.ones_like(x))
+    return _case("autograd.independent_graphs", "api:autograd",
+                 {"x": {"shape": [2], "values": [2, 3]}}, {"grad": _observe(x.grad)})
+
+
+def chunk_seed(torch: Any) -> dict[str, Any]:
+    x = _tensor([1, 2, 3, 4], [4], torch).requires_grad_(True)
+    parts = x.chunk(2, dim=0)
+    parts[1].backward(_tensor([2, 3], [2], torch), retain_graph=True)
+    parts[0].backward(_tensor([5, 7], [2], torch))
+    return _case("autograd.chunk_seed", "api:autograd",
+                 {"x": {"shape": [4], "values": [1, 2, 3, 4]},
+                  "first": {"shape": [2], "values": [2, 3]}, "second": {"shape": [2], "values": [5, 7]}},
+                 {"grad": _observe(x.grad)})
+
+
+def slice_overlap(torch: Any) -> dict[str, Any]:
+    x = _tensor([1, 2, 3, 4, 5], [5], torch).requires_grad_(True)
+    output = x[1:4].sum() + torch.flip(x[::2], [0]).sum()
+    output.backward()
+    return _case("autograd.slice_overlap", "api:autograd",
+                 {"x": {"shape": [5], "values": [1, 2, 3, 4, 5]}},
+                 {"output": _observe(output), "grad": _observe(x.grad)})
+
+
+def index_select_gradient(torch: Any) -> dict[str, Any]:
+    x = _tensor([1, 2, 3, 4, 5, 6], [2, 3], torch).requires_grad_(True)
+    output = x[:, [2, 0, 2]]
+    seed = _tensor([1, 2, 3, 4, 5, 6], [2, 3], torch)
+    output.backward(seed)
+    return _case("autograd.index_select", "api:autograd",
+                 {"x": {"shape": [2, 3], "values": [1, 2, 3, 4, 5, 6]},
+                  "seed": {"shape": [2, 3], "values": [1, 2, 3, 4, 5, 6]}},
+                 {"output": _observe(output), "grad": _observe(x.grad)})
+
+
+def mask_select_gradient(torch: Any) -> dict[str, Any]:
+    x = _tensor([1, 2, 3, 4, 5, 6], [2, 3], torch).transpose(0, 1).requires_grad_(True)
+    mask = torch.tensor([[True, False], [False, True], [True, False]], device="cpu")
+    output = x[mask]
+    output.backward(_tensor([2, 3, 4], [3], torch))
+    return _case("autograd.mask_select", "api:autograd",
+                 {"x": {"shape": [2, 3], "values": [1, 2, 3, 4, 5, 6]},
+                  "seed": {"shape": [3], "values": [2, 3, 4]}},
+                 {"output": _observe(output), "grad": _observe(x.grad)})
+
+
+def axis_mean(torch: Any) -> dict[str, Any]:
+    values = list(range(1, 25))
+    x = _tensor(values, [2, 3, 4], torch).requires_grad_(True)
+    output = x.mean(dim=1, keepdim=True)
+    output.backward(torch.full_like(output, 6))
+    return _case("autograd.axis_mean", "api:autograd",
+                 {"x": {"shape": [2, 3, 4], "values": values}},
+                 {"output": _observe(output), "grad": _observe(x.grad)})
+
+
+def reduction_scalars(torch: Any) -> dict[str, Any]:
+    x = _tensor([1, 2, 3, 4, 5, 6], [2, 3], torch).requires_grad_(True)
+    mean, total = x.mean(), x.sum()
+    total.backward(_tensor([3], [], torch))
+    mean.backward(_tensor([2], [], torch))
+    return _case("autograd.reduction_scalars", "api:autograd",
+                 {"x": {"shape": [2, 3], "values": [1, 2, 3, 4, 5, 6]}},
+                 {"mean": _observe(mean), "sum": _observe(total), "grad": _observe(x.grad)})
+
+
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
-    no_grad_exception,
+    no_grad_exception, seeded_vjp, retained_vjp, independent_graphs, chunk_seed,
+    slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
 )
 
 

@@ -99,5 +99,58 @@ proc runCase*(caseData: JsonNode): JsonNode =
     except ValueError:
       discard
     result["tracking_after_exception"] = %x.is_grad_needed
+  of "autograd.seeded_vjp", "autograd.retained_vjp", "autograd.independent_graphs",
+      "autograd.chunk_seed", "autograd.slice_overlap", "autograd.index_select",
+      "autograd.mask_select", "autograd.axis_mean", "autograd.reduction_scalars":
+    let ctx = newContext Tensor[float64]
+    let source = getTensor(inputs["x"])
+    let x = ctx.variable(if id == "autograd.mask_select": source.transpose else: source,
+                         requires_grad = true)
+    case id
+    of "autograd.seeded_vjp":
+      let output = x *. x + x
+      output.backprop(getTensor(inputs["seed"]))
+      result["output"] = tensorObservation(output.value)
+    of "autograd.retained_vjp":
+      let squared = x *. x
+      let output = squared *. squared
+      output.backprop(getTensor(inputs["first"]), retain_graph = true)
+      output.backprop(getTensor(inputs["second"]))
+    of "autograd.independent_graphs":
+      let unused = x /. ctx.variable(x.value.zeros_like)
+      let earlier = x *. x
+      let later = x + x
+      earlier.backprop
+      later.backprop
+      discard unused
+    of "autograd.chunk_seed":
+      let parts = x.chunk(2, axis = 0)
+      parts[1].backprop(getTensor(inputs["first"]), retain_graph = true)
+      parts[0].backprop(getTensor(inputs["second"]))
+    of "autograd.slice_overlap":
+      let output = x[1..3].sum + x[4..0|-2].sum
+      output.backprop
+      result["output"] = tensorObservation(output.value)
+    of "autograd.index_select":
+      let output = x[_, [2, 0, 2]]
+      output.backprop(getTensor(inputs["seed"]))
+      result["output"] = tensorObservation(output.value)
+    of "autograd.mask_select":
+      let output = x[[[true, false], [false, true], [true, false]]]
+      output.backprop(getTensor(inputs["seed"]))
+      result["output"] = tensorObservation(output.value)
+    of "autograd.axis_mean":
+      let output = x.mean(axis = 1)
+      output.backprop(output.value.ones_like * 6.0)
+      result["output"] = tensorObservation(output.value)
+    of "autograd.reduction_scalars":
+      let average = x.mean
+      let total = x.sum
+      total.backprop([3.0].toTensor.reshape(newSeq[int]()))
+      average.backprop([2.0].toTensor.reshape(newSeq[int]()))
+      result["mean"] = tensorObservation(average.value)
+      result["sum"] = tensorObservation(total.value)
+    else: discard
+    result["grad"] = tensorObservation(x.grad)
   else:
     raise newException(ValueError, "unknown parity case: " & id)

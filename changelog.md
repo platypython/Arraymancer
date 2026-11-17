@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Expand pinned CPU conformance from nine to eighteen real PyTorch observations,
+  covering seeded/retained VJPs, independent graphs, chunk and selector gradients,
+  and scalar/axis reduction semantics.
 - Add `retain_graph` to autograd backward. Recompute intermediate cotangents on
   retained traversals, accumulate leaf gradients, reject released ancestors, and
   preserve independent graphs. Direct backward from one chunk zeros unused

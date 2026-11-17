@@ -397,6 +397,551 @@
       "expected": {
         "tracking_after_exception": true
       }
+    },
+    {
+      "id": "autograd.seeded_vjp",
+      "area": "api:autograd",
+      "inputs": {
+        "x": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "seed": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "output": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            2.0,
+            6.0,
+            12.0,
+            20.0,
+            30.0,
+            42.0
+          ]
+        },
+        "grad": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            3.0,
+            10.0,
+            21.0,
+            36.0,
+            55.0,
+            78.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "autograd.retained_vjp",
+      "area": "api:autograd",
+      "inputs": {
+        "x": {
+          "shape": [
+            2
+          ],
+          "values": [
+            2,
+            3
+          ]
+        },
+        "first": {
+          "shape": [
+            2
+          ],
+          "values": [
+            1,
+            2
+          ]
+        },
+        "second": {
+          "shape": [
+            2
+          ],
+          "values": [
+            3,
+            4
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "grad": {
+          "shape": [
+            2
+          ],
+          "numel": 2,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            128.0,
+            648.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "autograd.independent_graphs",
+      "area": "api:autograd",
+      "inputs": {
+        "x": {
+          "shape": [
+            2
+          ],
+          "values": [
+            2,
+            3
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "grad": {
+          "shape": [
+            2
+          ],
+          "numel": 2,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            6.0,
+            8.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "autograd.chunk_seed",
+      "area": "api:autograd",
+      "inputs": {
+        "x": {
+          "shape": [
+            4
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "first": {
+          "shape": [
+            2
+          ],
+          "values": [
+            2,
+            3
+          ]
+        },
+        "second": {
+          "shape": [
+            2
+          ],
+          "values": [
+            5,
+            7
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "grad": {
+          "shape": [
+            4
+          ],
+          "numel": 4,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            5.0,
+            7.0,
+            2.0,
+            3.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "autograd.slice_overlap",
+      "area": "api:autograd",
+      "inputs": {
+        "x": {
+          "shape": [
+            5
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "output": {
+          "shape": [],
+          "numel": 1,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            18.0
+          ]
+        },
+        "grad": {
+          "shape": [
+            5
+          ],
+          "numel": 5,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            1.0,
+            1.0,
+            2.0,
+            1.0,
+            1.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "autograd.index_select",
+      "area": "api:autograd",
+      "inputs": {
+        "x": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "seed": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "output": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            3.0,
+            1.0,
+            3.0,
+            6.0,
+            4.0,
+            6.0
+          ]
+        },
+        "grad": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            2.0,
+            0.0,
+            4.0,
+            5.0,
+            0.0,
+            10.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "autograd.mask_select",
+      "area": "api:autograd",
+      "inputs": {
+        "x": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "seed": {
+          "shape": [
+            3
+          ],
+          "values": [
+            2,
+            3,
+            4
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "output": {
+          "shape": [
+            3
+          ],
+          "numel": 3,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            1.0,
+            5.0,
+            3.0
+          ]
+        },
+        "grad": {
+          "shape": [
+            3,
+            2
+          ],
+          "numel": 6,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            2.0,
+            0.0,
+            0.0,
+            3.0,
+            4.0,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "autograd.axis_mean",
+      "area": "api:autograd",
+      "inputs": {
+        "x": {
+          "shape": [
+            2,
+            3,
+            4
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "output": {
+          "shape": [
+            2,
+            1,
+            4
+          ],
+          "numel": 8,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            5.0,
+            6.0,
+            7.0,
+            8.0,
+            17.0,
+            18.0,
+            19.0,
+            20.0
+          ]
+        },
+        "grad": {
+          "shape": [
+            2,
+            3,
+            4
+          ],
+          "numel": 24,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "autograd.reduction_scalars",
+      "area": "api:autograd",
+      "inputs": {
+        "x": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "mean": {
+          "shape": [],
+          "numel": 1,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            3.5
+          ]
+        },
+        "sum": {
+          "shape": [],
+          "numel": 1,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            21.0
+          ]
+        },
+        "grad": {
+          "shape": [
+            2,
+            3
+          ],
+          "numel": 6,
+          "dtype": "float64",
+          "device": "cpu",
+          "values": [
+            3.3333333333333335,
+            3.3333333333333335,
+            3.3333333333333335,
+            3.3333333333333335,
+            3.3333333333333335,
+            3.3333333333333335
+          ]
+        }
+      }
     }
   ]
 }

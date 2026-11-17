@@ -49,9 +49,14 @@ type
 const
   RequiredCaseIds = ["tensor.transpose_alias", "tensor.empty_shape", "tensor.scalar_metadata",
     "tensor.broadcast_same_rank", "tensor.broadcast_leading_dims", "tensor.matmul_2d",
-    "autograd.mean_gradient", "loss.mse_mean", "autograd.no_grad_exception"]
+    "autograd.mean_gradient", "loss.mse_mean", "autograd.no_grad_exception",
+    "autograd.seeded_vjp", "autograd.retained_vjp", "autograd.independent_graphs",
+    "autograd.chunk_seed", "autograd.slice_overlap", "autograd.index_select",
+    "autograd.mask_select", "autograd.axis_mean", "autograd.reduction_scalars"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
-    "api:torch", "api:autograd", "api:nn.functional", "api:autograd"]
+    "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
+    "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
+    "api:autograd", "api:autograd", "api:autograd", "api:autograd"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
