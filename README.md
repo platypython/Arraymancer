@@ -287,9 +287,9 @@ CPU backward cases include seeded and retained VJPs, independent graphs, scalar
 and axis reductions, direct chunk backward, overlapping slices, repeated integer
 selectors and boolean masks. MSE supports broadcasted prediction/target gradients
 and `reduction = mseMean`, `mseSum` or `mseNone` on CPU and Metal. These are selected
-contracts, not complete autograd coverage. CPU matrix products include vector,
-batched and empty-contraction VJPs; higher-order differentiation and mutation
-version checks remain gaps.
+contracts, not complete autograd coverage. CPU and Metal matrix products include
+vector, batched and empty-contraction VJPs; higher-order differentiation and
+mutation version checks remain gaps.
 
 The version pins and source provenance live in `tests/parity/`. Capability
 annotations describe inspected implementation evidence, not passing tests.

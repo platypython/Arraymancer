@@ -1,6 +1,6 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
 ## Exercises the existing tape with GPU-resident reductions and fused MSE gradients.
-import std/[unittest, math]
+import std/[unittest, math, json]
 import ../../src/arraymancer
 
 proc checkValues(t: MetalTensor[float32]; shape: openArray[int]; expected: openArray[float32]) =
@@ -12,7 +12,49 @@ proc checkValues(t: MetalTensor[float32]; shape: openArray[int]; expected: openA
   let values = cast[ptr UncheckedArray[float32]](host.get_offset_ptr)
   for i, value in expected: check abs(values[i] - value) < 1e-6'f32
 
+proc fixtureData(spec: JsonNode): tuple[shape: seq[int], values: seq[float32]] =
+  ## Cast pinned CPU observations to the dtype supported by native Metal arithmetic.
+  for dim in spec["shape"]: result.shape.add(dim.getInt)
+  for value in spec["values"]: result.values.add(float32(value.getFloat))
+
+proc fixtureTensor(spec: JsonNode): MetalTensor[float32] =
+  let data = fixtureData(spec)
+  data.values.toTensor.reshape(data.shape).metal
+
+proc checkFixture(t: MetalTensor[float32], spec: JsonNode) =
+  let data = fixtureData(spec)
+  t.checkValues(data.shape, data.values)
+
 suite "Metal autograd on the existing tape":
+  test "Native matrix product ranks and VJPs match all eight pinned PyTorch shapes":
+    const fixtures = staticRead("../parity/fixtures.json")
+    var contract: JsonNode
+    for item in parseJson(fixtures)["cases"]:
+      if item["id"].getStr == "autograd.matmul_ranks": contract = item
+    doAssert not contract.isNil
+    for name, inputs in contract["inputs"]:
+      checkpoint name
+      let ctx = newContext(MetalTensor[float32])
+      let a = ctx.variable(fixtureTensor(inputs["a"]), requires_grad = true)
+      let b = ctx.variable(fixtureTensor(inputs["b"]), requires_grad = true)
+      let output = a * b
+      output.backprop(fixtureTensor(inputs["seed"]))
+      let expected = contract["expected"][name]
+      output.value.checkFixture(expected["output"])
+      a.grad.checkFixture(expected["grad_a"])
+      b.grad.checkFixture(expected["grad_b"])
+
+  test "Native vector products preserve reversed views and reject invalid shapes":
+    let storage = [99'f32, 1, 2, 3, 99].toTensor.metal
+    let reversed = storage.metalView([3].toMetadata, [-1].toMetadata, 3)
+    (reversed * [1'f32, 2, 3].toTensor.metal).checkValues([], [10'f32])
+    expect MetalError:
+      discard newTensorWith[float32]([], 1'f32).metal * storage
+    expect MetalError:
+      discard ones[float32](2, 3).metal * ones[float32](2, 2).metal
+    expect MetalError:
+      discard ones[float32](2, 2, 3).metal * ones[float32](3, 3, 2).metal
+
   test "MSE reductions broadcast prediction and target VJPs on the GPU":
     for reduction in [mseMean, mseSum, mseNone]:
       let ctx = newContext(MetalTensor[float32])

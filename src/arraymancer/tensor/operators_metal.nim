@@ -1,6 +1,7 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
 ## Provides GPU float32 arithmetic with checked trailing-axis broadcasting.
 import ./[metal_types, init_metal, shapeshifting_metal, data_structure]
+import ./private/p_matmul
 
 template requireMath(T: typedesc) =
   if metalDtype[T]() != 1:
@@ -84,14 +85,69 @@ proc `*.`*[T](a: float32; b: MetalTensor[T]): MetalTensor[T] = scalarMath(b, a, 
 proc `/.`*[T](a: float32; b: MetalTensor[T]): MetalTensor[T] = scalarMath(b, a, 9)
 
 proc `*`*[T](a, b: MetalTensor[T]): MetalTensor[T] =
-  ## Allocate a row-major 2-D matmul result; tile and accumulate on the GPU.
+  ## Float32 matrix product with vector promotion and trailing-axis batch broadcasting.
+  ## The result owns one GPU allocation; each matrix writes directly into its batch view.
+  ## Two vectors return a rank-zero dot product; empty contractions produce zeros.
   requireMath(T)
   validateMetalView(a)
   validateMetalView(b)
-  if a.rank != 2 or b.rank != 2 or a.shape[1] != b.shape[0]:
-    raise newException(MetalError, "Metal matmul needs compatible 2-D inputs")
-  result = newMetalTensorUninit[T]([a.shape[0], b.shape[1]], a.storage.device)
-  dispatchMetalMath(a, b, result, 20)
+  if a.storage.device.registryId != b.storage.device.registryId:
+    raise newException(MetalError, "Metal device mismatch")
+  if a.rank < 1 or b.rank < 1:
+    raise newException(MetalError, "Metal matmul requires operands of rank >= 1")
+  let left = promoteMatmulOperand(a, false)
+  let right = promoteMatmulOperand(b, true)
+  let M = left.shape[left.rank - 2]
+  let K = left.shape[left.rank - 1]
+  let N = right.shape[right.rank - 1]
+  if K != right.shape[right.rank - 2]:
+    raise newException(MetalError, "Metal matrix inner dimensions differ")
+  let aBatchRank = left.rank - 2
+  let bBatchRank = right.rank - 2
+  let batchRank = max(aBatchRank, bBatchRank)
+  var batchShape: Metadata
+  batchShape.len = batchRank
+  for i in 0 ..< batchRank:
+    let ai = i - (batchRank - aBatchRank)
+    let bi = i - (batchRank - bBatchRank)
+    let ad = if ai < 0: 1 else: left.shape[ai]
+    let bd = if bi < 0: 1 else: right.shape[bi]
+    if ad == bd: batchShape[i] = ad
+    elif ad == 1: batchShape[i] = bd
+    elif bd == 1: batchShape[i] = ad
+    else: raise newException(MetalError, "Incompatible Metal matrix batch dimensions")
+  var outShape = batchShape
+  outShape.add(M)
+  outShape.add(N)
+  result = newMetalTensorUninit[T](outShape, a.storage.device)
+  var batches = if result.size == 0: 0 else: 1
+  for dim in batchShape: batches *= dim
+  for batch in 0 ..< batches:
+    var curr = batch
+    var aOff = left.offset
+    var bOff = right.offset
+    var outOff = result.offset
+    for i in countdown(batchRank - 1, 0):
+      let coord = curr mod batchShape[i]
+      curr = curr div batchShape[i]
+      outOff += coord * result.strides[i]
+      let ai = i - (batchRank - aBatchRank)
+      let bi = i - (batchRank - bBatchRank)
+      if ai >= 0 and left.shape[ai] != 1: aOff += coord * left.strides[ai]
+      if bi >= 0 and right.shape[bi] != 1: bOff += coord * right.strides[bi]
+    let aSlice = left.metalView([M, K].toMetadata,
+      [left.strides[left.rank - 2], left.strides[left.rank - 1]].toMetadata, aOff)
+    let bSlice = right.metalView([K, N].toMetadata,
+      [right.strides[right.rank - 2], right.strides[right.rank - 1]].toMetadata, bOff)
+    let outSlice = result.metalView([M, N].toMetadata,
+      [result.strides[result.rank - 2], result.strides[result.rank - 1]].toMetadata, outOff)
+    dispatchMetalMath(aSlice, bSlice, outSlice, 20)
+  if a.rank == 1:
+    result.shape.delete(result.rank - 2)
+    result.strides.delete(result.strides.len - 2)
+  if b.rank == 1:
+    result.shape.delete(result.rank - 1)
+    result.strides.delete(result.strides.len - 1)
 
 proc fill*[T](t: var MetalTensor[T]; value: T) =
   requireMath(T)

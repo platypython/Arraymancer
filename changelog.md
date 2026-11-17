@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Extend native Metal matrix products to scalar vector-dot results, vector/matrix
+  combinations and broadcast batches. Each batch writes directly into one shared
+  output allocation. GPU-resident VJPs match all eight pinned CPU PyTorch product
+  shapes, including empty contractions and empty batches.
 - Extend CPU matrix products to vector-vector scalar results, vector-matrix and
   batched vector products. Restore promoted axes in backward, reduce broadcast
   batch gradients, and conjugate complex operands in VJPs. Empty contractions
