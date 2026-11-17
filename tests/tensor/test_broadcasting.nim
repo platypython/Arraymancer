@@ -80,6 +80,59 @@ proc main() =
       expect ValueError: discard a +. b
       expect ValueError: discard b +. a
 
+    test "Map and apply preserve offset, reversed and broadcast logical order":
+      template checkViews(T: typedesc) =
+        let owner = [99.T, 1, 4, 9, 16, 99].toTensor
+        let tail = owner[1..4]
+        let reversed = owner[4..1|-1]
+        let rows = tail.reshape(1, 4).broadcast(3, 4)
+        let columns = [10.T, 20, 30].toTensor.reshape(3, 1).broadcast(3, 4)
+        let expected = [[11.T, 14, 19, 26], [21.T, 24, 29, 36], [31.T, 34, 39, 46]].toTensor
+        check rows +. columns == expected
+        check map_inline(reversed, x + 1.T) == [17.T, 10, 5, 2].toTensor
+        check map2_inline(tail, reversed, x + y) == [17.T, 13, 13, 17].toTensor
+        check map3_inline(tail, reversed, tail, x + y + z) == [18.T, 17, 22, 33].toTensor
+        check map_inline(rows.transpose, x * 2.T) == (rows * 2.T).transpose
+        var outputOwner = newTensorWith[T]([5, 4], -1.T)
+        var output = outputOwner[1..3, _]
+        output.apply3_inline(rows, columns, y + z)
+        check output == expected
+        check outputOwner[0, _] == newTensorWith[T]([1, 4], -1.T)
+        check outputOwner[4, _] == newTensorWith[T]([1, 4], -1.T)
+        output.apply2_inline(expected, y * 2.T)
+        check output == expected * 2.T
+        var alias = tail
+        alias.apply2_inline(alias, x + y)
+        check alias == [2.T, 8, 18, 32].toTensor
+        check owner == [99.T, 2, 8, 18, 32, 99].toTensor
+      checkViews(float32)
+      checkViews(float64)
+
+    test "Inline tensor arguments are evaluated once and managed reads stay supported":
+      var calls = 0
+      proc input(): Tensor[int] =
+        inc calls
+        [1, 2, 3].toTensor
+      var output = newTensor[int](3)
+      output.apply3_inline(input(), input(), y + z)
+      check calls == 2
+      check output == [2, 4, 6].toTensor
+      calls = 0
+      check map3_inline(input(), input(), input(), x + y + z) == [3, 6, 9].toTensor
+      check calls == 3
+      let words = ["one", "four"].toTensor
+      check map_inline(words, x.len) == [3, 4].toTensor
+      var lengths = newTensor[int](2)
+      lengths.apply2_inline(words, y.len)
+      check lengths == [3, 4].toTensor
+      var scalar = newTensorWith[int]([], 1)
+      scalar.apply2_inline(newTensorWith[int]([], 4), x + y)
+      check scalar.shape.len == 0
+      check scalar == newTensorWith[int]([], 5)
+      var empty = newTensor[float32](2, 0, 3)
+      empty.apply3_inline(empty, empty, y + z)
+      check map2_inline(empty, empty, x + y).shape == [2, 0, 3]
+
     test "Implicit tensor-tensor broadcasting - basic operations +., -., *., /., ^.":
       block: # Addition
         let a = [0, 10, 20, 30].toTensor().reshape(4,1)

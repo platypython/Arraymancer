@@ -1,6 +1,8 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Speed up CPU map/apply loops for contiguous tensors and compatible broadcast
+  spans while preserving offset views, aliases and managed-element traversal.
 - Preserve CPU empty-axis reduction shapes and neutral elements for sum/product,
   including a scalar empty product of one. Sum, product and mean accept negative
   axes and rank-zero scalars; floating-point empty means produce NaNs. Preserve
