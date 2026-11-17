@@ -37,19 +37,26 @@ suite "Core AI concurrent call isolation":
 
   test "Concurrent stateful calls use separate zero states and allocated outputs":
     let function = openCoreAIModel(coreAISourceAsset).loadFunction("increment").get
-    let firstState = toCoreAI(newTensorWith[float32]([], 0'f32))
-    let secondState = toCoreAI(newTensorWith[float32]([], 0'f32))
-    let first = function.submitInference([CoreAIBinding(name: "delta", array: toCoreAI(newTensorWith[float32]([], 1'f32)))],
-      states = [CoreAIBinding(name: "counter", array: firstState)], outputViews = [])
-    let second = function.submitInference([CoreAIBinding(name: "delta", array: toCoreAI(newTensorWith[float32]([], 1'f32)))],
-      states = [CoreAIBinding(name: "counter", array: secondState)], outputViews = [])
-    let firstOutputs = first.wait()
-    let secondOutputs = second.wait()
-    check firstOutputs[0].array.cpu(float32) == newTensorWith[float32]([], 1'f32)
-    check secondOutputs[0].array.cpu(float32) == newTensorWith[float32]([], 1'f32)
-    check firstState.cpu(float32) == newTensorWith[float32]([], 1'f32)
-    check secondState.cpu(float32) == newTensorWith[float32]([], 1'f32)
-    check first.coreAIJobEvidence.invocationId != second.coreAIJobEvidence.invocationId
+    let inputs = [CoreAIBinding(name: "delta", array: toCoreAI(newTensorWith[float32]([], 1'f32)))]
+    for iteration in 0 ..< 20:
+      let firstState = toCoreAI(newTensorWith[float32]([], 0'f32))
+      let secondState = toCoreAI(newTensorWith[float32]([], 0'f32))
+      let first = function.submitInference(inputs,
+        states = [CoreAIBinding(name: "counter", array: firstState)], outputViews = [])
+      let second = function.submitInference(inputs,
+        states = [CoreAIBinding(name: "counter", array: secondState)], outputViews = [])
+      let firstOutputs = first.wait()
+      let secondOutputs = second.wait()
+      check firstOutputs[0].array.cpu(float32) == newTensorWith[float32]([], 1'f32)
+      check secondOutputs[0].array.cpu(float32) == newTensorWith[float32]([], 1'f32)
+      check firstState.cpu(float32) == newTensorWith[float32]([], 1'f32)
+      check secondState.cpu(float32) == newTensorWith[float32]([], 1'f32)
+      check first.coreAIJobEvidence.invocationId != second.coreAIJobEvidence.invocationId
+      let next = function.infer(inputs,
+        states = [CoreAIBinding(name: "counter", array: firstState)], outputViews = [])
+      check next[0].array.cpu(float32) == newTensorWith[float32]([], 2'f32)
+      check firstOutputs[0].array.cpu(float32) == newTensorWith[float32]([], 1'f32)
+      check secondOutputs[0].array.cpu(float32) == newTensorWith[float32]([], 1'f32)
 
   test "Gated state rejects overlap while independent ordinary inference completes":
     let function = openCoreAIModel(coreAISourceAsset).loadFunction("increment").get

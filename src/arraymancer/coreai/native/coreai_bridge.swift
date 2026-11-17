@@ -9,6 +9,12 @@ import Dispatch
 import Foundation
 import Metal
 import Synchronization
+import os
+
+@available(macOS 27.0, *)
+private let inferenceSignposter = OSSignposter(
+  subsystem: "org.arraymancer.coreai", category: .pointsOfInterest
+)
 
 private enum ABIError: Error {
   case failure(Int32, String)
@@ -144,6 +150,27 @@ private struct JobFailure: Sendable {
 }
 
 @available(macOS 27.0, *)
+private final class CoreExecutionInstance: Sendable {
+  let model: AIModel
+  private let functions = Mutex<[String: InferenceFunction]>([:])
+
+  init(model: AIModel) {
+    self.model = model
+  }
+
+  func function(named name: String) throws -> InferenceFunction {
+    try functions.withLock { functions in
+      if let function = functions[name] { return function }
+      guard let function = try model.loadFunction(named: name) else {
+        throw abiError(102, "Core AI execution instance is missing function \(name)")
+      }
+      functions[name] = function
+      return function
+    }
+  }
+}
+
+@available(macOS 27.0, *)
 private final class CoreModelHandle: @unchecked Sendable {
   let model: AIModel
   let url: URL
@@ -154,6 +181,8 @@ private final class CoreModelHandle: @unchecked Sendable {
   let availableMask: UInt32
   let allowedMask: UInt32
   let preferredUnit: Int32
+  private let idleExecutions: Mutex<[CoreExecutionInstance]>
+  private let executionBookmark: Data
 
   init(
     model: AIModel,
@@ -175,6 +204,24 @@ private final class CoreModelHandle: @unchecked Sendable {
     self.availableMask = availableMask
     self.allowedMask = allowedMask
     self.preferredUnit = preferredUnit
+    self.idleExecutions = Mutex([CoreExecutionInstance(model: model)])
+    self.executionBookmark = model.bookmarkData
+  }
+
+  func acquireExecution() throws -> CoreExecutionInstance {
+    if let execution = idleExecutions.withLock({ $0.popLast() }) {
+      return execution
+    }
+    // One SDK model per active call avoids upstream shared-intermediate corruption.
+    // https://github.com/apple/coreai-models/issues/426
+    guard let model = try AIModel(resolvingBookmark: executionBookmark) else {
+      throw abiError(101, "Core AI execution specialization is no longer available")
+    }
+    return CoreExecutionInstance(model: model)
+  }
+
+  func releaseExecution(_ execution: CoreExecutionInstance) {
+    idleExecutions.withLock { $0.append(execution) }
   }
 }
 
@@ -1545,6 +1592,9 @@ extension CoreAIStreamExecutor {
     borrowedOwners: [BorrowedMetalStorage],
     job: CoreJobHandle
   ) async throws -> [String: CoreArrayHandle] {
+    let execution = try function.model.acquireExecution()
+    defer { function.model.releaseExecution(execution) }
+    let sdkFunction = try execution.function(named: function.name)
     var asyncInputs: [String: InferenceFunction.AsyncValue] = [:]
     asyncInputs.reserveCapacity(inputNames.count)
     for name in inputNames {
@@ -1574,7 +1624,7 @@ extension CoreAIStreamExecutor {
     let expectedAllocatedNames = expectedNames.filter { !outputViewNames.contains($0) }
     let sdkOutputs = try await encodeWithStates(
       computeStream: computeStream,
-      function: function.function,
+      function: sdkFunction,
       inputs: asyncInputs,
       stateNames: function.function.descriptor.stateNames,
       stateBindings: stateBindings,
@@ -2633,6 +2683,12 @@ public func ac_encode(
     let submittedOutputViews = outputViews
     let submittedBorrowedOwners = borrowedOwners
     Task.detached(priority: .userInitiated) {
+      let traceContext = job.snapshot().1
+      let trace = inferenceSignposter.beginInterval(
+        "CoreAIInference", id: OSSignpostID(traceContext.invocationID),
+        "invocation=\(traceContext.invocationID) asset=\(traceContext.assetDigest, privacy: .public) function=\(traceContext.functionName, privacy: .public)"
+      )
+      defer { inferenceSignposter.endInterval("CoreAIInference", trace) }
       var outcome: JobOutcome
       do {
         for lease in submittedLeases { try await lease.waitForProducers() }
@@ -2805,11 +2861,20 @@ public func ac_submit(
     jobOut.pointee = retainedHandle(job)
 
     Task.detached(priority: .userInitiated) {
+      let traceContext = job.snapshot().1
+      let trace = inferenceSignposter.beginInterval(
+        "CoreAIInference", id: OSSignpostID(traceContext.invocationID),
+        "invocation=\(traceContext.invocationID) asset=\(traceContext.assetDigest, privacy: .public) function=\(traceContext.functionName, privacy: .public)"
+      )
+      defer { inferenceSignposter.endInterval("CoreAIInference", trace) }
       var outcome: JobOutcome
       do {
         for lease in submittedLeases { try await lease.waitForProducers() }
+        let execution = try function.model.acquireExecution()
+        defer { function.model.releaseExecution(execution) }
+        let sdkFunction = try execution.function(named: function.name)
         var sdkOutputs = try await runInferenceWithInputViews(
-          function: function.function,
+          function: sdkFunction,
           names: inputNames,
           bindings: submittedBindings,
           stateNames: stateNames,

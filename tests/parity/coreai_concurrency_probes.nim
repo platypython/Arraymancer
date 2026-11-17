@@ -28,6 +28,19 @@ proc coreAIConcurrencyObservation*(): AppleObservation =
       {"shape": [2], "dtype": "float32", "backend": "coreai", "values": [3.0, 4.0]}], arrays, 0, 0)
     let function = model.loadFunction("increment").get
     let inputs = [CoreAIBinding(name: "delta", array: toCoreAI(newTensorWith[float32]([], 1'f32)))]
+    let firstCounter = toCoreAI(newTensorWith[float32]([], 0'f32))
+    let secondCounter = toCoreAI(newTensorWith[float32]([], 0'f32))
+    let firstIncrement = function.submitInference(inputs,
+      states = [CoreAIBinding(name: "counter", array: firstCounter)], outputViews = [])
+    let secondIncrement = function.submitInference(inputs,
+      states = [CoreAIBinding(name: "counter", array: secondCounter)], outputViews = [])
+    let firstIncrementOutputs = firstIncrement.wait()
+    let secondIncrementOutputs = secondIncrement.wait()
+    let parallelValues = %*[firstIncrementOutputs[0].array.cpu(float32).atContiguousIndex(0),
+      secondIncrementOutputs[0].array.cpu(float32).atContiguousIndex(0),
+      firstCounter.cpu(float32).atContiguousIndex(0), secondCounter.cpu(float32).atContiguousIndex(0)]
+    result.actual["concurrent_state_outputs"] = parallelValues
+    result.differences.add compareObservations(%*[1.0, 1.0, 1.0, 1.0], parallelValues, 0, 0)
     let state = toCoreAI(newTensorWith[float32]([], 0'f32))
     let separate = toCoreAI(newTensorWith[float32]([], 0'f32))
     let queue = newMetalStream()
@@ -65,7 +78,8 @@ proc coreAIConcurrencyObservation*(): AppleObservation =
     result.differences.add compareObservations(%*{"distinct_output_buffers": true, "distinct_identity_jobs": true,
       "same_state_rejected": true, "independent_call_completed_while_first_pending": true}, facts, 0, 0)
     result.evidence = coreAIEvidence(pending)
-    result.evidence["invocations"] = %*[coreAIEvidence(first), coreAIEvidence(second), coreAIEvidence(independent)]
+    result.evidence["invocations"] = %*[coreAIEvidence(first), coreAIEvidence(second),
+      coreAIEvidence(firstIncrement), coreAIEvidence(secondIncrement), coreAIEvidence(independent)]
     result.execution = if result.differences.len == 0: aePass else: aeMismatch
   except CatchableError as error:
     result.error = %*{"category": "native_error", "message": error.msg}

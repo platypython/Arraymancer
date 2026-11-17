@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Isolate overlapping Core AI calls with a per-model pool of SDK execution
+  instances, working around upstream shared-model concurrency corruption.
+  Reuse completed instances and the pinned specialization without serializing
+  inference; peak concurrency retains additional model resources.
 - Verify concurrent calls on shared Core AI functions with isolated writable
   outputs and state, including deterministic same-state rejection and owner
   retention while an unrelated inference completes.

@@ -551,6 +551,9 @@ proc submitInference*(function: CoreAIFunction; inputs: openArray[CoreAIBinding]
                       outputViews: openArray[CoreAIBinding] = []): CoreAIJob =
   ## Validate named descriptors and submit native inference.
   ## This returns a job, not host-ready output arrays.
+  ## Overlapping calls borrow isolated SDK model/function instances from a native
+  ## per-model pool. Completed instances are reused; peak concurrency retains
+  ## additional model resources until the model and its functions are released.
   let functionHandle = requireOwner(if function == nil: nil else: function.owner, "function")
   if uint64(inputs.len) > uint64(high(uint32)) or
       uint64(states.len) > uint64(high(uint32)) or
@@ -609,6 +612,7 @@ proc encodeInference*(function: CoreAIFunction;
                        stream: CoreAIStream): CoreAIJob =
   ## Encode on the same queue as Metal work; returns before inference completes.
   ## Native work retains arrays and the stream through SDK completion.
+  ## Uses the same isolated execution pool as ``submitInference``.
   let functionHandle = requireOwner(if function == nil: nil else: function.owner, "function")
   let streamHandle = requireOwner(if stream == nil: nil else: stream.owner, "stream")
   if uint64(inputs.len) > uint64(high(uint32)) or
