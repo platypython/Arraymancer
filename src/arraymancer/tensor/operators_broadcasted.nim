@@ -106,37 +106,37 @@ proc `/.=`*[T: SomeNumber|Complex[float32]|Complex[float64]](a: var Tensor[T], b
 
 proc `+.`*[T: SomeNumber|Complex[float32]|Complex[float64]](val: T, t: Tensor[T]): Tensor[T] {.noinit.} =
   ## Broadcasted addition for tensor + scalar of the same type.
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline(x + val)
 
 proc `+.`*[T: SomeNumber|Complex[float32]|Complex[float64]](t: Tensor[T], val: T): Tensor[T] {.noinit.} =
   ## Broadcasted addition for scalar + tensor of the same type.
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline(x + val)
 
 proc `-.`*[T: SomeNumber|Complex[float32]|Complex[float64]](val: T, t: Tensor[T]): Tensor[T] {.noinit.} =
   ## Broadcasted substraction for tensor - scalar of the same type.
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline(val - x)
 
 proc `-.`*[T: SomeNumber|Complex[float32]|Complex[float64]](t: Tensor[T], val: T): Tensor[T] {.noinit.} =
   ## Broadcasted substraction for scalar - tensor of the same type.
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline(x - val)
 
 proc `*.`*[T: SomeNumber|Complex[float32]|Complex[float64]](val: T, t: Tensor[T]): Tensor[T] {.noinit.} =
   ## Broadcasted multiplication for tensor * scalar of the same type.
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline(x * val)
 
 proc `*.`*[T: SomeNumber|Complex[float32]|Complex[float64]](t: Tensor[T], val: T): Tensor[T] {.noinit.} =
   ## Broadcasted multiplication for scalar * tensor of the same type.
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline(x * val)
 
 proc `/.`*[T: SomeNumber|Complex[float32]|Complex[float64]](val: T, t: Tensor[T]): Tensor[T] {.noinit.} =
   ## Broadcasted division for scalar / tensor of the same type.
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   when T is SomeInteger:
     result = t.map_inline(val div x)
   else:
@@ -144,7 +144,7 @@ proc `/.`*[T: SomeNumber|Complex[float32]|Complex[float64]](val: T, t: Tensor[T]
 
 proc `/.`*[T: SomeNumber|Complex[float32]|Complex[float64]](t: Tensor[T], val: T): Tensor[T] {.noinit.} =
   ## Broadcasted division for tensor / scalar of the same type.
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   when T is SomeInteger:
     result = t.map_inline(x div val)
   else:
@@ -152,12 +152,12 @@ proc `/.`*[T: SomeNumber|Complex[float32]|Complex[float64]](t: Tensor[T], val: T
 
 proc `^.`*[T: SomeFloat|Complex[float32]|Complex[float64]](t: Tensor[T], exponent: T): Tensor[T] {.noinit.} =
   ## Compute element-wise exponentiation: tensor ^ scalar of the same type.
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline pow(x, exponent)
 
 proc `^.`*[T: SomeFloat|Complex[float32]|Complex[float64]](base: T, t: Tensor[T]): Tensor[T] {.noinit.} =
   ## Broadcasted exponentiation: scalar ^ tensor of the same type.
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline pow(base, x)
 
 # #####################################

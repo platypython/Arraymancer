@@ -99,6 +99,39 @@ proc main() =
       let b = a.asType(float)
       check b.size() == 0
 
+    test "Empty element-wise outputs preserve every axis":
+      for shape in [@[0], @[2, 0, 3], @[0, 2, 1]]:
+        let a = newTensor[float64](shape)
+        for output in [a.exp, a.sqrt, a.cos, a.ln, a ^. 2.0, 2.0 ^. a,
+                       a +. 2.0, 2.0 +. a, a -. 2.0, 2.0 -. a,
+                       a *. 2.0, 2.0 *. a, a /. 2.0, 2.0 /. a,
+                       a * 2.0, 2.0 * a, a / 2.0, a mod 2.0, 2.0 mod a]:
+          check output.shape == shape
+          check output.size == 0
+        check a.asType(float32).shape == shape
+        check a.asType(Complex[float64]).shape == shape
+        check (a >. 2.0).shape == shape
+        check a.isNaN.shape == shape
+        check a.isNotNaN.shape == shape
+        let integers = newTensor[int](shape)
+        check (integers div 2).shape == shape
+        check (integers / 2).shape == shape
+      var sentinel: Tensor[float64]
+      check sentinel.exp.shape == @[0]
+      check (sentinel ^. 2.0).shape == @[0]
+
+    test "Rank-zero element-wise outputs contain the scalar value":
+      let a = newTensorWith[float64]([], 4.0)
+      check a.sqrt.rank == 0
+      check a.sqrt.item == 2.0
+      check (a ^. 2.0).rank == 0
+      check (a ^. 2.0).item == 16.0
+      check (a +. 2.0).item == 6.0
+      check a.asType(float32).item == 4.0'f32
+      check a.asType(Complex[float64]).item == complex64(4.0, 0.0)
+      check (a >. 2.0).rank == 0
+      check (a >. 2.0).item
+
 
 main()
 GC_fullCollect()

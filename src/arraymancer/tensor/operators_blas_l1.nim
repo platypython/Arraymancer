@@ -65,7 +65,7 @@ proc `-=`*[T: SomeNumber|Complex[float32]|Complex[float64]](a: var Tensor[T], b:
 
 proc `*`*[T: SomeNumber|Complex[float32]|Complex[float64]](a: T, t: Tensor[T]): Tensor[T] {.noinit.} =
   ## Element-wise multiplication by a scalar
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   t.map_inline(x * a)
 
 proc `*`*[T: SomeNumber|Complex[float32]|Complex[float64]](t: Tensor[T], a: T): Tensor[T] {.noinit.} =
@@ -74,7 +74,7 @@ proc `*`*[T: SomeNumber|Complex[float32]|Complex[float64]](t: Tensor[T], a: T): 
 
 proc `/`*[T: SomeNumber|Complex[float32]|Complex[float64]](t: Tensor[T], a: T): Tensor[T] {.noinit.} =
   ## Element-wise division by a float scalar
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   when T is SomeInteger:
     t.map_inline(x div a)
   else:
@@ -82,17 +82,17 @@ proc `/`*[T: SomeNumber|Complex[float32]|Complex[float64]](t: Tensor[T], a: T): 
 
 proc `div`*[T: SomeInteger](t: Tensor[T], a: T): Tensor[T] {.noinit.} =
   ## Element-wise division by an integer
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   t.map_inline(x div a)
 
 proc `mod`*[T: SomeNumber](t: Tensor[T], val: T): Tensor[T] {.noinit.} =
   ## Broadcasted modulo operation
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline(x mod val)
 
 proc `mod`*[T: SomeNumber](val: T, t: Tensor[T]): Tensor[T] {.noinit.} =
   ## Broadcasted modulo operation
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline(val mod x)
 
 # Unsupported operations (these must be done using the broadcasted operators)

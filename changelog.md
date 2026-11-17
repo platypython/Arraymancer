@@ -1,6 +1,11 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Preserve multi-axis empty shapes in CPU unary functions, scalar arithmetic,
+  dtype conversions, scalar comparisons and NaN predicates. Keep legacy
+  uninitialized-tensor handling separate from real rank-zero scalars. Add pinned
+  scalar, offset-strided and empty pointwise observations with actual float32
+  and boolean dtypes; the selected CPU conformance gate now covers 27 cases.
 - Align CPU and Metal singleton views with PyTorch: all-axis squeeze produces
   rank-zero scalars, squeeze/unsqueeze accept negative axes, and no-op squeeze
   backward preserves the input shape. Migrate logical-vector consumers, keep

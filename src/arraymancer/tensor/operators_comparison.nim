@@ -104,7 +104,7 @@ implDeprecatedBy(`.>`, `>.`, exported = true)
 # broadcasted scalar ops
 
 template gen_broadcasted_scalar_comparison(op: untyped): untyped {.dirty.} =
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = map_inline(t):
     op(x, value)
 
@@ -191,7 +191,7 @@ template `>.`*[T](value : T, t: Tensor[T]): Tensor[bool] =
 proc isNaN*(t: Tensor[SomeFloat]): Tensor[bool] =
   ## Returns a boolean tensor set to true for each element which is "Not-a-number"
   ## or set to false otherwise
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline():
     x != x
 
@@ -199,6 +199,6 @@ proc isNotNaN*(t: Tensor[SomeFloat]): Tensor[bool] =
   ## Returns a boolean tensor set to false for each element
   ## which is "Not-a-number"
   ## or set to true otherwise
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   result = t.map_inline():
     x == x

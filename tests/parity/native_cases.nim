@@ -39,11 +39,16 @@ proc tensorObservation[T](t: Tensor[T], includeValues = true): JsonNode =
   for dim in t.shape: shape.add newJInt(dim)
   result["shape"] = shape
   result["numel"] = newJInt(t.size.int)
-  result["dtype"] = %"float64"
+  when T is float64: result["dtype"] = %"float64"
+  elif T is float32: result["dtype"] = %"float32"
+  elif T is bool: result["dtype"] = %"bool"
+  else: {.error: "unsupported CPU oracle observation dtype".}
   result["device"] = %"cpu"
   if includeValues:
     var values = newJArray()
-    for _, value in enumerate(t): values.add floatNode(value.float64)
+    for _, value in enumerate(t):
+      when T is bool: values.add %value
+      else: values.add floatNode(value.float64)
     result["values"] = values
 
 proc runCase*(caseData: JsonNode): JsonNode =
@@ -65,6 +70,18 @@ proc runCase*(caseData: JsonNode): JsonNode =
     for i in 0 ..< inputs["shape"].len: shape[i] = inputs["shape"][i].getInt
     if shape.len > LASER_MAXRANK: raise newException(ValueError, "input rank exceeds LASER_MAXRANK")
     result["result"] = tensorObservation(newTensorUninit[float64](toMetadata(shape)))
+  of "tensor.elementwise_shapes":
+    for name, desc in inputs:
+      var a = getTensor(desc)
+      if name == "strided": a = a.transpose[_, 1..^1]
+      elif name == "empty_transposed": a = a.transpose(0, 2)
+      result[name] = %*{
+        "exp": tensorObservation(a.exp), "sqrt": tensorObservation(a.sqrt),
+        "pow": tensorObservation(a ^. 2.0), "add": tensorObservation(a +. 2.0),
+        "scale": tensorObservation(a * 2.0), "divide": tensorObservation(a / 2.0),
+        "reverse_divide": tensorObservation(2.0 /. a),
+        "cast": tensorObservation(a.asType(float32)),
+        "greater": tensorObservation(a >. 2.0), "isnan": tensorObservation(a.isNaN)}
   of "tensor.scalar_metadata":
     let scalar = newTensorUninit[float64]([])
     result["result"] = tensorObservation(scalar, false)

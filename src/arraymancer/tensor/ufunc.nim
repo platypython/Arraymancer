@@ -26,13 +26,13 @@ proc asType*[T; U: not Complex](t: Tensor[T], typ: typedesc[U]): Tensor[U] =
   when T is U:
     result = t
   else:
-    returnEmptyIfEmpty(t)
+    returnEmptyLikeIfEmpty(t)
     result = t.map(x => x.U)
 
 ## NOTE: This should be `{.noinit.}`, see above.
 proc asType*[T: SomeNumber, U: Complex](t: Tensor[T], typ: typedesc[U]): Tensor[U] =
   ## Apply type conversion on the whole tensor
-  returnEmptyIfEmpty(t)
+  returnEmptyLikeIfEmpty(t)
   when T is SomeNumber and U is Complex[float32]:
     result = t.map(x => complex32(x.float32))
   elif T is SomeNumber and U is Complex[float64]:
@@ -47,6 +47,7 @@ import std / [strutils, macros]
 macro genDocstring(name, suffix: untyped): untyped =
   var text = """
 Applies `$#` to every element of the input tensor `t` and returns a copy.
+Scalar and empty result shapes are preserved.
 """ % name.strVal
   if suffix.strVal.len > 0:
     text.add "\n" & (suffix.strVal)
@@ -63,7 +64,7 @@ template makeUniversal*(func_name: untyped, docSuffix = "") =
   ## Use ``map`` in this case instead instead
   proc func_name*[T](t: Tensor[T]): Tensor[T] {.noinit.} =
     genDocstring(func_name, docSuffix) # generate the doc string
-    returnEmptyIfEmpty(t)
+    returnEmptyLikeIfEmpty(t)
     t.map_inline(func_name(x))
   export func_name
 
@@ -76,7 +77,7 @@ template makeUniversalLocal*(func_name: untyped) =
   ## for example, a function "isEven: int -> bool".
   ## Use ``map`` in this case instead instead
   proc func_name[T](t: Tensor[T]): Tensor[T] {.noinit.} =
-    returnEmptyIfEmpty(t)
+    returnEmptyLikeIfEmpty(t)
     t.map_inline(func_name(x))
 
 # Unary functions from Nim math library

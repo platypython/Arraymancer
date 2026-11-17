@@ -15,6 +15,7 @@
 import
   macros,
   ../data_structure,
+  ../../laser/tensor/initialization,
   ../../private/ast_utils
 
 # Experimental supports for empty tensors
@@ -44,3 +45,13 @@ macro returnEmptyIfEmpty*(tensors: varargs[untyped]): untyped =
     result.add quote do:
       if `isEmptyCall`:
         return newTensor[getSubType(type(result))](0)
+
+macro returnEmptyLikeIfEmpty*(tensor: untyped): untyped =
+  ## Preserve the input shape for empty element-wise results.
+  ## Uninitialized rank-zero sentinels retain the legacy empty-vector result.
+  let isEmptyCall = newCall(bindSym"isEmpty", tensor)
+  result = quote do:
+    if `isEmptyCall`:
+      if `tensor`.rank == 0:
+        return newTensor[getSubType(type(result))](0)
+      return newTensor[getSubType(type(result))](`tensor`.shape)

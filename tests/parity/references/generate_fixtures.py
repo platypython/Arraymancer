@@ -24,7 +24,9 @@ def _tensor(values: Sequence[int | float], shape: list[int], torch: Any) -> Any:
     return torch.tensor(values, dtype=torch.float64, device="cpu").reshape(shape)
 
 
-def _scalar(value: float) -> float | str:
+def _scalar(value: float) -> float | str | bool:
+    if isinstance(value, bool):
+        return value
     if math.isnan(value):
         return "nan"
     if math.isinf(value):
@@ -59,6 +61,32 @@ def transpose_alias(torch: Any) -> dict[str, Any]:
 def empty_shape(torch: Any) -> dict[str, Any]:
     result = torch.empty((2, 0, 3), dtype=torch.float64, device="cpu")
     return _case("tensor.empty_shape", "api:tensors", {"shape": [2, 0, 3]}, {"result": _observe(result)})
+
+
+def elementwise_shapes(torch: Any) -> dict[str, Any]:
+    """Observe scalar, offset-strided and empty pointwise results."""
+    inputs = {
+        "scalar": {"shape": [], "values": [4]},
+        "strided": {"shape": [2, 3], "values": [1, 2, 3, 4, 5, 6]},
+        "empty": {"shape": [2, 0, 3], "values": []},
+        "empty_transposed": {"shape": [2, 0, 3], "values": []},
+    }
+    expected = {}
+    for name, desc in inputs.items():
+        a = _tensor(desc["values"], desc["shape"], torch)
+        if name == "strided":
+            a = a.transpose(0, 1)[:, 1:]
+        elif name == "empty_transposed":
+            a = a.transpose(0, 2)
+        expected[name] = {
+            "exp": _observe(a.exp()), "sqrt": _observe(a.sqrt()),
+            "pow": _observe(a.pow(2)), "add": _observe(a + 2),
+            "scale": _observe(a * 2), "divide": _observe(a / 2),
+            "reverse_divide": _observe(2 / a),
+            "cast": _observe(a.to(dtype=torch.float32)),
+            "greater": _observe(a > 2), "isnan": _observe(a.isnan()),
+        }
+    return _case("tensor.elementwise_shapes", "api:torch", inputs, expected)
 
 
 def scalar_metadata(torch: Any) -> dict[str, Any]:
@@ -314,7 +342,7 @@ def singleton_views(torch: Any) -> dict[str, Any]:
 
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
-    transpose_alias, empty_shape, scalar_metadata, broadcast_same_rank,
+    transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
     no_grad_exception, seeded_vjp, retained_vjp, independent_graphs, chunk_seed,
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,

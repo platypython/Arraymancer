@@ -131,6 +131,510 @@
       }
     },
     {
+      "id": "tensor.elementwise_shapes",
+      "area": "api:torch",
+      "inputs": {
+        "scalar": {
+          "shape": [],
+          "values": [
+            4
+          ]
+        },
+        "strided": {
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "empty": {
+          "shape": [
+            2,
+            0,
+            3
+          ],
+          "values": []
+        },
+        "empty_transposed": {
+          "shape": [
+            2,
+            0,
+            3
+          ],
+          "values": []
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "scalar": {
+          "exp": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              54.598150033144236
+            ]
+          },
+          "sqrt": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              2.0
+            ]
+          },
+          "pow": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              16.0
+            ]
+          },
+          "add": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              6.0
+            ]
+          },
+          "scale": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              8.0
+            ]
+          },
+          "divide": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              2.0
+            ]
+          },
+          "reverse_divide": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              0.5
+            ]
+          },
+          "cast": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.0
+            ]
+          },
+          "greater": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "bool",
+            "device": "cpu",
+            "values": [
+              true
+            ]
+          },
+          "isnan": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "bool",
+            "device": "cpu",
+            "values": [
+              false
+            ]
+          }
+        },
+        "strided": {
+          "exp": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              54.598150033144236,
+              148.4131591025766,
+              403.4287934927351
+            ]
+          },
+          "sqrt": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              2.0,
+              2.23606797749979,
+              2.449489742783178
+            ]
+          },
+          "pow": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              16.0,
+              25.0,
+              36.0
+            ]
+          },
+          "add": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              6.0,
+              7.0,
+              8.0
+            ]
+          },
+          "scale": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              8.0,
+              10.0,
+              12.0
+            ]
+          },
+          "divide": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              2.0,
+              2.5,
+              3.0
+            ]
+          },
+          "reverse_divide": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              0.5,
+              0.4,
+              0.3333333333333333
+            ]
+          },
+          "cast": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.0,
+              5.0,
+              6.0
+            ]
+          },
+          "greater": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "bool",
+            "device": "cpu",
+            "values": [
+              true,
+              true,
+              true
+            ]
+          },
+          "isnan": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "bool",
+            "device": "cpu",
+            "values": [
+              false,
+              false,
+              false
+            ]
+          }
+        },
+        "empty": {
+          "exp": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "sqrt": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "pow": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "add": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "scale": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "divide": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "reverse_divide": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "cast": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": []
+          },
+          "greater": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "bool",
+            "device": "cpu",
+            "values": []
+          },
+          "isnan": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "bool",
+            "device": "cpu",
+            "values": []
+          }
+        },
+        "empty_transposed": {
+          "exp": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "sqrt": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "pow": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "add": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "scale": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "divide": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "reverse_divide": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "cast": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "numel": 0,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": []
+          },
+          "greater": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "numel": 0,
+            "dtype": "bool",
+            "device": "cpu",
+            "values": []
+          },
+          "isnan": {
+            "shape": [
+              3,
+              0,
+              2
+            ],
+            "numel": 0,
+            "dtype": "bool",
+            "device": "cpu",
+            "values": []
+          }
+        }
+      }
+    },
+    {
       "id": "tensor.broadcast_same_rank",
       "area": "api:torch",
       "inputs": {
