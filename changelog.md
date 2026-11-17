@@ -1,6 +1,12 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Gate all ten Metal and eight Core AI native contracts alongside nine pinned CPU
+  cases with `nimble parity` on macOS 27 arm64. Dedicated `test_metal` and
+  `test_coreai` tasks build and run the native suites.
+- Expose Core AI available compute units and verify all four specialization
+  policies. Invocation signposts correlate SDK tracing by job, asset and function;
+  actual GPU/Neural Engine placement remains unknown without selected-unit evidence.
 - Isolate overlapping Core AI calls with a per-model pool of SDK execution
   instances, working around upstream shared-model concurrency corruption.
   Reuse completed instances and the pinned specialization without serializing

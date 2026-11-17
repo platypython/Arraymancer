@@ -192,10 +192,32 @@ task all_tests, "Run all tests - Intel MKL + Cuda + OpenCL + OpenMP":
 task test, "Run all tests - Default BLAS & Lapack":
   test "tests_cpu", "", split = false
 
+proc buildApple(backend: string) =
+  ## Native consumers never run against an adapter from an older source tree.
+  if not dirExists "build":
+    mkDir "build"
+  exec "nim c -o:build/build_apple tools/build_apple.nim"
+  exec "build/build_apple --backend=" & backend
+
+task apple_build, "Build native Metal/Core AI bridges and compile the checked-in model":
+  buildApple("all")
+
+task test_metal, "Build and exercise native Metal contracts":
+  buildApple("metal")
+  exec "MTL_CAPTURE_ENABLED=1 nim c -r -d:ssl -d:metal -o:build/test_metal tests/apple/test_metal.nim"
+
+task test_coreai, "Build and exercise native Core AI contracts without Python":
+  buildApple("all")
+  exec "nim c -r -d:ssl -d:coreai -o:build/test_coreai tests/apple/test_coreai.nim"
+
 task parity, "Run strict pinned PyTorch conformance and required Apple coverage gates":
   if not dirExists "build":
     mkDir "build"
-  exec "nim c -r -d:ssl -o:build/pytorch_parity tests/parity/run_parity.nim --profile=all --output=build/pytorch-parity.json"
+  when defined(macosx) and defined(arm64):
+    buildApple("all")
+    exec "MTL_CAPTURE_ENABLED=1 nim c -r -d:ssl -d:coreai -o:build/pytorch_parity tests/parity/run_parity.nim --profile=all --output=build/pytorch-parity.json"
+  else:
+    exec "nim c -r -d:ssl -o:build/pytorch_parity tests/parity/run_parity.nim --profile=all --output=build/pytorch-parity.json"
 
 task test_arc, "Run all tests under ARC - Default BLAS & Lapack":
   test "tests_cpu", "--gc:arc", split = false

@@ -191,16 +191,13 @@ proc coreAIArchitecture*(): string =
   finally:
     releaseCString(architecture)
 
-proc unitsFromMask(mask: uint32): set[CoreAIComputeUnit] =
-  for unit in CoreAIComputeUnit:
-    if (mask and (1'u32 shl ord(unit))) != 0:
-      result.incl(unit)
-
-proc coreAIAvailableUnits*(): set[CoreAIComputeUnit] =
+proc availableCoreAIComputeUnits*(): seq[CoreAIComputeUnit] =
   ## Enumerate SDK-available units; availability is not evidence of execution.
   var mask: uint32
   checkCoreAI(coreAIApi().availableUnits(addr mask))
-  result = unitsFromMask(mask)
+  for unit in CoreAIComputeUnit:
+    if (mask and (1'u32 shl ord(unit))) != 0:
+      result.add(unit)
 
 proc policyFromNative(value: int32): CoreAIComputePolicy =
   if value < int32(ord(low(CoreAIComputePolicy))) or value > int32(ord(high(CoreAIComputePolicy))):
