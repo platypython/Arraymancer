@@ -1,6 +1,12 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add native Metal float32 cumulative products and seeded first-order VJPs,
+  including independent signed input/prefix/seed layouts, scalar/empty axes,
+  broadcast reads and retained accumulation. Bound normal SIMD products away
+  from intermediate overflow/underflow; keep ordered float32 carries for
+  range-sensitive chains. Packet compatible dense scans without losing queued
+  read owners or dependency ordering.
 - Vectorize packed CPU float32 cumulative-product column VJPs across independent
   ARM64 lanes. Preserve rounded float32 weights and float64 reverse carries;
   keep scalar tails and zero-aware derivative masks.

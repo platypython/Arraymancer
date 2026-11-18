@@ -1,5 +1,5 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
-## Provides deterministic GPU reductions with GPU-only partial buffers.
+## Provides GPU reductions and shape-preserving inclusive scans.
 import ./[metal_types, init_metal, shapeshifting_metal, operators_metal, data_structure]
 
 proc reduce(t: MetalTensor[float32]; normalize: bool;
@@ -114,3 +114,46 @@ proc cumsumGradient*(seed: MetalTensor[float32];
   ## The adjoint of a forward inclusive scan is a reverse inclusive scan.
   ## Returns independent, seed-shaped float32 storage on the seed's device.
   cumsumScan(seed, axis, true)
+
+proc cumprod*(t: MetalTensor[float32]; axis: int = 0): MetalTensor[float32] =
+  ## Allocate an independent, dense, input-shaped inclusive product.
+  ## Accepts negative axes (scalar axes: 0/-1), exact empty shapes and
+  ## signed/broadcast reads. Carries stay float32, unlike CPU wide accumulation.
+  ## Bounded normal products may regroup within float32 rounding. Zeros,
+  ## nonfinite values and range-sensitive chains retain ordered carries.
+  validateMetalView(t)
+  let rank = max(t.rank, 1)
+  if axis < -rank or axis >= rank:
+    raise newException(MetalError, "Metal cumulative-product axis outside rank")
+  let normalized = if axis < 0: axis + rank else: axis
+  result = newMetalTensorUninit[float32](t.shape, t.storage.device)
+  if t.size == 0: return
+  checkMetal metalApi().cumprod(
+    t.storage.owner.handle, descriptor(t),
+    result.storage.owner.handle, descriptor(result),
+    int32(normalized), arraymancerAppleLibDir.cstring)
+
+proc cumprodGradient*(input, prefixes, seed: MetalTensor[float32];
+                      axis: int): MetalTensor[float32] =
+  ## Allocate an independent input-shaped first-order product-scan cotangent.
+  ## Rounded prefixes and zero/nonfinite masks use float32 MPS arithmetic.
+  validateMetalView(input)
+  validateMetalView(prefixes)
+  validateMetalView(seed)
+  if input.storage.device.registryId != prefixes.storage.device.registryId or
+      input.storage.device.registryId != seed.storage.device.registryId:
+    raise newException(MetalError, "Metal device mismatch")
+  if prefixes.shape != input.shape or seed.shape != input.shape:
+    raise newException(MetalError, "Metal cumulative-product gradient shape mismatch")
+  let rank = max(input.rank, 1)
+  if axis < -rank or axis >= rank:
+    raise newException(MetalError, "Metal cumulative-product gradient axis outside rank")
+  let normalized = if axis < 0: axis + rank else: axis
+  result = newMetalTensorUninit[float32](input.shape, input.storage.device)
+  if input.size == 0: return
+  checkMetal metalApi().cumprodGradient(
+    input.storage.owner.handle, descriptor(input),
+    prefixes.storage.owner.handle, descriptor(prefixes),
+    seed.storage.owner.handle, descriptor(seed),
+    result.storage.owner.handle, descriptor(result),
+    int32(normalized), arraymancerAppleLibDir.cstring)

@@ -628,29 +628,39 @@ type CumprodGate[TT] {.final.} = ref object of Gate[TT]
 proc cumprod_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
   let self = CumprodGate[TT](self)
   result = newDiffs[TT](1)
-  if self.cached_input.is_C_contiguous and payload.variable.grad.is_C_contiguous:
-    result[0] = cpuCumprodGradient(
-      self.cached_input, self.cached_prefixes, payload.variable.grad, self.axis, true)
+  when TT is Tensor[float32] or TT is Tensor[float64]:
+    if self.cached_input.is_C_contiguous and payload.variable.grad.is_C_contiguous:
+      result[0] = cpuCumprodGradient(
+        self.cached_input, self.cached_prefixes, payload.variable.grad, self.axis, true)
+    else:
+      result[0] = cpuCumprodGradient(
+        self.cached_input, self.cached_prefixes, payload.variable.grad, self.axis, false)
+  elif defined(metal) or defined(coreai):
+    when TT is MetalTensor[float32]:
+      result[0] = cumprodGradient(
+        self.cached_input, self.cached_prefixes, payload.variable.grad, self.axis)
+    else:
+      {.error: "Variable cumulative products support CPU float32/float64 and Metal float32".}
   else:
-    result[0] = cpuCumprodGradient(
-      self.cached_input, self.cached_prefixes, payload.variable.grad, self.axis, false)
+    {.error: "Variable cumulative products support CPU float32/float64 and Metal float32".}
 
-proc cumprod*[T: SomeFloat](
-    a: Variable[Tensor[T]], axis: int = 0): Variable[Tensor[T]] =
-  ## CPU float32/float64 inclusive product with an explicit seeded first-order VJP.
+proc cumprod*[TT](a: Variable[TT], axis: int = 0): Variable[TT] =
+  ## CPU float32/float64 and Metal float32 inclusive product with seeded VJPs.
   ## Negative/scalar axes, exact empty shapes and signed/broadcast reads are
-  ## supported. Backward uses rounded forward prefixes, wide reverse sums and
-  ## zero-aware masks; it does not blindly divide zero prefixes by zero inputs.
+  ## supported. Backward uses rounded forward prefixes and zero-aware masks;
+  ## CPU float32 reverse sums keep wide carries, while Metal stays float32.
+  ## Output and gradient storage are independent; saved input/prefix storage
+  ## must not be mutated before backward.
   let normalized = reductionAxis(a.value.rank, axis)
   new result
   result.context = a.context
   result.value = a.value.cumprod(normalized)
   if a.is_grad_needed:
-    var gate: CumprodGate[Tensor[T]]
+    var gate: CumprodGate[TT]
     new gate
     gate.cached_input = a.value
     gate.cached_prefixes = result.value
     gate.axis = normalized
     result.grad = zeros_like(result.value)
     result.requires_grad = true
-    register_node("Cumprod", gate, cumprod_backward_ag[Tensor[T]], result, a)
+    register_node("Cumprod", gate, cumprod_backward_ag[TT], result, a)

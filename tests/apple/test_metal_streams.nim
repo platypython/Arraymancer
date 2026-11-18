@@ -147,6 +147,34 @@ suite "Metal streams and pending owners":
       check pressure.cpu == [-99'f32, -99, -99].toTensor
       check metalMemoryStats().inFlightBytes == baseline
 
+
+  test "Blocked cumulative-product forward and VJP retain dropped read owners":
+    for queue in [defaultMetalStream(), newMetalStream()]:
+      metalSynchronize(queue)
+      let baseline = metalMemoryStats().inFlightBytes
+      let gate = newMetalEvent()
+      var released = false
+      defer:
+        if not released: signalMetalEvent(gate, 1)
+        metalSynchronize(queue)
+      wait(queue, gate, 1)
+      var output: MetalTensor[float32]
+      block:
+        let uploaded = [[2'f32, 0, 3], [4'f32, 5, 6]].toTensor.metal
+        let seedUpload = [[2'f32, -3, 1], [1'f32, 2, -2]].toTensor.metal
+        withMetalStream(queue):
+          let input = uploaded + 0'f32
+          let prefixes = input.cumprod(0)
+          let seed = seedUpload + 0'f32
+          let gradient = cumprodGradient(input, prefixes, seed, 0)
+          output = prefixes + gradient
+      let pressure = newTensorWith[float32]([2, 3], -99'f32).metal
+      check not metalStreamIsComplete(queue)
+      signalMetalEvent(gate, 1)
+      released = true
+      check output.cpu == [[8'f32, 7, -8], [10'f32, 0, 12]].toTensor
+      check pressure.cpu == newTensorWith[float32]([2, 3], -99'f32)
+      check metalMemoryStats().inFlightBytes == baseline
   test "Default-stream work completes without another submission or completion query":
     let stream = defaultMetalStream()
     metalSynchronize(stream)

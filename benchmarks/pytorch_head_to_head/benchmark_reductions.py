@@ -29,7 +29,8 @@ import torch
 CASES = ("prod", "sum_rows", "sum_columns", "mean_rows", "mean_columns",
          "prod_rows", "prod_columns", "mean_rows_backward", "mean_columns_backward",
          "prod_backward", "prod_rows_backward", "prod_columns_backward",
-         "cumsum_rows", "cumsum_columns", "cumsum_rows_backward", "cumsum_columns_backward")
+         "cumsum_rows", "cumsum_columns", "cumsum_rows_backward", "cumsum_columns_backward",
+         "cumprod_rows", "cumprod_columns", "cumprod_rows_backward", "cumprod_columns_backward")
 ARTIFACTS = (
     "src/arraymancer/tensor/aggregate.nim",
     "src/arraymancer/tensor/private/p_accelerate.nim",
@@ -61,6 +62,8 @@ def operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
                 output = leaf.mean(dim=axis, keepdim=True)
             elif name.startswith("cumsum_"):
                 output = leaf.cumsum(dim=axis)
+            elif name.startswith("cumprod_"):
+                output = leaf.cumprod(dim=axis)
             else:
                 output = leaf.prod(dim=axis, keepdim=True)
             output.backward(torch.ones_like(output))
@@ -78,6 +81,8 @@ def operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
         return lambda: value.mean(dim=axis, keepdim=True)
     if kind == "cumsum":
         return lambda: value.cumsum(dim=axis)
+    if kind == "cumprod":
+        return lambda: value.cumprod(dim=axis)
     return lambda: value.prod(dim=axis, keepdim=True)
 
 

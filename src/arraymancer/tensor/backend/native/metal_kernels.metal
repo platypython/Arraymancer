@@ -983,25 +983,28 @@ PACKED_FULL_PRODUCT_KERNEL(math_product_tasks, false)
 PACKED_FULL_PRODUCT_KERNEL(math_product4_tasks, true)
 
 
-long cumsumOuterOffset(ulong outer, constant Descriptor &descriptor,
+long scanOuterOffset(ulong outer, constant Descriptor &descriptor,
                        int axis) {
   long offset = 0;
-  for (int dim = axis - 1; dim >= 0; --dim) {
+  for (int dim = axis - 1; dim > 0; --dim) {
     const ulong coordinate = outer % ulong(descriptor.shape[dim]);
     outer /= ulong(descriptor.shape[dim]);
     offset += long(coordinate) * descriptor.strides[dim];
   }
+  if (axis > 0) offset += long(outer) * descriptor.strides[0];
   return offset;
 }
 
-long cumsumInnerOffset(ulong inner, constant Descriptor &descriptor,
+long scanInnerOffset(ulong inner, constant Descriptor &descriptor,
                        int axis) {
   long offset = 0;
-  for (int dim = descriptor.rank - 1; dim > axis; --dim) {
+  for (int dim = descriptor.rank - 1; dim > axis + 1; --dim) {
     const ulong coordinate = inner % ulong(descriptor.shape[dim]);
     inner /= ulong(descriptor.shape[dim]);
     offset += long(coordinate) * descriptor.strides[dim];
   }
+  if (axis + 1 < descriptor.rank)
+    offset += long(inner) * descriptor.strides[axis + 1];
   return offset;
 }
 
@@ -1028,8 +1031,8 @@ kernel void cumsum_rows(device const float *input [[buffer(0)]],
   const ulong line = ulong(group.x) + ulong(group.y) * ulong(lineGridWidth);
   const ulong outer = line / innerCount;
   const ulong inner = line % innerCount;
-  const long base = id.offset + cumsumOuterOffset(outer, id, axis) +
-      cumsumInnerOffset(inner, id, axis);
+  const long base = id.offset + scanOuterOffset(outer, id, axis) +
+      scanInnerOffset(inner, id, axis);
   float carry = 0.0f;
 
   // Each lane keeps four adjacent prefixes; exclusive carries preserve Inf.
@@ -1080,7 +1083,7 @@ kernel void cumsum_columns(device const float *input [[buffer(0)]],
   const ulong tileId = ulong(group.x) + ulong(group.y) * ulong(tileGridWidth);
   const ulong outer = tileId / columnTileCount;
   const ulong firstColumn = (tileId % columnTileCount) * 4ul;
-  const long outerBase = id.offset + cumsumOuterOffset(outer, id, axis);
+  const long outerBase = id.offset + scanOuterOffset(outer, id, axis);
   const ulong groupCount = 128ul / ulong(width);
   float4 carry = float4(0.0f);
 
@@ -1095,7 +1098,7 @@ kernel void cumsum_columns(device const float *input [[buffer(0)]],
         const ulong column = firstColumn + ulong(columnLane);
         if (column < innerCount)
           values[columnLane] = input[axisBase +
-              cumsumInnerOffset(column, id, axis)];
+              scanInnerOffset(column, id, axis)];
       }
     }
     const float4 prefix = float4(
@@ -1136,6 +1139,280 @@ kernel void cumsum_columns(device const float *input [[buffer(0)]],
     threadgroup_barrier(mem_flags::mem_threadgroup);
     carry += tileTotal;
   }
+}
+
+
+kernel void cumprod_scalar(device const float *input [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]],
+    constant Descriptor &od [[buffer(3)]],
+    uint tid [[thread_position_in_grid]]) {
+  if (tid == 0)
+    output[od.offset] = as_type<float>(as_type<uint>(input[id.offset]));
+}
+
+void cumprodOrderedLine(device const float *input, device float *output,
+    ulong axisLength, long base, long axisStride, ulong outputBase,
+    ulong innerCount) {
+#pragma METAL fp math_mode(safe)
+  float carry = 1.0f;
+  ulong index = 0;
+  // Prefetch across the dependency chain without reassociating its products.
+  for (; index + 16 <= axisLength; index += 16) {
+    const long source = base + long(index) * axisStride;
+    float4 values[4], prefixes[4];
+#pragma unroll
+    for (uint block = 0; block < 4; ++block) {
+      const long first = source + long(block * 4) * axisStride;
+      if (axisStride == 1) {
+        values[block] = float4(*reinterpret_cast<device const packed_float4 *>(input + first));
+      } else {
+        values[block] = float4(input[first], input[first + axisStride],
+            input[first + 2 * axisStride], input[first + 3 * axisStride]);
+      }
+    }
+#pragma unroll
+    for (uint block = 0; block < 4; ++block) {
+      carry *= values[block].x; prefixes[block].x = carry;
+      carry *= values[block].y; prefixes[block].y = carry;
+      carry *= values[block].z; prefixes[block].z = carry;
+      carry *= values[block].w; prefixes[block].w = carry;
+    }
+    const ulong target = outputBase + index * innerCount;
+#pragma unroll
+    for (uint block = 0; block < 4; ++block) {
+      const ulong first = target + ulong(block * 4) * innerCount;
+      if (innerCount == 1) {
+        *reinterpret_cast<device packed_float4 *>(output + first) = packed_float4(prefixes[block]);
+      } else {
+#pragma unroll
+        for (uint lane = 0; lane < 4; ++lane)
+          output[first + ulong(lane) * innerCount] = prefixes[block][lane];
+      }
+    }
+  }
+  for (; index < axisLength; ++index) {
+    carry *= input[base + long(index) * axisStride];
+    output[outputBase + index * innerCount] = carry;
+  }
+}
+
+kernel void cumprod_lines(device const float *input [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]],
+    constant int &axis [[buffer(3)]],
+    constant ulong &axisLength [[buffer(4)]],
+    constant ulong &innerCount [[buffer(5)]],
+    constant ulong &lineCount [[buffer(6)]],
+    constant uint &gridWidth [[buffer(7)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]]) {
+  const ulong line = (ulong(group.x) + ulong(group.y) * ulong(gridWidth)) * 8ul + ulong(tid);
+  if (line >= lineCount) return;
+  const ulong outer = axis == 0 ? 0 : (innerCount == 1 ? line : line / innerCount);
+  const ulong inner = axis == 0 ? line : (innerCount == 1 ? 0 : line % innerCount);
+  const long base = id.offset + scanOuterOffset(outer, id, axis) +
+      scanInnerOffset(inner, id, axis);
+  cumprodOrderedLine(input, output, axisLength, base, id.strides[axis],
+      outer * axisLength * innerCount + inner, innerCount);
+}
+
+void cumprodShortLine(device const float *input, device float *output,
+    ulong axisLength, long base, long axisStride, ulong outputBase,
+    ulong innerCount, uint lane, uint width) {
+#pragma METAL fp math_mode(safe)
+  if (axisLength <= ulong(width) * 4ul) {
+    const ulong start = ulong(lane) * 4ul;
+    float4 values = 1.0f;
+    bool normal = true;
+    int positive = 0, negative = 0;
+    for (uint part = 0; part < 4; ++part) {
+      if (start + ulong(part) < axisLength) {
+        const float value = input[base + long(start + ulong(part)) * axisStride];
+        values[part] = value;
+        const uint magnitude = as_type<uint>(value) & 0x7fffffffu;
+        const int exponent = int(magnitude >> 23);
+        normal &= exponent > 0 && exponent < 255;
+        const int lower = exponent - 127;
+        const int upper = lower + int((magnitude & 0x7fffffu) != 0);
+        positive += max(upper, 0);
+        negative += min(lower, 0);
+      }
+    }
+    // Bound every subtree away from overflow/underflow before reassociation.
+    if (simd_all(normal) && simd_sum(positive) <= 120 && simd_sum(negative) >= -120) {
+      float4 prefixes = values;
+      prefixes.y *= prefixes.x;
+      prefixes.z *= prefixes.y;
+      prefixes.w *= prefixes.z;
+      const float preceding = simd_prefix_exclusive_product(prefixes.w);
+      for (uint part = 0; part < 4; ++part) {
+        if (start + ulong(part) < axisLength)
+          output[outputBase + (start + ulong(part)) * innerCount] =
+              preceding * prefixes[part];
+      }
+      return;
+    }
+  }
+  if (lane == 0)
+    cumprodOrderedLine(input, output, axisLength, base, axisStride, outputBase, innerCount);
+}
+
+kernel void cumprod_short_lines(device const float *input [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]],
+    constant int &axis [[buffer(3)]],
+    constant ulong &axisLength [[buffer(4)]],
+    constant ulong &innerCount [[buffer(5)]],
+    constant ulong &lineCount [[buffer(6)]],
+    constant uint &gridWidth [[buffer(7)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint width [[threads_per_simdgroup]]) {
+  const ulong line = ulong(group.x) + ulong(group.y) * ulong(gridWidth);
+  if (line >= lineCount) return;
+  const ulong outer = axis == 0 ? 0 : (innerCount == 1 ? line : line / innerCount);
+  const ulong inner = axis == 0 ? line : (innerCount == 1 ? 0 : line % innerCount);
+  const long base = id.offset + scanOuterOffset(outer, id, axis) +
+      scanInnerOffset(inner, id, axis);
+  cumprodShortLine(input, output, axisLength, base, id.strides[axis],
+      outer * axisLength * innerCount + inner, innerCount, lane, width);
+}
+
+kernel void cumprod_short_tasks(constant PackedReductionTask *tasks [[buffer(0)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint width [[threads_per_simdgroup]]) {
+  constant PackedReductionTask &task = tasks[group.z];
+  const ulong line = group.x;
+  const ulong innerCount = task.reserved;
+  const ulong outer = innerCount == 1 ? line : line / innerCount;
+  const ulong inner = innerCount == 1 ? 0 : line % innerCount;
+  const ulong base = outer * ulong(task.inner) * innerCount + inner;
+  cumprodShortLine(task.input, task.output, task.inner, long(base), long(innerCount),
+      base, innerCount, lane, width);
+}
+
+kernel void cumprod_gradient_scalar(device const float *seed [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant Descriptor &sd [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]) {
+  if (tid == 0)
+    output[0] = as_type<float>(as_type<uint>(seed[sd.offset]));
+}
+
+kernel void cumprod_gradient_singleton(device const float *seed [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant Descriptor &sd [[buffer(2)]],
+    constant int &axis [[buffer(3)]],
+    constant ulong &innerCount [[buffer(4)]],
+    constant ulong &lineCount [[buffer(5)]],
+    constant uint &gridWidth [[buffer(6)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]]) {
+  const ulong groupIndex = ulong(group.x) +
+      ulong(group.y) * ulong(gridWidth);
+  const ulong line = groupIndex * 16ul + ulong(tid);
+  if (line >= lineCount) return;
+
+  const ulong outer = line / innerCount;
+  const ulong inner = line % innerCount;
+  const long seedBase = sd.offset + scanOuterOffset(outer, sd, axis) +
+      scanInnerOffset(inner, sd, axis);
+  output[line] = as_type<float>(as_type<uint>(seed[seedBase]));
+}
+
+kernel void cumprod_gradient_lines(
+    device const float *input [[buffer(0)]],
+    device const float *prefixes [[buffer(1)]],
+    device const float *seed [[buffer(2)]],
+    device float *output [[buffer(3)]],
+    constant Descriptor &id [[buffer(4)]],
+    constant Descriptor &pd [[buffer(5)]],
+    constant Descriptor &sd [[buffer(6)]],
+    constant int &axis [[buffer(7)]],
+    constant ulong &axisLength [[buffer(8)]],
+    constant ulong &innerCount [[buffer(9)]],
+    constant ulong &lineCount [[buffer(10)]],
+    constant uint &gridWidth [[buffer(11)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]]) {
+#pragma METAL fp math_mode(safe)
+  const ulong groupIndex = ulong(group.x) +
+      ulong(group.y) * ulong(gridWidth);
+  const ulong line = groupIndex * 16ul + ulong(tid);
+  if (line >= lineCount) return;
+
+  const ulong outer = line / innerCount;
+  const ulong inner = line % innerCount;
+  const long inputBase = id.offset + scanOuterOffset(outer, id, axis) +
+      scanInnerOffset(inner, id, axis);
+  const long prefixBase = pd.offset + scanOuterOffset(outer, pd, axis) +
+      scanInnerOffset(inner, pd, axis);
+  const long seedBase = sd.offset + scanOuterOffset(outer, sd, axis) +
+      scanInnerOffset(inner, sd, axis);
+  const long inputAxisStride = id.strides[axis];
+  const long prefixAxisStride = pd.strides[axis];
+  const long seedAxisStride = sd.strides[axis];
+
+  ulong firstZero = axisLength;
+  for (ulong index = 0; index < axisLength; ++index) {
+    if (input[inputBase + long(index) * inputAxisStride] == 0.0f) {
+      firstZero = index;
+      break;
+    }
+  }
+
+  if (firstZero == axisLength) {
+    float accumulated = 0.0f;
+    ulong remaining = axisLength;
+    while (remaining > 0) {
+      --remaining;
+      const float weight = prefixes[prefixBase +
+          long(remaining) * prefixAxisStride] *
+          seed[seedBase + long(remaining) * seedAxisStride];
+      accumulated = accumulated + weight;
+      output[(outer * axisLength + remaining) * innerCount + inner] =
+          accumulated / input[inputBase + long(remaining) * inputAxisStride];
+    }
+    return;
+  }
+
+  for (ulong index = firstZero; index < axisLength; ++index)
+    output[(outer * axisLength + index) * innerCount + inner] = 0.0f;
+
+  float accumulated = 0.0f;
+  ulong remaining = firstZero;
+  while (remaining > 0) {
+    --remaining;
+    const float weight = prefixes[prefixBase +
+        long(remaining) * prefixAxisStride] *
+        seed[seedBase + long(remaining) * seedAxisStride];
+    accumulated = accumulated + weight;
+    output[(outer * axisLength + remaining) * innerCount + inner] =
+        accumulated / input[inputBase + long(remaining) * inputAxisStride];
+  }
+
+  float suffixProduct = 1.0f;
+  float zeroSum = 0.0f;
+  for (ulong index = firstZero; index < axisLength; ++index) {
+    if (index > firstZero) {
+      const float value = input[inputBase + long(index) * inputAxisStride];
+      if (value == 0.0f) {
+        const float maskedWeight = suffixProduct * 0.0f;
+        zeroSum = zeroSum + maskedWeight;
+        break;
+      }
+      suffixProduct = suffixProduct * value;
+    }
+    const float weight = suffixProduct *
+        seed[seedBase + long(index) * seedAxisStride];
+    zeroSum = zeroSum + weight;
+  }
+  const float beforeZero = firstZero == 0 ? 1.0f :
+      prefixes[prefixBase + long(firstZero - 1ul) * prefixAxisStride];
+  output[(outer * axisLength + firstZero) * innerCount + inner] =
+      zeroSum * beforeZero;
 }
 
 long productGradientAxisBase(ulong slice, constant Descriptor &descriptor,

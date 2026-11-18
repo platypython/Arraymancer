@@ -62,6 +62,15 @@ AMStatus am_product_gradient(void *input, AMTensorDescriptor input_descriptor,
 AMStatus am_cumsum(void *input, AMTensorDescriptor input_descriptor,
                    void *output, AMTensorDescriptor output_descriptor,
                    int32_t axis, int32_t reverse, const char *library_dir);
+AMStatus am_cumprod(void *input, AMTensorDescriptor input_descriptor,
+                    void *output, AMTensorDescriptor output_descriptor,
+                    int32_t axis, const char *library_dir);
+AMStatus am_cumprod_gradient(
+    void *input, AMTensorDescriptor input_descriptor,
+    void *prefixes, AMTensorDescriptor prefixes_descriptor,
+    void *seed, AMTensorDescriptor seed_descriptor,
+    void *output, AMTensorDescriptor output_descriptor,
+    int32_t axis, const char *library_dir);
 AMStatus am_mse_backward(void *upstream, AMTensorDescriptor upstream_descriptor,
                          void *prediction, AMTensorDescriptor prediction_descriptor,
                          void *target, AMTensorDescriptor target_descriptor,

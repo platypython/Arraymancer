@@ -77,6 +77,13 @@ type
     cumsum*: proc(input: pointer; inputDescriptor: AMDescriptor;
       output: pointer; outputDescriptor: AMDescriptor; axis, reverse: int32;
       libraryDir: cstring): AMStatus {.cdecl, gcsafe, raises: [].}
+    cumprod*: proc(input: pointer; inputDescriptor: AMDescriptor;
+      output: pointer; outputDescriptor: AMDescriptor; axis: int32;
+      libraryDir: cstring): AMStatus {.cdecl, gcsafe, raises: [].}
+    cumprodGradient*: proc(input: pointer; inputDescriptor: AMDescriptor;
+      prefixes: pointer; prefixesDescriptor: AMDescriptor; seed: pointer;
+      seedDescriptor: AMDescriptor; output: pointer; outputDescriptor: AMDescriptor;
+      axis: int32; libraryDir: cstring): AMStatus {.cdecl, gcsafe, raises: [].}
     mseBackward*: proc(upstream: pointer; upstreamDescriptor: AMDescriptor;
       prediction: pointer; predictionDescriptor: AMDescriptor;
       target: pointer; targetDescriptor: AMDescriptor; output: pointer;
@@ -147,6 +154,8 @@ proc metalApi*(): lent MetalApi {.gcsafe.} =
       resolve(math, "am_math")
       resolve(productGradient, "am_product_gradient")
       resolve(cumsum, "am_cumsum")
+      resolve(cumprod, "am_cumprod")
+      resolve(cumprodGradient, "am_cumprod_gradient")
       resolve(mseBackward, "am_mse_backward")
       resolve(stream, "am_stream")
       resolve(streamSet, "am_stream_set")

@@ -3026,6 +3026,337 @@ AMStatus am_cumsum(void *inputHandle, AMTensorDescriptor inputDescriptor,
   }
 }
 
+AMStatus am_cumprod(void *inputHandle, AMTensorDescriptor inputDescriptor,
+                    void *outputHandle, AMTensorDescriptor outputDescriptor,
+                    int32_t axis, const char *directory) {
+  @autoreleasepool {
+    if (!inputHandle || !outputHandle || !directory)
+      return failure(2, "null Metal cumulative-product argument");
+
+    AMBuffer *input = (__bridge AMBuffer *)inputHandle;
+    AMBuffer *output = (__bridge AMBuffer *)outputHandle;
+    uint64_t inputCount = 0, outputCount = 0;
+    AMStatus status = validateFloatTensor(input, inputDescriptor, inputCount);
+    if (status.code) return status;
+    status = validateFloatTensor(output, outputDescriptor, outputCount);
+    if (status.code) return status;
+    if (!sameDevice(input, output))
+      return failure(2, "Metal cumulative-product buffers use different devices");
+    if (input == output || input.buffer == output.buffer ||
+        !sameShape(inputDescriptor, outputDescriptor) ||
+        inputCount != outputCount)
+      return failure(2, "Metal cumulative-product output must be independent and input-shaped");
+    if (axis < 0 || (inputDescriptor.rank == 0
+            ? axis != 0 : axis >= inputDescriptor.rank))
+      return failure(2, "Metal cumulative-product axis is outside rank");
+    if (outputCount) {
+      if (outputDescriptor.offset != 0)
+        return failure(2, "Metal cumulative-product output must be zero-offset contiguous storage");
+      uint64_t expectedStride = 1;
+      for (int dim = outputDescriptor.rank - 1; dim >= 0; --dim) {
+        if (outputDescriptor.strides[dim] != (int64_t)expectedStride)
+          return failure(2, "Metal cumulative-product output must be contiguous");
+        const __uint128_t next = (__uint128_t)expectedStride *
+            (uint64_t)outputDescriptor.shape[dim];
+        if (next > UINT64_MAX)
+          return failure(2, "Metal cumulative-product output shape overflows");
+        expectedStride = (uint64_t)next;
+      }
+    }
+    if (!outputCount) return ok();
+
+    const bool scalar = inputDescriptor.rank == 0;
+    uint64_t outerCount = 1, innerCount = 1, axisLength = 1;
+    if (!scalar) {
+      axisLength = (uint64_t)inputDescriptor.shape[axis];
+      for (int dim = 0; dim < axis; ++dim)
+        outerCount *= (uint64_t)inputDescriptor.shape[dim];
+      for (int dim = axis + 1; dim < inputDescriptor.rank; ++dim)
+        innerCount *= (uint64_t)inputDescriptor.shape[dim];
+    }
+    const uint64_t lineCount = outerCount * innerCount;
+    const bool simdLines = !scalar && (innerCount == 1 || axisLength <= 128);
+    constexpr uint64_t threadsPerGroup = 8;
+    const uint64_t groupCount = simdLines ? lineCount :
+        lineCount / threadsPerGroup + (lineCount % threadsPerGroup != 0);
+    const __uint128_t maxGridGroups =
+        (__uint128_t)UINT32_MAX * (__uint128_t)UINT32_MAX;
+    if (!groupCount || (__uint128_t)groupCount > maxGridGroups)
+      return failure(2, "Metal cumulative-product grid exceeds index limits");
+    const uint64_t gridWidth = MIN(groupCount, (uint64_t)UINT32_MAX);
+    const uint64_t gridHeight = groupCount / gridWidth +
+        (groupCount % gridWidth != 0);
+    if (gridHeight > UINT32_MAX)
+      return failure(2, "Metal cumulative-product grid exceeds index limits");
+
+    AMDeviceState *state = output.state;
+    if (!state || !state.device)
+      return failure(1, "Metal cumulative-product output has no device state");
+    NSError *error = nil;
+    AMCompute *context = compute(output.buffer.device, directory, &error);
+    if (!context)
+      return failure(9, error.localizedDescription.UTF8String
+          ?: "Metal queue or library unavailable");
+
+    const bool packedScan = !scalar && axisLength <= 128 &&
+        lineCount <= UINT32_MAX && output.state.supportsIndirectMath &&
+        packedMathInput(inputDescriptor);
+    id<MTLComputePipelineState> pipeline = pipelineFor(context,
+        scalar ? @"cumprod_scalar" : (packedScan ? @"cumprod_short_tasks" :
+            (simdLines ? @"cumprod_short_lines" : @"cumprod_lines")), &error);
+    if (!pipeline)
+      return failure(error ? 7 : 8, error.localizedDescription.UTF8String
+          ?: "missing Metal cumulative-product kernel");
+    const NSUInteger threadCount = scalar ? 1 :
+        (simdLines ? pipeline.threadExecutionWidth : (NSUInteger)threadsPerGroup);
+    if (pipeline.maxTotalThreadsPerThreadgroup < threadCount)
+      return failure(7, "Metal cumulative-product pipeline cannot run its threadgroup");
+
+    AMStream *stream = nil;
+    status = selectedStream(output.buffer.device, context.state, &stream);
+    if (status.code) return status;
+    @synchronized(stream.encodingLock) {
+      id<MTLCommandBuffer> command = mathCommandBuffer(stream);
+      if (!command)
+        return failure(5, "cannot create Metal cumulative-product command");
+      id<MTLComputeCommandEncoder> encoder =
+          mathComputeEncoder(stream, command, output, true);
+      if (!encoder)
+        return failure(5, "cannot create Metal cumulative-product encoder");
+
+      const uint64_t invocation = nextInvocation.fetch_add(1);
+      AMEvidence evidence = {invocation, output.buffer.device.registryID,
+          0, 0, 0, 0, 2, 133};
+      AMBuffer *__unsafe_unretained mathBuffers[2] = {input, output};
+      if (!packedScan || (stream->packedTaskCount &&
+          (stream->packedTaskCount == 32 || stream.packedPipeline != pipeline ||
+           stream->packedGroups.width != gridWidth ||
+           stream->packedThreads.width != threadCount)))
+        flushPackedMath(stream, encoder);
+      orderMathAccess(stream, output, input, nil, nil, true);
+      status = admitMathCommand(stream, command, @[], output, evidence,
+          pipeline, mathBuffers, 2);
+      if (status.code) return status;
+
+      @try {
+        if (packedScan) {
+          if (!stream->packedTaskCount) {
+            stream.packedPipeline = pipeline;
+            stream->packedGroups = MTLSizeMake(gridWidth, 1, 1);
+            stream->packedThreads = MTLSizeMake(threadCount, 1, 1);
+            stream->packedRows = true;
+            stream->packedRepeatedWrites = false;
+          }
+          stream->packedTasks[stream->packedTaskCount++] = {
+            input.gpuAddress + (uint64_t)inputDescriptor.offset * sizeof(float),
+            innerCount, output.gpuAddress, (uint32_t)axisLength, (uint32_t)lineCount};
+          if (!stream.aggregateMath) flushPackedMath(stream, encoder);
+          return finishMathEncoding(stream);
+        }
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:input.buffer offset:0 atIndex:0];
+        [encoder setBuffer:output.buffer offset:0 atIndex:1];
+        if (scalar) {
+          [encoder setBytes:&inputDescriptor length:sizeof(inputDescriptor) atIndex:2];
+          [encoder setBytes:&outputDescriptor length:sizeof(outputDescriptor) atIndex:3];
+          [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        } else {
+          const int32_t scanAxis = axis;
+          const uint32_t nativeGridWidth = (uint32_t)gridWidth;
+          [encoder setBytes:&inputDescriptor length:sizeof(inputDescriptor) atIndex:2];
+          [encoder setBytes:&scanAxis length:sizeof(scanAxis) atIndex:3];
+          [encoder setBytes:&axisLength length:sizeof(axisLength) atIndex:4];
+          [encoder setBytes:&innerCount length:sizeof(innerCount) atIndex:5];
+          [encoder setBytes:&lineCount length:sizeof(lineCount) atIndex:6];
+          [encoder setBytes:&nativeGridWidth length:sizeof(nativeGridWidth) atIndex:7];
+          [encoder dispatchThreadgroups:MTLSizeMake(gridWidth, gridHeight, 1)
+              threadsPerThreadgroup:MTLSizeMake(threadCount, 1, 1)];
+        }
+      } @catch (NSException *exception) {
+        return failMathEncoding(stream, invocation, exception.reason);
+      }
+      return finishMathEncoding(stream);
+    }
+  }
+}
+
+AMStatus am_cumprod_gradient(
+    void *inputHandle, AMTensorDescriptor inputDescriptor,
+    void *prefixesHandle, AMTensorDescriptor prefixesDescriptor,
+    void *seedHandle, AMTensorDescriptor seedDescriptor,
+    void *outputHandle, AMTensorDescriptor outputDescriptor,
+    int32_t axis, const char *directory) {
+  @autoreleasepool {
+    if (!inputHandle || !prefixesHandle || !seedHandle || !outputHandle ||
+        !directory)
+      return failure(2, "null Metal cumulative-product-gradient argument");
+
+    AMBuffer *input = (__bridge AMBuffer *)inputHandle;
+    AMBuffer *prefixes = (__bridge AMBuffer *)prefixesHandle;
+    AMBuffer *seed = (__bridge AMBuffer *)seedHandle;
+    AMBuffer *output = (__bridge AMBuffer *)outputHandle;
+    uint64_t inputCount = 0, prefixesCount = 0, seedCount = 0, outputCount = 0;
+    AMStatus status = validateFloatTensor(input, inputDescriptor, inputCount);
+    if (status.code) return status;
+    status = validateFloatTensor(prefixes, prefixesDescriptor, prefixesCount);
+    if (status.code) return status;
+    status = validateFloatTensor(seed, seedDescriptor, seedCount);
+    if (status.code) return status;
+    status = validateFloatTensor(output, outputDescriptor, outputCount);
+    if (status.code) return status;
+
+    if (!sameDevice(input, output) || !sameDevice(prefixes, output) ||
+        !sameDevice(seed, output))
+      return failure(2, "Metal cumulative-product-gradient buffers use different devices");
+    if (output == input || output == prefixes || output == seed ||
+        output.buffer == input.buffer || output.buffer == prefixes.buffer ||
+        output.buffer == seed.buffer || !sameShape(inputDescriptor, outputDescriptor) ||
+        inputCount != outputCount)
+      return failure(2, "Metal cumulative-product-gradient output must be independent and input-shaped");
+    if (!sameShape(inputDescriptor, prefixesDescriptor) ||
+        !sameShape(inputDescriptor, seedDescriptor) ||
+        prefixesCount != inputCount || seedCount != inputCount)
+      return failure(2, "Metal cumulative-product prefixes and seed must be input-shaped");
+    if (axis < 0 || (inputDescriptor.rank == 0
+            ? axis != 0 : axis >= inputDescriptor.rank))
+      return failure(2, "Metal cumulative-product-gradient axis is outside rank");
+    if (outputCount) {
+      if (outputDescriptor.offset != 0)
+        return failure(2, "Metal cumulative-product-gradient output must be zero-offset contiguous storage");
+      uint64_t expectedStride = 1;
+      for (int dim = outputDescriptor.rank - 1; dim >= 0; --dim) {
+        if (outputDescriptor.strides[dim] != (int64_t)expectedStride)
+          return failure(2, "Metal cumulative-product-gradient output must be contiguous");
+        const __uint128_t next = (__uint128_t)expectedStride *
+            (uint64_t)outputDescriptor.shape[dim];
+        if (next > UINT64_MAX)
+          return failure(2, "Metal cumulative-product-gradient output shape overflows");
+        expectedStride = (uint64_t)next;
+      }
+    }
+    if (!outputCount) return ok();
+
+    const bool scalar = inputDescriptor.rank == 0;
+    uint64_t outerCount = 1, innerCount = 1, axisLength = 1;
+    if (!scalar) {
+      axisLength = (uint64_t)inputDescriptor.shape[axis];
+      for (int dim = 0; dim < axis; ++dim)
+        outerCount *= (uint64_t)inputDescriptor.shape[dim];
+      for (int dim = axis + 1; dim < inputDescriptor.rank; ++dim)
+        innerCount *= (uint64_t)inputDescriptor.shape[dim];
+    }
+    const bool singletonAxis = !scalar && axisLength == 1;
+    const uint64_t lineCount = outerCount * innerCount;
+    constexpr uint64_t threadsPerGroup = 16;
+    const uint64_t groupCount = lineCount / threadsPerGroup +
+        (lineCount % threadsPerGroup != 0);
+    const __uint128_t maxGridGroups =
+        (__uint128_t)UINT32_MAX * (__uint128_t)UINT32_MAX;
+    if (!groupCount || (__uint128_t)groupCount > maxGridGroups)
+      return failure(2, "Metal cumulative-product-gradient grid exceeds index limits");
+    const uint64_t gridWidth = MIN(groupCount, (uint64_t)UINT32_MAX);
+    const uint64_t gridHeight = groupCount / gridWidth +
+        (groupCount % gridWidth != 0);
+    if (gridHeight > UINT32_MAX)
+      return failure(2, "Metal cumulative-product-gradient grid exceeds index limits");
+
+    AMDeviceState *state = output.state;
+    if (!state || !state.device)
+      return failure(1, "Metal cumulative-product-gradient output has no device state");
+    NSError *error = nil;
+    AMCompute *context = compute(output.buffer.device, directory, &error);
+    if (!context)
+      return failure(9, error.localizedDescription.UTF8String
+          ?: "Metal queue or library unavailable");
+
+    NSString *kernelName = scalar ? @"cumprod_gradient_scalar" :
+        (singletonAxis ? @"cumprod_gradient_singleton" : @"cumprod_gradient_lines");
+    id<MTLComputePipelineState> pipeline = pipelineFor(context, kernelName, &error);
+    if (!pipeline)
+      return failure(error ? 7 : 8, error.localizedDescription.UTF8String
+          ?: "missing Metal cumulative-product-gradient kernel");
+    const NSUInteger threadCount = scalar ? 1 : (NSUInteger)threadsPerGroup;
+    if (pipeline.maxTotalThreadsPerThreadgroup < threadCount)
+      return failure(7, "Metal cumulative-product-gradient pipeline cannot run its threadgroup");
+
+    AMStream *stream = nil;
+    status = selectedStream(output.buffer.device, context.state, &stream);
+    if (status.code) return status;
+    @synchronized(stream.encodingLock) {
+      id<MTLCommandBuffer> command = mathCommandBuffer(stream);
+      if (!command)
+        return failure(5, "cannot create Metal cumulative-product-gradient command");
+      id<MTLComputeCommandEncoder> encoder =
+          mathComputeEncoder(stream, command, output, true);
+      if (!encoder)
+        return failure(5, "cannot create Metal cumulative-product-gradient encoder");
+
+      const uint64_t invocation = nextInvocation.fetch_add(1);
+      AMEvidence evidence = {invocation, output.buffer.device.registryID,
+          0, 0, 0, 0, 2, 134};
+      AMBuffer *__unsafe_unretained mathBuffers[4];
+      NSUInteger mathBufferCount = 0;
+      AMBuffer *candidates[] = {input, prefixes, seed, output};
+      for (AMBuffer *candidate : candidates) {
+        bool alreadyPresent = false;
+        for (NSUInteger index = 0; index < mathBufferCount; ++index)
+          if (mathBuffers[index] == candidate) alreadyPresent = true;
+        if (!alreadyPresent) mathBuffers[mathBufferCount++] = candidate;
+      }
+      flushPackedMath(stream, encoder);
+      orderMathAccess(stream, output, input, prefixes, seed, true);
+      status = admitMathCommand(stream, command, @[], output, evidence,
+          pipeline, mathBuffers, mathBufferCount);
+      if (status.code) return status;
+
+      @try {
+        [encoder setComputePipelineState:pipeline];
+        if (scalar) {
+          [encoder setBuffer:seed.buffer offset:0 atIndex:0];
+          [encoder setBuffer:output.buffer offset:0 atIndex:1];
+          [encoder setBytes:&seedDescriptor length:sizeof(seedDescriptor) atIndex:2];
+          [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        } else if (singletonAxis) {
+          const int32_t scanAxis = axis;
+          const uint32_t nativeGridWidth = (uint32_t)gridWidth;
+          [encoder setBuffer:seed.buffer offset:0 atIndex:0];
+          [encoder setBuffer:output.buffer offset:0 atIndex:1];
+          [encoder setBytes:&seedDescriptor length:sizeof(seedDescriptor) atIndex:2];
+          [encoder setBytes:&scanAxis length:sizeof(scanAxis) atIndex:3];
+          [encoder setBytes:&innerCount length:sizeof(innerCount) atIndex:4];
+          [encoder setBytes:&lineCount length:sizeof(lineCount) atIndex:5];
+          [encoder setBytes:&nativeGridWidth length:sizeof(nativeGridWidth) atIndex:6];
+          [encoder dispatchThreadgroups:MTLSizeMake(gridWidth, gridHeight, 1)
+              threadsPerThreadgroup:MTLSizeMake(threadCount, 1, 1)];
+        } else {
+          const int32_t scanAxis = axis;
+          const uint32_t nativeGridWidth = (uint32_t)gridWidth;
+          [encoder setBuffer:input.buffer offset:0 atIndex:0];
+          [encoder setBuffer:prefixes.buffer offset:0 atIndex:1];
+          [encoder setBuffer:seed.buffer offset:0 atIndex:2];
+          [encoder setBuffer:output.buffer offset:0 atIndex:3];
+          [encoder setBytes:&inputDescriptor length:sizeof(inputDescriptor) atIndex:4];
+          [encoder setBytes:&prefixesDescriptor length:sizeof(prefixesDescriptor) atIndex:5];
+          [encoder setBytes:&seedDescriptor length:sizeof(seedDescriptor) atIndex:6];
+          [encoder setBytes:&scanAxis length:sizeof(scanAxis) atIndex:7];
+          [encoder setBytes:&axisLength length:sizeof(axisLength) atIndex:8];
+          [encoder setBytes:&innerCount length:sizeof(innerCount) atIndex:9];
+          [encoder setBytes:&lineCount length:sizeof(lineCount) atIndex:10];
+          [encoder setBytes:&nativeGridWidth length:sizeof(nativeGridWidth) atIndex:11];
+          [encoder dispatchThreadgroups:MTLSizeMake(gridWidth, gridHeight, 1)
+              threadsPerThreadgroup:MTLSizeMake(threadCount, 1, 1)];
+        }
+      } @catch (NSException *exception) {
+        return failMathEncoding(stream, invocation, exception.reason);
+      }
+      return finishMathEncoding(stream);
+    }
+  }
+}
+
+
 AMStatus am_product_gradient(void *inputHandle, AMTensorDescriptor inputDescriptor,
                              void *productHandle, AMTensorDescriptor pd,
                              void *seedHandle, AMTensorDescriptor sd,
