@@ -7,6 +7,10 @@ Then run the floating-output benchmark (the default; optional --output and --run
   python benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.py
 Run just the six supported integer/bool outputs with:
   python benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.py --output-dtypes uint8 int8 int16 int32 int64 bool
+Build the default complex scan mode with:
+  nim c -d:release -d:complexScans --path:src --out:build/reduction_dtype_runner benchmarks/pytorch_head_to_head/reduction_dtype_runner.nim
+Then run --complex-scans: two matching complex input/output groups, eight actions
+and 48 comparisons under the same timing protocol.
 The 22 floating input/output groups each contain thirteen actions, for 286 actions
 and 1,716 median/p95 comparisons across three paired rounds. Integer outputs have
 ten supported sum/product/scan actions; bool outputs have six sum/product actions,
@@ -43,6 +47,10 @@ INPUT_DTYPES = (
     "float32", "float64",
 )
 INTEGER_DTYPES = frozenset(INPUT_DTYPES[:9])
+COMPLEX_DTYPES = ("complex64", "complex128")
+COMPLEX_SCAN_CASES = (
+    "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
+)
 OUTPUT_DTYPES = ("float32", "float64")
 INTEGER_OUTPUT_DTYPES = ("uint8", "int8", "int16", "int32", "int64")
 BOOL_OUTPUT_DTYPES = ("bool",)
@@ -72,6 +80,7 @@ TORCH_DTYPES: dict[str, torch.dtype] = {
     "int64": torch.int64, "uint8": torch.uint8, "uint16": torch.uint16,
     "uint32": torch.uint32, "uint64": torch.uint64,
     "float32": torch.float32, "float64": torch.float64,
+    "complex64": torch.complex64, "complex128": torch.complex128,
 }
 TORCH_VERSION = "2.15.0"
 TORCH_GIT_REVISION = "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e"
@@ -92,6 +101,10 @@ SOURCE_PATHS = (
 
 def operation(name: str, value: torch.Tensor, output_dtype: str) -> Callable[[], torch.Tensor]:
     """Resolve an allocating reduction or scan; keep casting inside the action."""
+    if output_dtype in COMPLEX_DTYPES:
+        axis = -1 if name.endswith("_rows") else -2
+        scanner = value.cumsum if name.startswith("cumsum") else value.cumprod
+        return lambda: scanner(dim=axis)
     dtype = TORCH_DTYPES[output_dtype]
     if name in ("mean", "sum", "prod"):
         if name == "mean":
@@ -124,6 +137,15 @@ def operation(name: str, value: torch.Tensor, output_dtype: str) -> Callable[[],
 
 def make_source(dtype: str) -> tuple[torch.Tensor, dict[str, Any]]:
     """Create one resident, already typed source and its native manifest values."""
+    if dtype in COMPLEX_DTYPES:
+        indices = torch.arange(ROWS * COLUMNS, dtype=torch.float64)
+        real = 1 + ((indices % 17) - 8) * 0.0001
+        imag = ((indices % 2) * 2 - 1) * 0.0002
+        source = torch.complex(real, imag).reshape(ROWS, COLUMNS)
+        source = source.to(dtype=TORCH_DTYPES[dtype])
+        # Serialize the actual component values after rounding to the source dtype.
+        values = [[item.real, item.imag] for item in source.flatten().tolist()]
+        return source, {"values": values}
     if dtype in INTEGER_DTYPES:
         words = [index % 5 - 2 for index in range(ROWS * COLUMNS)]
         source = torch.tensor(words, dtype=torch.int64).reshape(ROWS, COLUMNS)
@@ -145,7 +167,8 @@ def run_group(
     input_hashes: dict[str, str],
     failures: list[str],
 ) -> dict[str, Any]:
-    action_names = actions_for_output(output_dtype)
+    action_names = (COMPLEX_SCAN_CASES if output_dtype in COMPLEX_DTYPES
+                    else actions_for_output(output_dtype))
     group = f"{input_dtype}_to_{output_dtype}"
     manifest: dict[str, Any] = {
         "dtype": input_dtype,
@@ -193,7 +216,30 @@ def run_group(
             if len(raw_values) != reference.numel():
                 raise RuntimeError(f"{group}/{name}: value count mismatch")
             expected_values = reference.flatten().tolist()
-            if output_dtype == "bool":
+            if output_dtype in COMPLEX_DTYPES:
+                if any(not isinstance(value, dict) or set(value) != {"real", "imag"}
+                       for value in raw_values):
+                    raise RuntimeError(f"{group}/{name}: complex values must contain real and imag")
+                actual_components = []
+                for value in raw_values:
+                    components = (value["real"], value["imag"])
+                    if any(
+                        (type(component) not in (int, float) and
+                         component not in ("NaN", "+Inf", "-Inf"))
+                        for component in components
+                    ):
+                        raise RuntimeError(f"{group}/{name}: invalid complex component")
+                    actual_components.append([float(component) for component in components])
+                actual_values = torch.view_as_complex(torch.tensor(
+                    actual_components, dtype=torch.float64,
+                ).contiguous()).to(dtype=reference.dtype).reshape(actual["shape"])
+                complex_tolerance = 5e-6 if output_dtype == "complex64" else 1e-12
+                torch.testing.assert_close(
+                    actual_values, reference, atol=complex_tolerance,
+                    rtol=complex_tolerance, equal_nan=True,
+                    msg=lambda message: f"{group}/{name}: {message}",
+                )
+            elif output_dtype == "bool":
                 if any(type(value) is not bool for value in raw_values):
                     raise RuntimeError(f"{group}/{name}: bool values must be JSON booleans")
                 if raw_values != expected_values:
@@ -279,7 +325,13 @@ def main() -> int:
         default=list(OUTPUT_DTYPES),
         help="Output dtypes to benchmark (default: float32 float64)",
     )
+    parser.add_argument(
+        "--complex-scans", action="store_true",
+        help="Benchmark complex64 and complex128 scans using default native scan overloads",
+    )
     args = parser.parse_args()
+    if args.complex_scans and args.output_dtypes != list(OUTPUT_DTYPES):
+        parser.error("--complex-scans cannot be combined with --output-dtypes")
     if len(set(args.output_dtypes)) != len(args.output_dtypes):
         parser.error("--output-dtypes must not contain duplicates")
     args.runner = (ROOT / args.runner).resolve() if not args.runner.is_absolute() else args.runner
@@ -306,15 +358,19 @@ def main() -> int:
     }
     compile_command = [
         "nim", "c", "-d:release", "--path:src", f"--out:{args.runner}",
-        str(RUNNER_SOURCE),
     ]
+    if args.complex_scans:
+        compile_command.append("-d:complexScans")
+    compile_command.append(str(RUNNER_SOURCE))
 
     failures: list[str] = []
     input_hashes: dict[str, str] = {}
     groups: list[dict[str, Any]] = []
-    for input_dtype in INPUT_DTYPES:
+    input_dtypes = COMPLEX_DTYPES if args.complex_scans else INPUT_DTYPES
+    output_dtypes = COMPLEX_DTYPES if args.complex_scans else args.output_dtypes
+    for input_dtype in input_dtypes:
         source, payload = make_source(input_dtype)
-        for output_dtype in args.output_dtypes:
+        for output_dtype in ([input_dtype] if args.complex_scans else output_dtypes):
             groups.append(run_group(
                 args, input_dtype, output_dtype, source, payload, input_hashes, failures,
             ))
@@ -334,12 +390,13 @@ def main() -> int:
     action_count = sum(len(group["actions"]) for group in groups)
     comparison_count = action_count * 3 * 2
     actions_by_output_dtype = {
-        output_dtype: list(actions_for_output(output_dtype))
-        for output_dtype in args.output_dtypes
+        output_dtype: list(COMPLEX_SCAN_CASES if output_dtype in COMPLEX_DTYPES
+                           else actions_for_output(output_dtype))
+        for output_dtype in output_dtypes
     }
     protocol: dict[str, Any] = {
-        "input_dtypes": list(INPUT_DTYPES),
-        "output_dtypes": list(args.output_dtypes),
+        "input_dtypes": list(input_dtypes),
+        "output_dtypes": list(output_dtypes),
         "actions_per_output_dtype": actions_by_output_dtype,
         "group_count": len(groups),
         "action_count": action_count,
@@ -349,7 +406,9 @@ def main() -> int:
         "paired_rounds_per_group": 3,
         "comparisons": comparison_count,
     }
-    if all(dtype in OUTPUT_DTYPES for dtype in args.output_dtypes):
+    if args.complex_scans:
+        protocol["actions_per_group"] = list(COMPLEX_SCAN_CASES)
+    elif all(dtype in OUTPUT_DTYPES for dtype in args.output_dtypes):
         protocol["actions_per_group"] = list(CASES)
     report = {
         "torch": torch.__version__,

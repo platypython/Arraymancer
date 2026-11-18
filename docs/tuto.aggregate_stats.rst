@@ -67,5 +67,12 @@ Scans with these dtypes or ``bool`` accept scalars and empty tensors only;
 even a one-element vector raises ``ValueError``. All means reject an integer
 or boolean output dtype, including on empty inputs.
 
+Complex ``cumsum`` and ``cumprod`` retain the input dtype and accumulate in
+complex128 on CPU, rounding both components only when storing a prefix.
+This keeps complex64 prefixes accurate after cancellation or rounded output
+overflow and underflow. Vector scans begin with the additive or multiplicative
+identity; scalar scans copy the value, including signed-zero components.
+Views, negative axes and reverse scans follow the same rules as real inputs.
+
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

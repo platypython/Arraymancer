@@ -662,3 +662,98 @@ suite "Pinned PyTorch conformance foundation":
     observation.profile = "apple-metal"
     observation.evidence["completed"] = %false
     expect ValueError: discard collectAppleCoverage(requirements, capabilities, ["apple-metal"], [observation])
+  test "Default complex scans cover precision, layouts, signs and rejection":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var scanCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.complex_scans":
+        scanCase = caseData
+    doAssert scanCase.kind == JObject
+    check scanCase["area"].getStr == "api:torch"
+    check scanCase["atol"].getFloat == 1e-6
+    check scanCase["rtol"].getFloat == 1e-6
+    for name in ["complex64", "complex128", "transpose", "offset", "reverse",
+        "broadcast", "scalar", "empty", "singleton", "precision_cancellation",
+        "overflow_recovery", "underflow_recovery", "signed_zero", "nonfinite"]:
+      check scanCase["inputs"].hasKey(name)
+
+    var validObservations = 0
+    var invalidAxisObservations = 0
+    for name, spec in scanCase["inputs"]:
+      for operation in ["cumsum", "cumprod"]:
+        for axis in spec["axes"]:
+          validObservations += 2
+        invalidAxisObservations += spec["invalid_axes"].len
+    check validObservations == 140
+    check invalidAxisObservations == 56
+
+    let actual = runCase(scanCase)
+    check compareObservations(scanCase["expected"], actual,
+      scanCase["atol"].getFloat, scanCase["rtol"].getFloat).len == 0
+    let expected = scanCase["expected"]
+    let cancellation = expected["precision_cancellation"]["cumsum"]["axes"]["0"]["forward"]["values"][2]
+    check cancellation["real"].getFloat == 1.0
+    check cancellation["imag"].getFloat == 1.0
+    let overflow = expected["overflow_recovery"]["cumprod"]["axes"]["0"]["forward"]["values"]
+    check overflow[1]["real"].getStr == "+inf"
+    check overflow[2]["real"].getFloat > 9.9e19
+    check overflow[2]["real"].getFloat < 1.1e20
+    let underflow = expected["underflow_recovery"]["cumprod"]["axes"]["0"]["forward"]["values"]
+    check underflow[1]["real"].getFloat == 0.0
+    check underflow[2]["real"].getFloat > 0.0
+
+    for operation in ["cumsum", "cumprod"]:
+      for direction in ["forward", "reverse"]:
+        for axis in ["0", "-1"]:
+          let scalar = actual["scalar"][operation]["axes"][axis][direction]
+          check isNegativeZero(scalar["values"][0]["real"])
+          check isNegativeZero(scalar["values"][0]["imag"])
+          check scalar["negative_zero"]["real"] == %*[0]
+          check scalar["negative_zero"]["imag"] == %*[0]
+        let singleton = actual["singleton"][operation]["axes"]["0"][direction]
+        check singleton["negative_zero"]["real"].len == 0
+        if operation == "cumsum":
+          check singleton["negative_zero"]["imag"].len == 0
+        else:
+          check singleton["negative_zero"]["imag"] == %*[0]
+    let nonfinite = expected["nonfinite"]["cumsum"]["axes"]["0"]["forward"]
+    check nonfinite["values"][2]["real"].getStr == "nan"
+
+  test "Reject malformed complex scan inputs and observations":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var scanCaseIndex = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "tensor.complex_scans":
+        scanCaseIndex = index
+    doAssert scanCaseIndex >= 0
+
+    var malformed = duplicate(fixtures)
+    let complex64Values = malformed["cases"][scanCaseIndex]["inputs"]["complex64"]["values"]
+    complex64Values.elems[0] = %*[1.0]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    let scalarObservation = malformed["cases"][scanCaseIndex]["expected"]["scalar"]["cumsum"]["axes"]["0"]["forward"]
+    scalarObservation["negative_zero"]["real"] = newJArray()
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    let invalidAxis = malformed["cases"][scanCaseIndex]["expected"]["complex64"]["cumprod"]["invalid_axes"]["2"]
+    invalidAxis["error"] = %"accepted"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    let complexObservation = malformed["cases"][scanCaseIndex]["expected"]["complex128"]["cumsum"]["axes"]["0"]["forward"]
+    complexObservation["values"].elems[0] = %*{"real": 1.0}
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    let expectedComplex128 = malformed["cases"][scanCaseIndex]["expected"]["complex128"]
+    let outputValues = expectedComplex128["cumsum"]["axes"]["0"]["forward"]["values"]
+    outputValues[0]["real"] = newJInt(1)
+    expect ValueError: validateFixtureData(malformed, reference)
+
+
+    malformed = duplicate(fixtures)
+    let nonfiniteSpecials = malformed["cases"][scanCaseIndex]["inputs"]["nonfinite"]["nonfinite"]
+    nonfiniteSpecials[0]["component"] = %"imag"
+    expect ValueError: validateFixtureData(malformed, reference)

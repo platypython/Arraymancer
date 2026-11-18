@@ -1521,6 +1521,191 @@ def integer_output_dtype(torch: Any) -> dict[str, Any]:
     return _case("tensor.integer_output_dtype", "api:torch", inputs, expected, tolerance=0.0)
 
 
+def _complex_scalar(value: float) -> float | str:
+    return _scalar(float(value))
+
+
+def _observe_complex(tensor: Any) -> dict[str, Any]:
+    values = tensor.detach().reshape(-1).tolist()
+    negative_zero = {
+        "real": [
+            index for index, value in enumerate(values)
+            if value.real == 0.0 and math.copysign(1.0, value.real) < 0.0
+        ],
+        "imag": [
+            index for index, value in enumerate(values)
+            if value.imag == 0.0 and math.copysign(1.0, value.imag) < 0.0
+        ],
+    }
+    observation = {
+        "shape": list(tensor.shape),
+        "numel": tensor.numel(),
+        "dtype": str(tensor.dtype).removeprefix("torch."),
+        "device": str(tensor.device),
+        "values": [
+            {"real": _complex_scalar(value.real), "imag": _complex_scalar(value.imag)}
+            for value in values
+        ],
+        "negative_zero": negative_zero,
+    }
+    return observation
+
+
+def _complex_scan_spec(
+    dtype: str,
+    shape: list[int],
+    values: list[list[int | float]],
+    axes: list[int],
+    layout: str = "identity",
+    nonfinite: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    dimensions = max(1, len(shape))
+    spec: dict[str, Any] = {
+        "dtype": dtype,
+        "shape": shape,
+        "values": values,
+        "layout": layout,
+        "axes": axes,
+        "invalid_axes": [dimensions, -dimensions - 1],
+    }
+    if nonfinite is not None:
+        spec["nonfinite"] = nonfinite
+    return spec
+
+
+def _complex_scan_source(torch: Any, spec: dict[str, Any]) -> Any:
+    values = [complex(float(real), float(imag)) for real, imag in spec["values"]]
+    for special in spec.get("nonfinite", []):
+        value = {"nan": float("nan"), "+inf": float("inf"), "-inf": float("-inf")}[
+            special["value"]
+        ]
+        index = special["index"]
+        current = values[index]
+        values[index] = (
+            complex(value, current.imag)
+            if special["component"] == "real"
+            else complex(current.real, value)
+        )
+    source = torch.tensor(
+        values, dtype=getattr(torch, spec["dtype"]), device="cpu"
+    ).reshape(spec["shape"])
+    return _real_dtype_layout(source, spec["layout"])
+
+
+def _complex_invalid_scan_axis(call: Callable[[], Any], label: str) -> dict[str, str]:
+    try:
+        call()
+    except (IndexError, RuntimeError) as error:
+        if "dimension out of range" not in str(error).lower():
+            raise
+        return {"error": "invalid_axis"}
+    raise ValueError(f"{label} unexpectedly accepted an invalid scan axis")
+
+
+def complex_scans(torch: Any) -> dict[str, Any]:
+    """Observe default CPU complex scans, their component signs, and axis rejections."""
+    specs = {
+        "complex64": _complex_scan_spec(
+            "complex64", [2, 3],
+            [[1.0, 2.0], [-3.0, 0.5], [0.25, -1.0],
+             [2.0, -2.0], [0.0, 3.0], [-1.5, 0.25]],
+            [0, 1, -1],
+        ),
+        "complex128": _complex_scan_spec(
+            "complex128", [2, 3],
+            [[0.5, -1.0], [2.0, 3.0], [-4.0, 0.25],
+             [1.5, 2.5], [-0.5, -2.0], [3.0, 0.75]],
+            [0, 1, -1],
+        ),
+        "transpose": _complex_scan_spec(
+            "complex64", [2, 3],
+            [[2.0, -1.0], [3.0, 4.0], [-2.0, 0.5],
+             [1.0, 2.0], [-4.0, 1.0], [0.25, -3.0]],
+            [0, 1, -1], "transpose",
+        ),
+        "offset": _complex_scan_spec(
+            "complex128", [3, 4],
+            [[float(i - 5), float((i % 4) - 2)] for i in range(12)],
+            [0, 1, -1], "offset",
+        ),
+        "reverse": _complex_scan_spec(
+            "complex64", [5],
+            [[3.0, -1.0], [-2.0, 4.0], [0.5, 2.0], [1.0, -3.0], [-1.5, 0.25]],
+            [0, -1], "reverse",
+        ),
+        "broadcast": _complex_scan_spec(
+            "complex128", [1, 3], [[2.0, -1.0], [0.5, 3.0], [-2.0, 0.25]],
+            [0, 1, -1], "broadcast",
+        ),
+        "scalar": _complex_scan_spec(
+            "complex128", [], [[-0.0, -0.0]], [0, -1],
+        ),
+        "empty": _complex_scan_spec(
+            "complex64", [2, 0, 3], [], [0, 1, 2, -1],
+        ),
+        "singleton": _complex_scan_spec(
+            "complex64", [1], [[-0.0, -0.0]], [0, -1],
+        ),
+        "precision_cancellation": _complex_scan_spec(
+            "complex64", [3],
+            [[16777216.0, 16777216.0], [1.0, 1.0], [-16777216.0, -16777216.0]],
+            [0, -1],
+        ),
+        "overflow_recovery": _complex_scan_spec(
+            "complex64", [3], [[1e20, 0.0], [1e20, 0.0], [1e-20, 0.0]], [0, -1],
+        ),
+        "underflow_recovery": _complex_scan_spec(
+            "complex64", [3], [[1e-30, 0.0], [1e-30, 0.0], [1e30, 0.0]], [0, -1],
+        ),
+        "signed_zero": _complex_scan_spec(
+            "complex128", [2], [[-0.0, -0.0], [-0.0, -0.0]], [0, -1],
+        ),
+        "nonfinite": _complex_scan_spec(
+            "complex128", [5],
+            [[1.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, 0.0], [1.0, 0.0]],
+            [0, -1],
+            nonfinite=[
+                {"index": 1, "component": "real", "value": "+inf"},
+                {"index": 2, "component": "real", "value": "-inf"},
+                {"index": 4, "component": "imag", "value": "nan"},
+            ],
+        ),
+    }
+    inputs: dict[str, Any] = {}
+    expected: dict[str, Any] = {}
+    for name, spec in specs.items():
+        source = _complex_scan_source(torch, spec)
+        inputs[name] = {**spec}
+        observations: dict[str, Any] = {}
+        for operation in ("cumsum", "cumprod"):
+            axes: dict[str, Any] = {}
+            for axis in spec["axes"]:
+                directions: dict[str, Any] = {}
+                for reverse in (False, True):
+                    if reverse and source.ndim:
+                        scan_source = torch.flip(source, dims=[axis])
+                        output = getattr(scan_source, operation)(dim=axis)
+                        output = torch.flip(output, dims=[axis])
+                    else:
+                        output = getattr(source, operation)(dim=axis)
+                    if output.dtype != getattr(torch, spec["dtype"]):
+                        raise ValueError(
+                            f"{name}.{operation} returned {output.dtype}, expected {spec['dtype']}"
+                        )
+                    directions["reverse" if reverse else "forward"] = _observe_complex(output)
+                axes[str(axis)] = directions
+            invalid_axes = {
+                str(axis): _complex_invalid_scan_axis(
+                    lambda axis=axis: getattr(source, operation)(dim=axis),
+                    f"{name}.{operation}.{axis}",
+                )
+                for axis in spec["invalid_axes"]
+            }
+            observations[operation] = {"axes": axes, "invalid_axes": invalid_axes}
+        expected[name] = observations
+    return _case("tensor.complex_scans", "api:torch", inputs, expected, tolerance=1e-6)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -1531,7 +1716,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
     cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
-    integer_output_dtype,
+    integer_output_dtype, complex_scans,
 )
 
 

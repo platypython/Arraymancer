@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import ../../src/arraymancer
-import std / [unittest, math]
+import std / [unittest, math, complex]
 
 proc checkPromotedIntegerScans[T]() =
   ## Check widening before arithmetic, including metadata-only input views.
@@ -1092,6 +1092,50 @@ proc main() =
           discard matrix.cumsum(2)
         expect ValueError:
           discard scalar.cumsum(1)
+
+      test "complex64 scans keep both components wide after rounded stores":
+        let cancellation = [complex32(16777216, 16777216), complex32(1, 1),
+                            complex32(-16777216, -16777216)].toTensor
+        check cancellation.cumsum()[2] == complex32(1, 1)
+        check cancellation.cumsum(reverse = true)[0] == complex32(1, 1)
+        let overflow = [complex32(1e20, 0), complex32(1e20, 0),
+                        complex32(1e-20, 0)].toTensor
+        let large = overflow.cumprod()
+        check large[1].re.classify == fcInf
+        check large[2] == overflow[0]
+        let underflow = [complex32(1e-30, 0), complex32(1e-30, 0),
+                         complex32(1e30, 0)].toTensor
+        let small = underflow.cumprod()
+        check small[1].re == 0'f32
+        check abs(small[2].re / underflow[0].re - 1'f32) < 1e-6'f32
+        let columns = cancellation.reshape(3, 1).broadcast(3, 5)
+        let sums = columns.cumsum(0)
+        for column in 0 ..< 5:
+          check sums[2, column] == complex32(1, 1)
+        check cancellation[2..0|-1].cumsum()[2] == complex32(1, 1)
+
+      test "complex scans preserve scalar signs and execute vector identities":
+        let negativeZero = cast[float64](0x8000000000000000'u64)
+        let value = complex(negativeZero, negativeZero)
+        let scalar = newTensorWith[Complex[float64]]([], value)
+        var copied = scalar.cumprod(-1)
+        check copied.atContiguousIndex(0).re.classify == fcNegZero
+        check copied.atContiguousIndex(0).im.classify == fcNegZero
+        copied.unsafe_raw_offset[0] = complex(2.0, 3.0)
+        check scalar.atContiguousIndex(0).re.classify == fcNegZero
+        let vector = [value].toTensor
+        let sum = vector.cumsum()[0]
+        let product = vector.cumprod()[0]
+        check sum.re.classify == fcZero
+        check sum.im.classify == fcZero
+        check product.re.classify == fcZero
+        check product.im.classify == fcNegZero
+        let infinite = [complex(Inf, 0.0)].toTensor.cumprod()[0]
+        check infinite.re.classify == fcInf
+        check infinite.im.classify == fcNan
+        expect ValueError: discard scalar.cumsum(1)
+        expect ValueError: discard vector.cumprod(-2)
+        check newTensor[Complex[float32]](2, 0, 3).cumsum(1).shape == [2, 0, 3]
 
       test "float64 scans retain ordered forward and reverse carries":
         let cancellation = [1e16, 1.0, -1e16].toTensor

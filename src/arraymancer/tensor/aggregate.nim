@@ -912,7 +912,7 @@ func cumulativeAxis(rank, axis: int): int =
 proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
                    dtype: typedesc[U]; promoteIntegers: static[bool] = true;
                    reverse: bool = false): Tensor[U] =
-  ## Cast on read; floating carries stay wide after rounded output stores.
+  ## Cast on read; floating and complex carries survive rounded output stores.
   withCompilerOptimHints()
   mixin _
   template scanValue(value: untyped): untyped =
@@ -992,6 +992,15 @@ proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
             accumulate(accumulated, float64(scanValue(inputData[inputOffset + flat])))
             output[flat] = U(accumulated)
       return
+  elif U is Complex:
+    if arg.is_C_contiguous:
+      if reverse:
+        scanPackedComplex(addr output[0], unsafeAddr inputData[arg.offset],
+                          outer, axisLength, inner, multiply, true)
+      else:
+        scanPackedComplex(addr output[0], unsafeAddr inputData[arg.offset],
+                          outer, axisLength, inner, multiply, false)
+      return
   elif T is SomeInteger or T is bool or U is SomeInteger:
     if arg.is_C_contiguous:
       let inputOffset = uint(arg.offset)
@@ -1059,6 +1068,16 @@ proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
         accumulate(accumulated,
                    float64(scanValue(inputData[inputBase + int(coordinate) * arg.strides[scanAxis]])))
         writeOutput(outputBase + coordinate * inner, U(accumulated))
+    elif U is Complex:
+      var accumulated: Complex[float64]
+      when multiply: accumulated.re = 1.0
+      for step in 0'u ..< axisLength:
+        let coordinate = scanCoordinate(step)
+        let value = inputData[inputBase + int(coordinate) * arg.strides[scanAxis]]
+        accumulateComplexScan(accumulated, value, multiply)
+        type Component = typeof(default(U).re)
+        writeOutput(outputBase + coordinate * inner,
+                    U(re: Component(accumulated.re), im: Component(accumulated.im)))
     else:
       when promoteIntegers and U is SomeInteger:
         var accumulated: int64
@@ -1095,7 +1114,8 @@ proc cumsum*[T](arg: Tensor[T], axis: int = 0;
   ##
   ## Offset, reversed and broadcast views are read through their strides.
   ## ``reverse`` accumulates from the final coordinate toward the first.
-  ## Float32 prefixes accumulate in float64 before rounding each output.
+  ## Float32 prefixes accumulate in float64 before rounding each output;
+  ## complex prefixes use complex128 carries, including identity arithmetic.
   ## Integers and booleans promote to int64 with modulo-2^64 arithmetic;
   ## other element types retain their type and ordinary ``+`` operation.
   scanCPU(arg, axis, false, sumProductElement(T), reverse = reverse)
@@ -1108,10 +1128,11 @@ proc cumprod*[T](arg: Tensor[T], axis: int = 0;
   ##
   ## Offset, reversed and broadcast views are read through their strides.
   ## ``reverse`` accumulates from the final coordinate toward the first.
-  ## Float32 prefixes accumulate in float64, so an overflowed or underflowed
-  ## output does not replace the wider carry. Integers and booleans promote
-  ## to int64 with modulo-2^64 arithmetic; other types retain their type
-  ## and ordinary ``*`` operation.
+  ## Float32 prefixes accumulate in float64 and complex prefixes in complex128,
+  ## so rounded output overflow or underflow does not replace the wider carry.
+  ## Complex scans multiply by the identity even at the first vector element;
+  ## rank-zero scans copy instead. Integers and booleans promote to int64
+  ## with modulo-2^64 arithmetic; other types retain their type and ``*``.
   scanCPU(arg, axis, true, sumProductElement(T), reverse = reverse)
 
 proc cumsum*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T], axis: int = 0;

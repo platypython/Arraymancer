@@ -60,7 +60,7 @@ const
     "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient",
     "tensor.integer_scans", "tensor.integer_reductions", "tensor.float64_reductions",
     "tensor.mean_dtype", "tensor.sum_dtype", "tensor.cumsum_dtype", "tensor.cumprod_dtype",
-    "tensor.prod_dtype", "tensor.integer_output_dtype"]
+    "tensor.prod_dtype", "tensor.integer_output_dtype", "tensor.complex_scans"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
@@ -68,7 +68,7 @@ const
     "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
     "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
     "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch", "api:autograd",
-    "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch"]
+    "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -814,6 +814,165 @@ proc expectRealDtypeScanExpected(expected, inputs: JsonNode) =
             "real dtype scan output shape must match input for " & name & "." & $axis & "." & direction)
 
 
+const ComplexScanInputNames = ["complex64", "complex128", "transpose", "offset",
+  "reverse", "broadcast", "scalar", "empty", "singleton", "precision_cancellation",
+  "overflow_recovery", "underflow_recovery", "signed_zero", "nonfinite"]
+
+proc complexScanNumber(node: JsonNode): bool =
+  node.kind in {JInt, JFloat} and
+    classify(node.getFloat) notin {fcNan, fcInf, fcNegInf}
+
+proc complexScanFiniteFloat(node: JsonNode): bool =
+  node.kind == JFloat and classify(node.getFloat) notin {fcNan, fcInf, fcNegInf}
+
+proc expectComplexScanInput(spec: JsonNode, name: string) =
+  let hasNonfinite = name == "nonfinite"
+  require(spec.kind == JObject and spec.len == (if hasNonfinite: 7 else: 6),
+    "complex scan input fields are incomplete for " & name)
+  let dtype = case name
+    of "complex128", "offset", "broadcast", "scalar", "signed_zero", "nonfinite": "complex128"
+    else: "complex64"
+  require(text(field(spec, "dtype"), "complex scan dtype") == dtype,
+    "complex scan dtype mismatch for " & name)
+  let expectedShape = case name
+    of "complex64", "complex128", "transpose": @[2, 3]
+    of "offset": @[3, 4]
+    of "reverse": @[5]
+    of "broadcast": @[1, 3]
+    of "empty": @[2, 0, 3]
+    of "singleton": @[1]
+    of "precision_cancellation", "overflow_recovery", "underflow_recovery": @[3]
+    of "signed_zero": @[2]
+    of "nonfinite": @[5]
+    else: @[]
+  let shape = field(spec, "shape")
+  require(shape == jsonShape(expectedShape), "complex scan shape mismatch for " & name)
+  var size = 1
+  for dimension in expectedShape:
+    if dimension == 0: size = 0
+    elif size != 0:
+      require(size <= high(int) div dimension, "complex scan input shape overflows")
+      size *= dimension
+  let values = field(spec, "values")
+  require(values.kind == JArray and values.len == size,
+    "complex scan component count does not match shape for " & name)
+  for pair in values:
+    require(pair.kind == JArray and pair.len == 2,
+      "complex scan values must be real/imaginary pairs for " & name)
+    for component in pair:
+      require(complexScanNumber(component),
+        "complex scan inputs must contain finite components for " & name)
+
+  let expectedLayout = if name in ["transpose", "offset", "reverse", "broadcast"]: name
+                       else: "identity"
+  require(text(field(spec, "layout"), "complex scan layout") == expectedLayout,
+    "complex scan layout mismatch for " & name)
+  let expectedAxes = case name
+    of "complex64", "complex128", "transpose", "offset", "broadcast": @[0, 1, -1]
+    of "empty": @[0, 1, 2, -1]
+    else: @[0, -1]
+  var axes = newJArray()
+  for axis in expectedAxes: axes.add newJInt(axis)
+  require(field(spec, "axes") == axes, "complex scan axes mismatch for " & name)
+  let dimensions = max(1, expectedShape.len)
+  let invalidAxes = field(spec, "invalid_axes")
+  require(invalidAxes == %*[dimensions, -dimensions - 1],
+    "complex scan invalid axes mismatch for " & name)
+
+  if hasNonfinite:
+    let specials = field(spec, "nonfinite")
+    require(specials.kind == JArray and specials.len == 3 and
+      specials[0] == %*{"index": 1, "component": "real", "value": "+inf"} and
+      specials[1] == %*{"index": 2, "component": "real", "value": "-inf"} and
+      specials[2] == %*{"index": 4, "component": "imag", "value": "nan"},
+      "complex scan nonfinite source components do not match the required values")
+  else:
+    require(not spec.hasKey("nonfinite"), "unexpected complex scan nonfinite input " & name)
+
+proc complexNegativeZero(node: JsonNode): bool =
+  node.kind == JFloat and node.getFloat == 0.0 and
+    (cast[uint64](node.getFloat) shr 63) == 1'u64
+
+proc complexNegativeZeroIndices(values: JsonNode, component: string): JsonNode =
+  result = newJArray()
+  for index in 0 ..< values.len:
+    if complexNegativeZero(field(values[index], component)):
+      result.add newJInt(index)
+
+proc expectComplexObservation(node: JsonNode, shape: seq[int], dtype, label: string) =
+  require(node.kind == JObject and node.len == 6,
+    label & " complex observation fields are incomplete")
+  require(field(node, "shape") == jsonShape(shape), label & " shape mismatch")
+  let count = block:
+    var n = 1
+    for dimension in shape:
+      if dimension == 0: n = 0
+      elif n != 0:
+        require(n <= high(int) div dimension, label & " shape overflows")
+        n *= dimension
+    n
+  require(field(node, "numel").kind == JInt and node["numel"].getInt == count,
+    label & " numel/shape mismatch")
+  require(text(field(node, "dtype"), label & " dtype") == dtype and
+    text(field(node, "device"), label & " device") == "cpu",
+    label & " complex observation dtype/device mismatch")
+  let values = field(node, "values")
+  require(values.kind == JArray and values.len == count,
+    label & " complex values count does not match shape")
+  for value in values:
+    require(value.kind == JObject and value.len == 2,
+      label & " complex values must be real/imaginary objects")
+    for component in ["real", "imag"]:
+      let scalar = field(value, component)
+      require(complexScanFiniteFloat(scalar) or
+        (scalar.kind == JString and scalar.getStr in ["nan", "+inf", "-inf"]),
+        label & " has an invalid complex component")
+  let negativeZero = field(node, "negative_zero")
+  require(negativeZero.kind == JObject and negativeZero.len == 2,
+    label & " signed-zero components are incomplete")
+  for component in ["real", "imag"]:
+    let indices = field(negativeZero, component)
+    require(indices.kind == JArray and
+      indices == complexNegativeZeroIndices(values, component),
+      label & " signed-zero indices do not match component values")
+
+proc expectComplexInvalidAxis(node: JsonNode, label: string) =
+  require(node.kind == JObject and node.len == 1 and
+    text(field(node, "error"), label & " error") == "invalid_axis",
+    label & " must record the native invalid-axis rejection")
+
+proc expectComplexScanExpected(expected, inputs: JsonNode) =
+  require(expected.kind == JObject and expected.len == inputs.len,
+    "complex scan observations do not match inputs")
+  for name, spec in inputs:
+    let observations = field(expected, name)
+    require(observations.kind == JObject and observations.len == 2,
+      "complex scan operation observations are incomplete for " & name)
+    let shape = float64LogicalShape(spec, spec["layout"].getStr)
+    let dtype = spec["dtype"].getStr
+    for operation in ["cumsum", "cumprod"]:
+      let byOperation = field(observations, operation)
+      require(byOperation.kind == JObject and byOperation.len == 2,
+        "complex scan direction/rejection groups are incomplete for " & name & "." & operation)
+      let axes = field(byOperation, "axes")
+      require(axes.kind == JObject and axes.len == spec["axes"].len,
+        "complex scan axes are incomplete for " & name & "." & operation)
+      for axisNode in spec["axes"]:
+        let axis = $axisNode.getInt
+        let directions = field(axes, axis)
+        require(directions.kind == JObject and directions.len == 2,
+          "complex scan directions are incomplete for " & name & "." & operation & "." & axis)
+        for direction in ["forward", "reverse"]:
+          expectComplexObservation(field(directions, direction), shape, dtype,
+            "complex scan " & name & "." & operation & "." & axis & "." & direction)
+      let invalidAxes = field(byOperation, "invalid_axes")
+      require(invalidAxes.kind == JObject and invalidAxes.len == spec["invalid_axes"].len,
+        "complex scan invalid-axis observations are incomplete for " & name & "." & operation)
+      for axisNode in spec["invalid_axes"]:
+        let axis = $axisNode.getInt
+        expectComplexInvalidAxis(field(invalidAxes, axis),
+          "complex scan " & name & "." & operation & "." & axis)
+
 const
   IntegerOutputDtypeNames = ["bool", "uint8", "int8", "int16", "int32", "int64",
     "uint16", "uint32", "uint64"]
@@ -1130,6 +1289,14 @@ proc validateFixtureData*(data, reference: JsonNode) =
         "integer scan fixtures require exact-value tolerances")
       require(inputs.kind == JObject and inputs.len > 0, "integer scan inputs missing")
       for _, spec in inputs: expectIntegerScanInput(spec)
+    of "tensor.complex_scans":
+      require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
+        "complex scan fixtures require 1e-6 tolerances")
+      require(inputs.kind == JObject and inputs.len == ComplexScanInputNames.len,
+        "complex scan inputs do not match required cases")
+      for name in ComplexScanInputNames:
+        require(inputs.hasKey(name), "missing complex scan input " & name)
+        expectComplexScanInput(inputs[name], name)
     of "tensor.integer_reductions":
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "integer reduction fixtures require exact-value tolerances")
@@ -1251,6 +1418,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
           for axis in spec["axes"]:
             let key = $axis.getInt
             expectTensor(field(byAxis, key), false, "int64")
+    of "tensor.complex_scans":
+      expectComplexScanExpected(expected, inputs)
     of "tensor.integer_reductions":
       require(expected.kind == JObject and expected.len == inputs.len,
         "integer reduction expected cases must match inputs")

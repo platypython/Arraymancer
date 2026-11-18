@@ -13,7 +13,7 @@
 # limitations under the License.
 
 ## Observes fixture-driven CPU operations without replacing native semantics.
-import std/[json, math, strutils]
+import std/[complex, json, math, strutils]
 import ../../src/arraymancer
 
 proc getTensor(desc: JsonNode): Tensor[float64] =
@@ -639,6 +639,130 @@ proc float64Reductions(inputs: JsonNode): JsonNode =
   result["scan_vjps"] = float64ScanVjps(inputs["scan_vjps"])
 
 
+proc getComplexTensor[T](desc: JsonNode): Tensor[T] =
+  let shapeNode = desc["shape"]
+  if shapeNode.len > LASER_MAXRANK:
+    raise newException(ValueError, "input rank exceeds LASER_MAXRANK")
+  var shape = newSeq[int](shapeNode.len)
+  for index in 0 ..< shapeNode.len: shape[index] = shapeNode[index].getInt
+  result = newTensorUninit[T](toMetadata(shape))
+  let values = desc["values"]
+  if values.len != result.size:
+    raise newException(ValueError, "complex scan input value count mismatch")
+  var raw = result.unsafe_raw_offset
+  for index in 0 ..< values.len:
+    let pair = values[index]
+    when T is Complex[float32]:
+      raw[index] = complex32(pair[0].getFloat.float32, pair[1].getFloat.float32)
+    elif T is Complex[float64]:
+      raw[index] = complex64(pair[0].getFloat, pair[1].getFloat)
+    else:
+      {.error: "unsupported complex scan input dtype".}
+
+proc complexScanSpecials[T](source: var Tensor[T], specials: JsonNode) =
+  for special in specials:
+    let index = special["index"].getInt
+    let value = case special["value"].getStr
+      of "nan": NaN
+      of "+inf": Inf
+      else: NegInf
+    let component = special["component"].getStr
+    when T is Complex[float32]:
+      case component
+      of "real": source.unsafe_raw_offset[index].re = value.float32
+      of "imag": source.unsafe_raw_offset[index].im = value.float32
+      else: raise newException(ValueError, "unknown complex scan component")
+    elif T is Complex[float64]:
+      case component
+      of "real": source.unsafe_raw_offset[index].re = value
+      of "imag": source.unsafe_raw_offset[index].im = value
+      else: raise newException(ValueError, "unknown complex scan component")
+    else:
+      {.error: "unsupported complex scan input dtype".}
+
+
+proc negativeZero(value: float32): bool =
+  value == 0'f32 and (cast[uint32](value) shr 31) == 1'u32
+
+proc negativeZero(value: float64): bool =
+  value == 0.0 and (cast[uint64](value) shr 63) == 1'u64
+
+proc complexTensorObservation[T](t: Tensor[T]): JsonNode =
+  result = newJObject()
+  var shape = newJArray()
+  for dimension in t.shape: shape.add newJInt(dimension)
+  result["shape"] = shape
+  result["numel"] = newJInt(t.size.int)
+  when T is Complex[float32]: result["dtype"] = %"complex64"
+  elif T is Complex[float64]: result["dtype"] = %"complex128"
+  else: {.error: "unsupported complex scan observation dtype".}
+  result["device"] = %"cpu"
+  var values = newJArray()
+  var negativeReal = newJArray()
+  var negativeImag = newJArray()
+  for index, value in enumerate(t):
+    var components = newJObject()
+    components["real"] = floatNode(value.re.float64)
+    components["imag"] = floatNode(value.im.float64)
+    values.add components
+    if negativeZero(value.re): negativeReal.add newJInt(index)
+    if negativeZero(value.im): negativeImag.add newJInt(index)
+  result["values"] = values
+  result["negative_zero"] = %*{"real": negativeReal, "imag": negativeImag}
+
+proc complexScanAxis[T](source: Tensor[T], axis: int, operation: string,
+                        reverse: bool): Tensor[T] =
+  case operation
+  of "cumsum": result = source.cumsum(axis = axis, reverse = reverse)
+  of "cumprod": result = source.cumprod(axis = axis, reverse = reverse)
+  else: raise newException(ValueError, "unsupported complex scan: " & operation)
+
+proc complexInvalidScanAxis[T](source: Tensor[T], axis: int,
+                               operation, label: string): JsonNode =
+  try:
+    discard complexScanAxis(source, axis, operation, false)
+  except ValueError as error:
+    let message = error.msg.toLowerAscii
+    if not (message.contains("axis") or message.contains("dimension") or
+            message.contains("index") or message.contains("range")):
+      raise
+    return %*{"error": "invalid_axis"}
+  raise newException(ValueError, label & " unexpectedly accepted an invalid scan axis")
+
+proc complexScanDirections[T](source: Tensor[T], axis: int,
+                              operation: string): JsonNode =
+  result = newJObject()
+  result["forward"] = complexTensorObservation(
+    complexScanAxis(source, axis, operation, false))
+  result["reverse"] = complexTensorObservation(
+    complexScanAxis(source, axis, operation, true))
+
+proc complexScanCase[T](spec: JsonNode): JsonNode =
+  var source = getComplexTensor[T](spec)
+  if spec.hasKey("nonfinite"):
+    complexScanSpecials(source, spec["nonfinite"])
+  source = realDtypeLayout(source, spec["layout"].getStr)
+  result = newJObject()
+  for operation in ["cumsum", "cumprod"]:
+    var axes = newJObject()
+    for axisNode in spec["axes"]:
+      let axis = axisNode.getInt
+      axes[$axis] = complexScanDirections(source, axis, operation)
+    var invalidAxes = newJObject()
+    for axisNode in spec["invalid_axes"]:
+      let axis = axisNode.getInt
+      invalidAxes[$axis] = complexInvalidScanAxis(
+        source, axis, operation, operation & ".invalid_axis." & $axis)
+    result[operation] = %*{"axes": axes, "invalid_axes": invalidAxes}
+
+proc complexScans(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = case spec["dtype"].getStr
+      of "complex64": complexScanCase[Complex[float32]](spec)
+      of "complex128": complexScanCase[Complex[float64]](spec)
+      else: raise newException(ValueError, "unsupported complex scan dtype")
+
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
@@ -662,6 +786,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = realDtypeScans(inputs, "cumsum")
   of "tensor.cumprod_dtype":
     result = realDtypeScans(inputs, "cumprod")
+  of "tensor.complex_scans":
+    result = complexScans(inputs)
   of "tensor.transpose_alias":
     var base = getTensor(inputs["a"])
     var view = base.transpose

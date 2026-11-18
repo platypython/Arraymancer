@@ -1,6 +1,6 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
 ## Measures allocating CPU reductions and scans with explicit output dtypes.
-import std/[algorithm, json, math, monotimes, os, times]
+import std/[algorithm, complex, json, math, monotimes, os, times]
 import arraymancer
 
 const floatCases = [
@@ -13,9 +13,15 @@ const integerCases = [
   "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
 ]
 const boolCases = ["sum", "sum_rows", "sum_columns", "prod", "prod_rows", "prod_columns"]
+const complexScanCases = [
+  "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
+]
 
 iterator actionNames[OutputT](): string =
-  when OutputT is bool:
+  when OutputT is Complex:
+    for name in complexScanCases:
+      yield name
+  elif OutputT is bool:
     for name in boolCases:
       yield name
   elif OutputT is SomeInteger:
@@ -36,40 +42,58 @@ proc loadInput[T](manifest: JsonNode): Tensor[T] =
   let rows = manifest["rows"].getInt
   let columns = manifest["columns"].getInt
   result = newTensorUninit[T](rows, columns)
-  if manifest.hasKey("words"):
-    let words = manifest["words"]
-    if words.len != result.size:
-      raise newException(ValueError, "Word count does not match input shape")
-    let data = cast[ptr UncheckedArray[T]](result.get_offset_ptr)
-    for index in 0 ..< result.size:
-      data[index] = nativeValue[T](words[index].getBiggestInt)
-  else:
+  when T is Complex:
     let values = manifest["values"]
     if values.len != result.size:
-      raise newException(ValueError, "Value count does not match input shape")
+      raise newException(ValueError, "Complex value count does not match input shape")
     let data = cast[ptr UncheckedArray[T]](result.get_offset_ptr)
+    type Component = typeof(default(T).re)
     for index in 0 ..< result.size:
-      when T is bool:
-        data[index] = values[index].getFloat != 0.0
-      else:
-        data[index] = T(values[index].getFloat)
+      data[index] = T(re: Component(values[index][0].getFloat),
+                      im: Component(values[index][1].getFloat))
+  else:
+    if manifest.hasKey("words"):
+      let words = manifest["words"]
+      if words.len != result.size:
+        raise newException(ValueError, "Word count does not match input shape")
+      let data = cast[ptr UncheckedArray[T]](result.get_offset_ptr)
+      for index in 0 ..< result.size:
+        data[index] = nativeValue[T](words[index].getBiggestInt)
+    else:
+      let values = manifest["values"]
+      if values.len != result.size:
+        raise newException(ValueError, "Value count does not match input shape")
+      let data = cast[ptr UncheckedArray[T]](result.get_offset_ptr)
+      for index in 0 ..< result.size:
+        when T is bool:
+          data[index] = values[index].getFloat != 0.0
+        else:
+          data[index] = T(values[index].getFloat)
 
 proc execute[InputT, OutputT](name: string; input: Tensor[InputT]): Tensor[OutputT] =
-  case name
-  of "mean": newTensorWith[OutputT]([], input.mean(dtype = OutputT))
-  of "mean_rows": input.mean(-1, dtype = OutputT)
-  of "mean_columns": input.mean(-2, dtype = OutputT)
-  of "sum": newTensorWith[OutputT]([], input.sum(dtype = OutputT))
-  of "sum_rows": input.sum(-1, dtype = OutputT)
-  of "sum_columns": input.sum(-2, dtype = OutputT)
-  of "prod": newTensorWith[OutputT]([], input.product(dtype = OutputT))
-  of "prod_rows": input.product(-1, dtype = OutputT)
-  of "prod_columns": input.product(-2, dtype = OutputT)
-  of "cumsum_rows": input.cumsum(-1, dtype = OutputT)
-  of "cumsum_columns": input.cumsum(-2, dtype = OutputT)
-  of "cumprod_rows": input.cumprod(-1, dtype = OutputT)
-  of "cumprod_columns": input.cumprod(-2, dtype = OutputT)
-  else: raise newException(ValueError, "Unknown reduction dtype action: " & name)
+  when InputT is Complex:
+    case name
+    of "cumsum_rows": input.cumsum(-1)
+    of "cumsum_columns": input.cumsum(-2)
+    of "cumprod_rows": input.cumprod(-1)
+    of "cumprod_columns": input.cumprod(-2)
+    else: raise newException(ValueError, "Unknown complex scan action: " & name)
+  else:
+    case name
+    of "mean": newTensorWith[OutputT]([], input.mean(dtype = OutputT))
+    of "mean_rows": input.mean(-1, dtype = OutputT)
+    of "mean_columns": input.mean(-2, dtype = OutputT)
+    of "sum": newTensorWith[OutputT]([], input.sum(dtype = OutputT))
+    of "sum_rows": input.sum(-1, dtype = OutputT)
+    of "sum_columns": input.sum(-2, dtype = OutputT)
+    of "prod": newTensorWith[OutputT]([], input.product(dtype = OutputT))
+    of "prod_rows": input.product(-1, dtype = OutputT)
+    of "prod_columns": input.product(-2, dtype = OutputT)
+    of "cumsum_rows": input.cumsum(-1, dtype = OutputT)
+    of "cumsum_columns": input.cumsum(-2, dtype = OutputT)
+    of "cumprod_rows": input.cumprod(-1, dtype = OutputT)
+    of "cumprod_columns": input.cumprod(-2, dtype = OutputT)
+    else: raise newException(ValueError, "Unknown reduction dtype action: " & name)
 
 proc dtypeName[T](): string =
   when T is bool: "bool"
@@ -83,6 +107,8 @@ proc dtypeName[T](): string =
   elif T is uint64: "uint64"
   elif T is float32: "float32"
   elif T is float64: "float64"
+  elif T is Complex[float32]: "complex64"
+  elif T is Complex[float64]: "complex128"
   else: {.error: "Unsupported reduction dtype".}
 proc jsonFloat(value: float64): JsonNode =
   ## JSON has no non-finite numeric literals; use explicit tokens for exact values.
@@ -102,6 +128,9 @@ proc observe[T](input: Tensor[T]; inputDtype: string): JsonNode =
       values.add %value
     elif T is SomeInteger:
       values.add %($value)
+    elif T is Complex:
+      values.add %*{"real": jsonFloat(float64(value.re)),
+                    "imag": jsonFloat(float64(value.im))}
     else:
       values.add jsonFloat(float64(value))
   %*{"input_dtype": inputDtype, "dtype": dtype, "shape": shape, "values": values}
@@ -179,4 +208,12 @@ when isMainModule:
   let manifest = parseFile(paramStr(1))
   if manifest["rows"].getInt != 128 or manifest["columns"].getInt != 128:
     raise newException(ValueError, "Reduction dtype benchmark input must be 128x128")
-  echo runForDtype(manifest)
+  when defined(complexScans):
+    if manifest["output_dtype"].getStr != manifest["dtype"].getStr:
+      raise newException(ValueError, "Default complex scans retain the input dtype")
+    case manifest["dtype"].getStr
+    of "complex64": echo run[Complex[float32], Complex[float32]](manifest)
+    of "complex128": echo run[Complex[float64], Complex[float64]](manifest)
+    else: raise newException(ValueError, "Unsupported complex scan input dtype")
+  else:
+    echo runForDtype(manifest)

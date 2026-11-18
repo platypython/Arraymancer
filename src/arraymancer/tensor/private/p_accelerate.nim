@@ -13,7 +13,7 @@
 # limitations under the License.
 
 ## Provides packed CPU float64 reductions and private macOS float32 bulk operations.
-import std/math
+import std/[math, complex]
 import ../../laser/compiler_optim_hints
 
 template convertedReductionValue*(value: untyped; U: typedesc): untyped =
@@ -69,6 +69,53 @@ proc reducePackedFloatTruth*[T: SomeFloat](input: ptr UncheckedArray[T],
   for index in head ..< count:
     anyZero = anyZero or Word(ord((cast[Word](input[base + index]) and magnitude) == 0))
   anyZero == 0
+
+template accumulateComplexScan*(acc, value: untyped; multiply: static[bool]) =
+  ## Widen before arithmetic, not after a rounded complex32 multiplication.
+  when multiply:
+    let rr = acc.re * float64(value.re)
+    let ii = acc.im * float64(value.im)
+    let ri = acc.re * float64(value.im)
+    let ir = acc.im * float64(value.re)
+    acc.re = rr - ii
+    acc.im = ri + ir
+  else:
+    acc.re += float64(value.re)
+    acc.im += float64(value.im)
+
+proc scanPackedComplex*[T: SomeFloat](output, input: ptr Complex[T];
+    outer, axisLength, inner: uint; multiply, reverse: static[bool]) =
+  ## Interleave independent scans while keeping each ordered complex128 carry.
+  withCompilerOptimHints()
+  let destination {.restrict.} = cast[ptr UncheckedArray[Complex[T]]](output)
+  let source = cast[ptr UncheckedArray[Complex[T]]](input)
+  template coordinate(step: uint): uint =
+    when reverse: axisLength - 1'u - step
+    else: step
+  let groups = outer * inner
+  var group = 0'u
+  while group + 4'u <= groups:
+    var bases: array[4, uint]
+    var carries: array[4, Complex[float64]]
+    for lane in 0 ..< 4:
+      let scan = group + uint(lane)
+      bases[lane] = (scan div inner) * axisLength * inner + scan mod inner
+      when multiply: carries[lane].re = 1.0
+    for step in 0'u ..< axisLength:
+      let offset = coordinate(step) * inner
+      for lane in 0 ..< 4:
+        let index = bases[lane] + offset
+        accumulateComplexScan(carries[lane], source[index], multiply)
+        destination[index] = Complex[T](re: T(carries[lane].re), im: T(carries[lane].im))
+    group += 4'u
+  for tail in group ..< groups:
+    let base = (tail div inner) * axisLength * inner + tail mod inner
+    var carry: Complex[float64]
+    when multiply: carry.re = 1.0
+    for step in 0'u ..< axisLength:
+      let index = base + coordinate(step) * inner
+      accumulateComplexScan(carry, source[index], multiply)
+      destination[index] = Complex[T](re: T(carry.re), im: T(carry.im))
 
 when defined(macosx):
   {.passL: "-framework Accelerate".}

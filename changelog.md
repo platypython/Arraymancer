@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Fix CPU complex cumulative sums and products to keep ordered complex128
+  carries without conversion buffers. Preserve identity arithmetic for signed
+  zeros and nonfinite components, scalar copies and signed/broadcast views.
 - Add explicit integer/bool CPU reduction and scan output dtypes without input
   conversion buffers. Preserve narrowing, wrapping prefixes and logical
   boolean reductions; reject unsupported kernels while retaining scalar/empty
