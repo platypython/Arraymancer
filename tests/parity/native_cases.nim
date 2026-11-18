@@ -144,11 +144,120 @@ proc integerReductions(spec: JsonNode): JsonNode =
       else: raise newException(ValueError, "unsupported integer reduction dtype: " & input["dtype"].getStr)
 
 
+proc float64Layout(source: Tensor[float64], layout: string): Tensor[float64] =
+  case layout
+  of "transpose": result = source.transpose
+  of "offset": result = source.transpose[_, 1..^1]
+  of "reverse": result = source[^1..0|-1]
+  of "broadcast": result = source.broadcast(4, 3)
+  else: result = source
+
+proc float64Specials(source: var Tensor[float64], specials: JsonNode) =
+  for special in specials:
+    let value = case special["value"].getStr
+                of "nan": NaN
+                of "-inf": NegInf
+                else: Inf
+    source.unsafe_raw_offset[special["index"].getInt] = value
+
+proc float64ReductionObservations(specs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in specs:
+    let source = float64Layout(getTensor(spec), spec["layout"].getStr)
+    result[name] = newJObject()
+    for operation in ["sum", "prod", "mean"]:
+      let whole = case operation
+                  of "sum": source.sum
+                  of "prod": source.product
+                  else: source.mean
+      var byAxis = newJObject()
+      byAxis["all"] = tensorObservation(newTensorWith[float64]([], whole))
+      for axisNode in spec["axes"]:
+        if axisNode.kind != JNull:
+          let axis = axisNode.getInt
+          let output = case operation
+                       of "sum": source.sum(axis)
+                       of "prod": source.product(axis)
+                       else: source.mean(axis)
+          byAxis[$axis] = tensorObservation(output)
+      result[name][operation] = byAxis
+
+proc float64ScanObservations(specs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in specs:
+    let source = float64Layout(getTensor(spec), spec["layout"].getStr)
+    result[name] = newJObject()
+    for operation in ["cumsum", "cumprod"]:
+      var byAxis = newJObject()
+      for axisNode in spec["axes"]:
+        let axis = axisNode.getInt
+        let output = if operation == "cumsum": source.cumsum(axis) else: source.cumprod(axis)
+        byAxis[$axis] = tensorObservation(output)
+      result[name][operation] = byAxis
+
+proc float64ReductionVjps(specs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in specs:
+    var source = getTensor(spec["x"])
+    float64Specials(source, spec["nonfinite"])
+    source = float64Layout(source, spec["layout"].getStr)
+    result[name] = newJArray()
+    for operation in spec["operations"]:
+      let context = newContext Tensor[float64]
+      let x = context.variable(source, requires_grad = true)
+      let axisNode = operation["axis"]
+      let kind = operation["operation"].getStr
+      let output =
+        if axisNode.kind == JNull:
+          case kind
+          of "sum": x.sum
+          of "prod": x.product
+          else: x.mean
+        else:
+          let axis = axisNode.getInt
+          let keepdim = operation["keepdim"].getBool
+          case kind
+          of "sum": x.sum(axis = axis, keepdim = keepdim)
+          of "prod": x.product(axis, keepdim = keepdim)
+          else: x.mean(axis, keepdim = keepdim)
+      output.backprop(getTensor(operation["seed"]))
+      result[name].add %*{"output": tensorObservation(output.value),
+                         "grad": tensorObservation(x.grad)}
+
+proc float64ScanVjps(specs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in specs:
+    var source = getTensor(spec["x"])
+    float64Specials(source, spec["nonfinite"])
+    source = float64Layout(source, spec["layout"].getStr)
+    result[name] = newJArray()
+    for operation in spec["operations"]:
+      let context = newContext Tensor[float64]
+      let x = context.variable(source, requires_grad = true)
+      let axis = operation["axis"].getInt
+      let output = if operation["operation"].getStr == "cumsum":
+                     x.cumsum(axis)
+                   else:
+                     x.cumprod(axis)
+      output.backprop(getTensor(operation["seed"]))
+      result[name].add %*{"output": tensorObservation(output.value),
+                         "grad": tensorObservation(x.grad)}
+
+proc float64Reductions(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  result["reductions"] = float64ReductionObservations(inputs["reductions"])
+  result["scans"] = float64ScanObservations(inputs["scans"])
+  result["reduction_vjps"] = float64ReductionVjps(inputs["reduction_vjps"])
+  result["scan_vjps"] = float64ScanVjps(inputs["scan_vjps"])
+
+
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
   result = newJObject()
   case id
+  of "tensor.float64_reductions":
+    result = float64Reductions(inputs)
   of "tensor.integer_scans":
     result = integerScans(inputs)
   of "tensor.integer_reductions":

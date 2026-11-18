@@ -104,6 +104,54 @@ suite "Pinned PyTorch conformance foundation":
         malformed["cases"][index]["inputs"]["uint64"] = newJNull()
     expect ValueError: validateFixtureData(malformed, reference)
 
+  test "Float64 reductions cover CPU layouts, precision, and seeded VJPs":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var float64CaseIndex = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "tensor.float64_reductions":
+        float64CaseIndex = index
+    doAssert float64CaseIndex >= 0
+    let float64Case = fixtures["cases"][float64CaseIndex]
+    check float64Case["atol"].getFloat == 1e-12
+    check float64Case["rtol"].getFloat == 1e-12
+    for view in ["transpose", "offset", "reverse", "broadcast"]:
+      check float64Case["inputs"]["reductions"].hasKey(view)
+      check float64Case["inputs"]["scans"].hasKey(view)
+    for edge in ["scalar", "empty"]:
+      check float64Case["inputs"]["reductions"].hasKey(edge)
+      check float64Case["inputs"]["scans"].hasKey(edge)
+    check float64Case["inputs"]["reductions"]["packed_odd"]["shape"] == %*[3, 5]
+    check float64Case["expected"]["reductions"]["packed_odd"]["sum"]["all"]["dtype"].getStr ==
+      "float64"
+    check float64Case["expected"]["scans"]["scan_precision"]["cumsum"]["0"]["values"].len == 5
+    check float64Case["expected"]["reductions"]["empty"]["mean"]["all"]["values"][0].getStr ==
+      "nan"
+    check float64Case["expected"]["reduction_vjps"]["zero_infinity"][0]["output"]["values"][0].getStr ==
+      "nan"
+    check float64Case["expected"]["reduction_vjps"]["zero_nan"][0]["output"]["values"][0].getStr ==
+      "nan"
+    check float64Case["expected"]["reduction_vjps"]["infinity"][0]["output"]["values"][0].getStr ==
+      "+inf"
+    check float64Case["expected"]["reduction_vjps"]["nan"][0]["output"]["values"][0].getStr ==
+      "nan"
+
+    var malformed = duplicate(fixtures)
+    let malformedAxes: JsonNode =
+      malformed["cases"][float64CaseIndex]["inputs"]["reductions"]["packed_odd"]["axes"]
+    malformedAxes.elems[2] = %0
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    let malformedSpecials: JsonNode =
+      malformed["cases"][float64CaseIndex]["inputs"]["reduction_vjps"]["zero_nan"]["nonfinite"]
+    malformedSpecials.elems[0]["index"] = %3
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][float64CaseIndex]["expected"]["scans"]["packed_odd"]["cumprod"][
+      "1"]["dtype"] = %"float32"
+    expect ValueError: validateFixtureData(malformed, reference)
+
 
   test "Shape differs even when flattened values match":
     let expected = %*{"result": {"shape": [2, 2], "values": [1.0, 2.0, 3.0, 4.0]}}

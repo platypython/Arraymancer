@@ -226,6 +226,82 @@ proc main() =
       check input.product.classify == fcNegZero
       check input.reshape(1, 33).product(1)[0, 0].classify == fcNegZero
 
+    test "Float64 packed reductions cover odd lanes, offsets, and axis means":
+      let values = [
+        1.0, 2, 3, 4, 5,  2, 1, 0.5, -1, 2,  3, -2, 1, 0, 1,
+        -1, 1, 2, 3, 4,  0.5, 2, 1, -1, 3,  1, 2, 4, 2, -2
+      ]
+      var owner = newTensorWith[float64](values.len + 2, 99.0)
+      for index, value in values:
+        owner[index + 1] = value
+      let source = owner[1..values.len].reshape(2, 3, 5)
+
+      check source.sum == 44.0
+      check source.mean == 44.0 / 30.0
+      check source.product == 0.0
+      check source.sum(0) == [
+        [[0.0, 3, 5, 7, 9],
+         [2.5, 3, 1.5, -2, 5],
+         [4.0, 0, 5, 2, -1]]
+      ].toTensor
+      check source.sum(1) == [
+        [[6.0, 1, 4.5, 3, 8]],
+        [[0.5, 5, 7, 4, 5]]
+      ].toTensor
+      check source.sum(2) == [
+        [[15.0], [4.5], [3.0]],
+        [[9.0], [5.5], [7.0]]
+      ].toTensor
+      check source.product(0) == [
+        [[-1.0, 2, 6, 12, 20],
+         [1.0, 2, 0.5, 1, 6],
+         [3.0, -4, 4, 0, -2]]
+      ].toTensor
+      check source.product(1) == [
+        [[6.0, -4, 1.5, 0, 10]],
+        [[-0.5, 4, 8, -6, -24]]
+      ].toTensor
+      check source.product(2) == [
+        [[120.0], [-2.0], [0.0]],
+        [[-24.0], [-3.0], [-32.0]]
+      ].toTensor
+      for axis in 0 ..< source.rank:
+        let total = source.sum(axis)
+        let average = source.mean(axis)
+        check (average * float64(source.shape[axis]) - total).abs.sum < 1e-12
+      check source.transpose.sum == 44.0
+      check owner[values.len..1|-1].sum == 44.0
+      let broadcast = [1.0, 2, 3].toTensor.reshape(1, 3).broadcast(2, 3)
+      check broadcast.sum == 12.0
+      check broadcast.product == 36.0
+      check broadcast.sum(0) == [[2.0, 4, 6]].toTensor
+      check broadcast.product(0) == [[1.0, 4, 9]].toTensor
+      check broadcast.mean(0) == [[1.0, 2, 3]].toTensor
+
+
+      let scalar = newTensorWith[float64]([], -3.0)
+      check scalar.sum == -3.0
+      check scalar.product == -3.0
+      check scalar.mean == -3.0
+      for axis in [0, -1]:
+        check scalar.sum(axis)[] == -3.0
+        check scalar.product(axis)[] == -3.0
+        check scalar.mean(axis)[] == -3.0
+
+      var nonfinite = ones[float64](5)
+      nonfinite[1] = Inf
+      check nonfinite.sum.classify == fcInf
+      nonfinite[2] = 0.0
+      check nonfinite.product.classify == fcNan
+      check nonfinite.reshape(1, 5).product(1)[0, 0].classify == fcNan
+      nonfinite[3] = NaN
+      check nonfinite.mean.classify == fcNan
+
+      var signedZero = ones[float64](5)
+      signedZero[2] = cast[float64](0x8000000000000000'u64)
+      check signedZero.product.classify == fcNegZero
+      check signedZero.reshape(1, 5).product(1)[0, 0].classify == fcNegZero
+
     test "integer and boolean reductions promote before accumulating":
       checkPromotedIntegerReductions[bool]()
       checkPromotedIntegerReductions[int8]()
@@ -517,6 +593,46 @@ proc main() =
           discard matrix.cumsum(2)
         expect ValueError:
           discard scalar.cumsum(1)
+
+      test "float64 scans retain ordered forward and reverse carries":
+        let cancellation = [1e16, 1.0, -1e16].toTensor
+        check cancellation.cumsum() == [1e16, 1e16, 0.0].toTensor
+        check cancellation.cumsum(reverse = true) ==
+          [0.0, -1e16, -1e16].toTensor
+
+        let factors = [1e200, 1e200, 1e-200].toTensor
+        let forward = factors.cumprod()
+        check forward[0] == 1e200
+        check forward[1].classify == fcInf
+        check forward[2].classify == fcInf
+        let backward = factors.cumprod(reverse = true)
+        check backward[0] == 1e200
+        check backward[1] == 1.0
+        check backward[2] == 1e-200
+
+        let matrix = [[1.0, 2, 3], [4.0, 5, 6]].toTensor
+        check matrix.cumsum(1, reverse = true) ==
+          [[6.0, 5, 3], [15.0, 11, 6]].toTensor
+        check matrix.cumprod(1, reverse = true) ==
+          [[6.0, 6, 3], [120.0, 30, 6]].toTensor
+        check matrix.cumsum(0, reverse = true) ==
+          [[5.0, 7, 9], [4.0, 5, 6]].toTensor
+        check matrix.cumprod(0, reverse = true) ==
+          [[4.0, 10, 18], [4.0, 5, 6]].toTensor
+
+        let reverseView = [99.0, 1, 2, 3, 99].toTensor[3..1|-1]
+        check reverseView.cumsum(reverse = true) == [6.0, 3, 1].toTensor
+        check reverseView.cumprod(reverse = true) == [6.0, 2, 1].toTensor
+        let broadcast = [1.0, 2, 3].toTensor.reshape(1, 3).broadcast(2, 3)
+        check broadcast.cumsum(0) == [[1.0, 2, 3], [2.0, 4, 6]].toTensor
+        check broadcast.cumsum(0, reverse = true) ==
+          [[2.0, 4, 6], [1.0, 2, 3]].toTensor
+        check broadcast.cumprod(0, reverse = true) ==
+          [[1.0, 4, 9], [1.0, 2, 3]].toTensor
+
+        check newTensor[float64](2, 0, 3).cumsum(1, reverse = true).shape ==
+          [2, 0, 3]
+        check newTensor[float64](2, 0, 3).cumprod(1, reverse = true).size == 0
 
       test "cumsum reads offset, reversed, transposed, and broadcast views":
         let owner = [99, 1, 2, 3, 4, 99].toTensor

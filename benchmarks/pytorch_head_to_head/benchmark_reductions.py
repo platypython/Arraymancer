@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Check and time allocating CPU/Metal reductions and scans against pinned PyTorch.
 
-Float32 retains the existing 20-action benchmark. Integer/bool reductions and scans
-are CPU-only; build their runner with:
+Float32 and CPU float64 cover 24 reduction/scan forward and backward actions.
+Build the double runner with:
+  nim c -d:release -d:reductionFloat64 --path:src --out:build/reduction_runner_float64 benchmarks/pytorch_head_to_head/reduction_runner.nim
+Integer/bool reductions and scans are CPU-only; build their runner with:
   nim c -d:release --path:src --out:build/integer_runner benchmarks/pytorch_head_to_head/integer_runner.nim
 Inputs stay resident; both implementations synchronize only at sample boundaries.
 Three paired rounds alternate backend order and require every median and p95 to win.
@@ -28,9 +30,9 @@ os.environ.update({name: "1" for name in (
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "0"
 import torch
 
-CASES = ("prod", "sum_rows", "sum_columns", "mean_rows", "mean_columns",
+CASES = ("sum", "mean", "prod", "sum_rows", "sum_columns", "mean_rows", "mean_columns",
          "prod_rows", "prod_columns", "mean_rows_backward", "mean_columns_backward",
-         "prod_backward", "prod_rows_backward", "prod_columns_backward",
+         "sum_backward", "mean_backward", "prod_backward", "prod_rows_backward", "prod_columns_backward",
          "cumsum_rows", "cumsum_columns", "cumsum_rows_backward", "cumsum_columns_backward",
          "cumprod_rows", "cumprod_columns", "cumprod_rows_backward", "cumprod_columns_backward")
 
@@ -76,6 +78,10 @@ def operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
             leaf = value.detach().requires_grad_(True)
             if name == "prod_backward":
                 output = leaf.prod()
+            elif name == "sum_backward":
+                output = leaf.sum()
+            elif name == "mean_backward":
+                output = leaf.mean()
             elif name.startswith("mean_"):
                 output = leaf.mean(dim=axis, keepdim=True)
             elif name.startswith("cumsum_"):
@@ -91,6 +97,10 @@ def operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
         return backward
     if name == "prod":
         return lambda: value.prod()
+    if name == "sum":
+        return lambda: value.sum()
+    if name == "mean":
+        return lambda: value.mean()
     kind, direction = name.split("_")
     axis = -1 if direction == "rows" else -2
     if kind == "sum":
@@ -237,7 +247,7 @@ def run_integer_benchmark(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("cpu", "mps"), default=None)
-    parser.add_argument("--dtype", choices=("float32", *INTEGER_DTYPES), default="float32")
+    parser.add_argument("--dtype", choices=("float32", "float64", *INTEGER_DTYPES), default="float32")
     parser.add_argument("--runner", type=Path, help="defaults by dtype and backend")
     parser.add_argument("--output", type=Path, default=Path("build/reduction_benchmark"))
     args = parser.parse_args()
@@ -245,12 +255,14 @@ def main() -> int:
         args.backend = args.backend or "mps"
     else:
         if args.backend not in (None, "cpu"):
-            parser.error("integer and bool dtypes require --backend cpu")
+            parser.error("float64, integer and bool dtypes require --backend cpu")
         args.backend = "cpu"
     if args.runner is None:
         if args.dtype == "float32":
             args.runner = Path("build/reduction_runner_cpu" if args.backend == "cpu"
                                else "build/reduction_runner")
+        elif args.dtype == "float64":
+            args.runner = Path("build/reduction_runner_float64")
         else:
             args.runner = Path("build/integer_runner")
     if sys.version_info[:3] != (3, 13, 18) or torch.__version__.split("+")[0] != "2.15.0":
@@ -258,14 +270,18 @@ def main() -> int:
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     args.output.mkdir(parents=True, exist_ok=True)
-    if args.dtype != "float32":
+    if args.dtype in INTEGER_DTYPES:
         return run_integer_benchmark(args)
     artifact_paths = ARTIFACTS + (METAL_ARTIFACTS if args.backend == "mps" else ())
     artifacts = [Path(path) for path in artifact_paths] + [args.runner]
     hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in artifacts}
     rows, columns = 128, 128
-    # Nonzero, nonconstant products near one avoid meaningless underflow comparisons.
-    source = (1 + ((torch.arange(rows * columns) % 17) - 8) * 0.0001).float().reshape(rows, columns)
+    if args.dtype == "float64":
+        source = (1 + ((torch.arange(rows * columns, dtype=torch.float64) % 17) - 8)
+                  * 0.0001).reshape(rows, columns)
+    else:
+        # Nonzero, nonconstant products near one avoid meaningless underflow comparisons.
+        source = (1 + ((torch.arange(rows * columns) % 17) - 8) * 0.0001).float().reshape(rows, columns)
     manifest = {"rows": rows, "columns": columns, "values": source.flatten().tolist(),
                 "warmup": 50, "repeats": 100, "iterations": 50}
     input_path = args.output / "input.json"
@@ -279,10 +295,11 @@ def main() -> int:
         if args.backend == "mps":
             actual = callables[name]()
             torch.testing.assert_close(actual.cpu(), cpu_result, atol=5e-5, rtol=5e-5)
-        expected[name] = {"shape": list(cpu_result.shape), "values": cpu_result.flatten().tolist()}
+        expected[name] = {"shape": list(cpu_result.shape), "dtype": str(cpu_result.dtype).removeprefix("torch."),
+                          "values": cpu_result.flatten().tolist()}
 
     def native() -> dict[str, Any]:
-        """Preserve child output before checking shape and every numerical value."""
+        """Preserve child output before checking shape, dtype and numerical values."""
         result = subprocess.run([str(args.runner.resolve()), str(input_path.resolve())],
                                 check=True, capture_output=True, text=True, timeout=120)
         report = json.loads(result.stdout)
@@ -290,10 +307,14 @@ def main() -> int:
             actual = report[name]["observation"]
             if actual["shape"] != expected[name]["shape"]:
                 raise RuntimeError(f"{name}: shape mismatch")
-            torch.testing.assert_close(torch.tensor(actual["values"]),
-                                       torch.tensor(expected[name]["values"]), atol=5e-5, rtol=5e-5)
+            if actual.get("dtype") != expected[name]["dtype"]:
+                raise RuntimeError(f"{name}: dtype mismatch")
+            torch.testing.assert_close(
+                torch.tensor(actual["values"], dtype=source.dtype).reshape(actual["shape"]),
+                torch.tensor(expected[name]["values"], dtype=source.dtype).reshape(expected[name]["shape"]),
+                atol=1e-11 if args.dtype == "float64" else 5e-5,
+                rtol=1e-11 if args.dtype == "float64" else 5e-5)
         return report
-
     def reference() -> dict[str, Any]:
         """Match the native runner's warmup, samples, iterations and synchronization."""
         report = {}
@@ -330,7 +351,8 @@ def main() -> int:
                     failures.append(f"round {index + 1}: {name} {metric}")
     if any(hashlib.sha256(path.read_bytes()).hexdigest() != hashes[str(path)] for path in artifacts):
         raise RuntimeError("Sources or native artifacts changed during measurement")
-    report = {"torch": torch.__version__, "python": sys.version, "backend": args.backend,
+    report = {"torch": torch.__version__, "torch_git_revision": torch.version.git_version,
+              "python": sys.version, "backend": args.backend, "dtype": args.dtype,
               "input_sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
               "runner_sha256": hashlib.sha256(args.runner.read_bytes()).hexdigest(),
               "artifacts_sha256": hashes,

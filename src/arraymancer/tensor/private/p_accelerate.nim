@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-## Provides private macOS float32 bulk operations.
+## Provides packed CPU float64 reductions and private macOS float32 bulk operations.
 import std/math
 import ../../laser/compiler_optim_hints
 when defined(macosx):
@@ -68,6 +68,16 @@ when defined(macosx):
     proc vdupq_n_f64(value: float64): Float64x2
       {.importc, nodecl, header: "<arm_neon.h>".}
     proc vaddq_f64(a, b: Float64x2): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vld1q_f64(input: ptr float64): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vst1q_f64(output: ptr float64; value: Float64x2)
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vsetq_lane_f64(value: float64; vector: Float64x2; lane: cint): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vgetq_lane_f64(value: Float64x2; lane: cint): float64
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vdivq_f64(a, b: Float64x2): Float64x2
       {.importc, nodecl, header: "<arm_neon.h>".}
     proc vmulq_f64(a, b: Float64x2): Float64x2
       {.importc, nodecl, header: "<arm_neon.h>".}
@@ -148,6 +158,66 @@ when defined(macosx):
             else: accumulated += float64(source[index])
             destination[index] = float32(accumulated)
 
+    proc scanPackedFloat64*(output, input: ptr float64;
+                           outer, axisLength, inner: uint;
+                           multiply, reverse: static[bool]) =
+      ## Vectorize independent scans while retaining each scan's ordered carry.
+      withCompilerOptimHints()
+      let destination {.restrict.} = cast[ptr UncheckedArray[float64]](output)
+      let source = cast[ptr UncheckedArray[float64]](input)
+      const identity = when multiply: 1.0 else: 0.0
+      template combine(a, b: Float64x2): Float64x2 =
+        when multiply: vmulq_f64(a, b)
+        else: vaddq_f64(a, b)
+      template coordinate(step: uint): uint =
+        when reverse: axisLength - 1'u - step
+        else: step
+
+      if inner == 1:
+        var group = 0'u
+        when defined(arm64):
+          while group + 2 <= outer:
+            let base0 = group * axisLength
+            let base1 = base0 + axisLength
+            var accumulated = vdupq_n_f64(identity)
+            for step in 0'u ..< axisLength:
+              let index = coordinate(step)
+              var values = vdupq_n_f64(source[base0 + index])
+              values = vsetq_lane_f64(source[base1 + index], values, 1)
+              accumulated = combine(accumulated, values)
+              destination[base0 + index] = vgetq_lane_f64(accumulated, 0)
+              destination[base1 + index] = vgetq_lane_f64(accumulated, 1)
+            group += 2
+        for tail in group ..< outer:
+          let base = tail * axisLength
+          var accumulated = identity
+          for step in 0'u ..< axisLength:
+            let index = base + coordinate(step)
+            when multiply: accumulated *= source[index]
+            else: accumulated += source[index]
+            destination[index] = accumulated
+        return
+
+      for group in 0'u ..< outer:
+        let base = group * axisLength * inner
+        var column = 0'u
+        when defined(arm64):
+          while column + 2 <= inner:
+            var accumulated = vdupq_n_f64(identity)
+            for step in 0'u ..< axisLength:
+              let index = base + coordinate(step) * inner + column
+              accumulated = combine(accumulated,
+                                    vld1q_f64(unsafeAddr source[index]))
+              vst1q_f64(addr destination[index], accumulated)
+            column += 2
+        for tail in column ..< inner:
+          var accumulated = identity
+          for step in 0'u ..< axisLength:
+            let index = base + coordinate(step) * inner + tail
+            when multiply: accumulated *= source[index]
+            else: accumulated += source[index]
+            destination[index] = accumulated
+
     proc cumprodGradientPackedColumnsFloat32*(
         output, input, prefixes, seed: ptr float32;
         outer, axisLength, inner: uint): bool =
@@ -195,6 +265,141 @@ when defined(macosx):
             accumulated += float64(weight)
             destination[index] = float32(accumulated) / source[index]
       return true
+    proc productGradientPackedColumnsFloat64*(
+        output, input, products, seed: ptr float64;
+        outer, axisLength, inner: uint): bool =
+      ## Stream independent column derivatives; zeros retain the generic masks.
+      withCompilerOptimHints()
+      let destination {.restrict.} = cast[ptr UncheckedArray[float64]](output)
+      let source = cast[ptr UncheckedArray[float64]](input)
+      let cached = cast[ptr UncheckedArray[float64]](products)
+      let upstream = cast[ptr UncheckedArray[float64]](seed)
+      for index in 0'u ..< outer * axisLength * inner:
+        if source[index] == 0.0: return false
+      for group in 0'u ..< outer:
+        let inputBase = group * axisLength * inner
+        let reducedBase = group * inner
+        for row in 0'u ..< axisLength:
+          let base = inputBase + row * inner
+          var column = 0'u
+          while column + 2 <= inner:
+            let weighted = vmulq_f64(vld1q_f64(unsafeAddr cached[reducedBase + column]),
+                                     vld1q_f64(unsafeAddr upstream[reducedBase + column]))
+            vst1q_f64(addr destination[base + column],
+                      vdivq_f64(weighted, vld1q_f64(unsafeAddr source[base + column])))
+            column += 2
+          for tail in column ..< inner:
+            let weighted = cached[reducedBase + tail] * upstream[reducedBase + tail]
+            destination[base + tail] = weighted / source[base + tail]
+      true
+
+
+  proc reduceFloat64Span(input: ptr float64; count: uint;
+                        multiply: static[bool]): float64 =
+    ## Independent partial carries shorten the dependency chain for one span.
+    let source = cast[ptr UncheckedArray[float64]](input)
+    const identity = when multiply: 1.0 else: 0.0
+    var cursor = 0'u
+    when defined(arm64):
+      template combine(a, b: Float64x2): Float64x2 =
+        when multiply: vmulq_f64(a, b)
+        else: vaddq_f64(a, b)
+      var a = vdupq_n_f64(identity)
+      var b = a
+      var c = a
+      var d = a
+      while cursor + 8 <= count:
+        a = combine(a, vld1q_f64(unsafeAddr source[cursor]))
+        b = combine(b, vld1q_f64(unsafeAddr source[cursor + 2]))
+        c = combine(c, vld1q_f64(unsafeAddr source[cursor + 4]))
+        d = combine(d, vld1q_f64(unsafeAddr source[cursor + 6]))
+        cursor += 8
+      let lanes = combine(combine(a, b), combine(c, d))
+      when multiply:
+        result = vgetq_lane_f64(lanes, 0) * vgetq_lane_f64(lanes, 1)
+      else:
+        result = vgetq_lane_f64(lanes, 0) + vgetq_lane_f64(lanes, 1)
+    else:
+      var a = identity
+      var b = identity
+      var c = identity
+      var d = identity
+      while cursor + 4 <= count:
+        when multiply:
+          a *= source[cursor]
+          b *= source[cursor + 1]
+          c *= source[cursor + 2]
+          d *= source[cursor + 3]
+        else:
+          a += source[cursor]
+          b += source[cursor + 1]
+          c += source[cursor + 2]
+          d += source[cursor + 3]
+        cursor += 4
+      when multiply: result = ((a * b) * c) * d
+      else: result = ((a + b) + c) + d
+    while cursor < count:
+      when multiply: result *= source[cursor]
+      else: result += source[cursor]
+      inc cursor
+
+  proc reducePackedFloat64*(output, input: ptr float64; count: uint;
+                           multiply: static[bool]) =
+    ## Callers establish a nonempty C-contiguous span and valid storage bounds.
+    let destination = cast[ptr UncheckedArray[float64]](output)
+    destination[0] = reduceFloat64Span(input, count, multiply)
+
+  proc reducePackedFloat64Axis*(output, input: ptr float64;
+                               outer, axisLength, inner: uint;
+                               multiply, average: static[bool]) =
+    ## SIMD lanes cover independent axis reductions, never terms of one output.
+    static: doAssert not (multiply and average)
+    withCompilerOptimHints()
+    let destination {.restrict.} = cast[ptr UncheckedArray[float64]](output)
+    let source = cast[ptr UncheckedArray[float64]](input)
+    const identity = when multiply: 1.0 else: 0.0
+    if inner == 1:
+      for group in 0'u ..< outer:
+        let value = reduceFloat64Span(unsafeAddr source[group * axisLength],
+                                      axisLength, multiply)
+        when average: destination[group] = value / float64(axisLength)
+        else: destination[group] = value
+      return
+    for group in 0'u ..< outer:
+      let inputBase = group * axisLength * inner
+      let outputBase = group * inner
+      var column = 0'u
+      when defined(arm64):
+        template combine(a, b: Float64x2): Float64x2 =
+          when multiply: vmulq_f64(a, b)
+          else: vaddq_f64(a, b)
+        while column + 2 <= inner:
+          var a = vdupq_n_f64(identity)
+          var b = a
+          var c = a
+          var d = a
+          var row = 0'u
+          while row + 4 <= axisLength:
+            a = combine(a, vld1q_f64(unsafeAddr source[inputBase + row * inner + column]))
+            b = combine(b, vld1q_f64(unsafeAddr source[inputBase + (row + 1) * inner + column]))
+            c = combine(c, vld1q_f64(unsafeAddr source[inputBase + (row + 2) * inner + column]))
+            d = combine(d, vld1q_f64(unsafeAddr source[inputBase + (row + 3) * inner + column]))
+            row += 4
+          var value = combine(combine(a, b), combine(c, d))
+          for tail in row ..< axisLength:
+            value = combine(value,
+                            vld1q_f64(unsafeAddr source[inputBase + tail * inner + column]))
+          when average:
+            value = vdivq_f64(value, vdupq_n_f64(float64(axisLength)))
+          vst1q_f64(addr destination[outputBase + column], value)
+          column += 2
+      for tail in column ..< inner:
+        var value = identity
+        for row in 0'u ..< axisLength:
+          when multiply: value *= source[inputBase + row * inner + tail]
+          else: value += source[inputBase + row * inner + tail]
+        when average: value /= float64(axisLength)
+        destination[outputBase + tail] = value
 
   proc reduceFloat32Span(input: ptr float32; count: int;
                         multiply: static[bool]): float32 =
@@ -299,3 +504,62 @@ when defined(macosx):
         cursor += 4
     for index in cursor ..< count:
       destination[index] = math.sqrt(source[index])
+when not defined(macosx):
+  proc reducePackedFloat64*(output, input: ptr float64; count: uint;
+                           multiply: static[bool]) =
+    ## Reduce a validated packed span without temporary storage.
+    let destination = cast[ptr UncheckedArray[float64]](output)
+    let source = cast[ptr UncheckedArray[float64]](input)
+    const identity = when multiply: 1.0 else: 0.0
+    var a = identity
+    var b = identity
+    var c = identity
+    var d = identity
+    var cursor = 0'u
+    while cursor + 4 <= count:
+      when multiply:
+        a *= source[cursor]
+        b *= source[cursor + 1]
+        c *= source[cursor + 2]
+        d *= source[cursor + 3]
+      else:
+        a += source[cursor]
+        b += source[cursor + 1]
+        c += source[cursor + 2]
+        d += source[cursor + 3]
+      cursor += 4
+    var value: float64
+    when multiply: value = ((a * b) * c) * d
+    else: value = ((a + b) + c) + d
+    while cursor < count:
+      when multiply: value *= source[cursor]
+      else: value += source[cursor]
+      inc cursor
+    destination[0] = value
+
+  proc reducePackedFloat64Axis*(output, input: ptr float64;
+                               outer, axisLength, inner: uint;
+                               multiply, average: static[bool]) =
+    ## Reduce packed axes with independent scalar carries on non-Accelerate CPUs.
+    static: doAssert not (multiply and average)
+    withCompilerOptimHints()
+    let destination {.restrict.} = cast[ptr UncheckedArray[float64]](output)
+    let source = cast[ptr UncheckedArray[float64]](input)
+    const identity = when multiply: 1.0 else: 0.0
+    if inner == 1:
+      for group in 0'u ..< outer:
+        reducePackedFloat64(addr destination[group],
+                            unsafeAddr source[group * axisLength],
+                            axisLength, multiply)
+        when average: destination[group] /= float64(axisLength)
+      return
+    for group in 0'u ..< outer:
+      let inputBase = group * axisLength * inner
+      let outputBase = group * inner
+      for column in 0'u ..< inner:
+        var value = identity
+        for row in 0'u ..< axisLength:
+          when multiply: value *= source[inputBase + row * inner + column]
+          else: value += source[inputBase + row * inner + column]
+        when average: value /= float64(axisLength)
+        destination[outputBase + column] = value

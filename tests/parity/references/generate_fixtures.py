@@ -446,6 +446,233 @@ def reduction_edges(torch: Any) -> dict[str, Any]:
         expected[name] = observed
     return _case("tensor.reduction_edges", "api:torch", inputs, expected)
 
+def _float64_layout(source: Any, layout: str) -> Any:
+    if layout == "transpose":
+        return source.transpose(0, 1)
+    if layout == "offset":
+        return source.transpose(0, 1)[:, 1:]
+    if layout == "reverse":
+        return source.flip([0])
+    if layout == "broadcast":
+        return source.expand(4, 3)
+    return source
+
+
+def float64_reductions(torch: Any) -> dict[str, Any]:
+    """Observe CPU float64 reductions, scans, and deterministic seeded VJPs."""
+    precision_values = [
+        1.0000001, 0.9999998, 1.0000003, 0.9999996, 1.0000005,
+        0.9999994, 1.0000007, 0.9999992, 1.0000009, 0.9999990,
+        1.0000011, 0.9999988, 1.0000013, 0.9999986, 1.0000015,
+    ]
+    reduction_specs: dict[str, tuple[list[int], list[float], str, list[int | None]]] = {
+        "packed_odd": ([3, 5], precision_values, "identity", [None, 0, 1, -1]),
+        "transpose": ([2, 3], [1.25, -0.75, 2.5, 0.5, -1.5, 3.0],
+                      "transpose", [None, 0, -1]),
+        "offset": ([3, 4], [0.75, 1.25, -0.5, 2.0, 1.5, -1.0,
+                             0.25, 3.0, -2.0, 0.5, 1.75, -0.25],
+                   "offset", [None, 0, -1]),
+        "reverse": ([5], [1.25, -0.5, 2.0, 0.75, -1.5], "reverse", [None, 0, -1]),
+        "broadcast": ([1, 3], [1.25, -0.5, 2.0], "broadcast", [None, 0, 1, -1]),
+        "scalar": ([], [1.0000001], "identity", [None, 0, -1]),
+        "empty": ([2, 0, 3], [], "identity", [None, 0, 1, 2, -1]),
+    }
+    reductions_input: dict[str, Any] = {}
+    reductions_expected: dict[str, Any] = {}
+    for name, (shape, values, layout, axes) in reduction_specs.items():
+        source = _float64_layout(_tensor(values, shape, torch), layout)
+        reductions_input[name] = {
+            "shape": shape, "values": values, "layout": layout, "axes": axes,
+        }
+        reduction_observations: dict[str, Any] = {}
+        for operation in ("sum", "prod", "mean"):
+            reducer = getattr(torch, operation)
+            by_axis: dict[str, Any] = {"all": _observe(reducer(source))}
+            for axis in axes:
+                if axis is not None:
+                    by_axis[str(axis)] = _observe(reducer(source, dim=axis, keepdim=True))
+            reduction_observations[operation] = by_axis
+        reductions_expected[name] = reduction_observations
+
+    scan_specs: dict[str, tuple[list[int], list[float], str, list[int]]] = {
+        "packed_odd": ([3, 5], precision_values, "identity", [0, 1, -1]),
+        "scan_precision": ([5], [1e8, 1.0, 1.0, 1.0, 0.0001], "identity", [0, -1]),
+        "transpose": ([2, 3], [2.0, 0.5, -1.0, 1.5, 0.25, 3.0],
+                      "transpose", [0, -1]),
+        "offset": ([3, 4], [0.75, 1.25, -0.5, 2.0, 1.5, -1.0,
+                             0.25, 3.0, -2.0, 0.5, 1.75, -0.25],
+                   "offset", [0, -1]),
+        "reverse": ([5], [2.0, 0.0, -3.0, 4.0, 0.5], "reverse", [0, -1]),
+        "broadcast": ([1, 3], [1.25, 0.0, -2.0], "broadcast", [0, 1, -1]),
+        "scalar": ([], [-3.0], "identity", [0, -1]),
+        "empty": ([2, 0, 3], [], "identity", [0, 1, 2, -1]),
+    }
+    scans_input: dict[str, Any] = {}
+    scans_expected: dict[str, Any] = {}
+    for name, (shape, values, layout, axes) in scan_specs.items():
+        source = _float64_layout(_tensor(values, shape, torch), layout)
+        scans_input[name] = {
+            "shape": shape, "values": values, "layout": layout, "axes": axes,
+        }
+        scan_observations: dict[str, Any] = {}
+        for operation in ("cumsum", "cumprod"):
+            by_axis = {
+                str(axis): _observe(getattr(source, operation)(dim=axis))
+                for axis in axes
+            }
+            scan_observations[operation] = by_axis
+        scans_expected[name] = scan_observations
+
+    reduction_vjp_specs: dict[str, dict[str, Any]] = {
+        "offset": {
+            "shape": [3, 4],
+            "values": [0.75, 1.25, -0.5, 2.0, 1.5, -1.0,
+                       0.25, 3.0, -2.0, 0.5, 1.75, -0.25],
+            "layout": "offset", "nonfinite": [],
+            "operations": [
+                {"operation": "sum", "axis": None, "keepdim": True},
+                {"operation": "sum", "axis": 1, "keepdim": False},
+                {"operation": "mean", "axis": None, "keepdim": True},
+                {"operation": "mean", "axis": 0, "keepdim": True},
+                {"operation": "prod", "axis": 1, "keepdim": False},
+            ],
+        },
+        "one_zero": {
+            "shape": [5], "values": [2.0, 0.0, -3.0, 4.0, 0.5],
+            "layout": "reverse", "nonfinite": [],
+            "operations": [
+                {"operation": "prod", "axis": None, "keepdim": True},
+                {"operation": "prod", "axis": 0, "keepdim": True},
+            ],
+        },
+        "multiple_zeros": {
+            "shape": [2, 3], "values": [0.0, 2.0, 0.0, 4.0, 5.0, 6.0],
+            "layout": "transpose", "nonfinite": [],
+            "operations": [
+                {"operation": "prod", "axis": None, "keepdim": True},
+                {"operation": "prod", "axis": 0, "keepdim": True},
+                {"operation": "prod", "axis": 1, "keepdim": True},
+            ],
+        },
+        "infinity": {
+            "shape": [3], "values": [1.0, 2.0, 3.0], "layout": "identity",
+            "nonfinite": [{"index": 0, "value": "+inf"}],
+            "operations": [{"operation": "prod", "axis": None, "keepdim": True}],
+        },
+        "nan": {
+            "shape": [3], "values": [1.0, 2.0, 3.0], "layout": "identity",
+            "nonfinite": [{"index": 0, "value": "nan"}],
+            "operations": [{"operation": "prod", "axis": None, "keepdim": True}],
+        },
+        "zero_infinity": {
+            "shape": [3], "values": [0.0, 2.0, 3.0], "layout": "identity",
+            "nonfinite": [{"index": 1, "value": "+inf"}],
+            "operations": [{"operation": "prod", "axis": None, "keepdim": True}],
+        },
+        "zero_nan": {
+            "shape": [3], "values": [0.0, 2.0, 3.0], "layout": "identity",
+            "nonfinite": [{"index": 1, "value": "nan"}],
+            "operations": [{"operation": "prod", "axis": 0, "keepdim": True}],
+        },
+    }
+    reduction_vjps_input: dict[str, Any] = {}
+    reduction_vjps_expected: dict[str, Any] = {}
+    for name, spec in reduction_vjp_specs.items():
+        source = _tensor(spec["values"], spec["shape"], torch)
+        for special in spec["nonfinite"]:
+            source.reshape(-1)[special["index"]] = float(special["value"].replace("+", ""))
+        source = _float64_layout(source, spec["layout"])
+        operation_inputs: list[dict[str, Any]] = []
+        reduction_vjp_observations: list[dict[str, Any]] = []
+        for operation in spec["operations"]:
+            leaf = source.detach().requires_grad_(True)
+            axis = operation["axis"]
+            if axis is None:
+                output = getattr(leaf, operation["operation"])()
+            else:
+                output = getattr(leaf, operation["operation"])(
+                    dim=axis, keepdim=operation["keepdim"]
+                )
+            seed = (
+                torch.arange(output.numel(), dtype=torch.float64, device="cpu") + 1.25
+            ).reshape(output.shape)
+            output.backward(seed)
+            operation_inputs.append({
+                **operation,
+                "seed": {"shape": list(seed.shape), "values": seed.reshape(-1).tolist()},
+            })
+            reduction_vjp_observations.append({"output": _observe(output), "grad": _observe(leaf.grad)})
+        reduction_vjps_input[name] = {
+            "x": {"shape": spec["shape"], "values": spec["values"]},
+            "layout": spec["layout"], "nonfinite": spec["nonfinite"],
+            "operations": operation_inputs,
+        }
+        reduction_vjps_expected[name] = reduction_vjp_observations
+
+    scan_vjp_specs: dict[str, dict[str, Any]] = {
+        "packed_odd": {
+            "shape": [3, 5], "values": precision_values, "layout": "identity",
+            "nonfinite": [],
+            "operations": [
+                {"operation": "cumsum", "axis": 0},
+                {"operation": "cumsum", "axis": 1},
+                {"operation": "cumprod", "axis": 1},
+            ],
+        },
+        "broadcast": {
+            "shape": [1, 3], "values": [1.25, 0.0, -2.0], "layout": "broadcast",
+            "nonfinite": [],
+            "operations": [
+                {"operation": "cumsum", "axis": 0},
+                {"operation": "cumprod", "axis": 1},
+            ],
+        },
+    }
+    scan_vjps_input: dict[str, Any] = {}
+    scan_vjps_expected: dict[str, Any] = {}
+    for name, spec in scan_vjp_specs.items():
+        source = _float64_layout(_tensor(spec["values"], spec["shape"], torch), spec["layout"])
+        operation_inputs: list[dict[str, Any]] = []
+        scan_vjp_observations: list[dict[str, Any]] = []
+        for operation in spec["operations"]:
+            leaf = source.detach().requires_grad_(True)
+            output = getattr(leaf, operation["operation"])(dim=operation["axis"])
+            seed = (
+                torch.arange(output.numel(), dtype=torch.float64, device="cpu") + 1.75
+            ).reshape(output.shape)
+            output.backward(seed)
+            operation_inputs.append({
+                **operation,
+                "seed": {"shape": list(seed.shape), "values": seed.reshape(-1).tolist()},
+            })
+            scan_vjp_observations.append({"output": _observe(output), "grad": _observe(leaf.grad)})
+        scan_vjps_input[name] = {
+            "x": {"shape": spec["shape"], "values": spec["values"]},
+            "layout": spec["layout"], "nonfinite": spec["nonfinite"],
+            "operations": operation_inputs,
+        }
+        scan_vjps_expected[name] = scan_vjp_observations
+
+    return _case(
+        "tensor.float64_reductions",
+        "api:autograd",
+        {
+            "reductions": reductions_input,
+            "scans": scans_input,
+            "reduction_vjps": reduction_vjps_input,
+            "scan_vjps": scan_vjps_input,
+        },
+        {
+            "reductions": reductions_expected,
+            "scans": scans_expected,
+            "reduction_vjps": reduction_vjps_expected,
+            "scan_vjps": scan_vjps_expected,
+        },
+        tolerance=1e-12,
+    )
+
+
+
 
 def product_gradient(torch: Any) -> dict[str, Any]:
     """Observe zero-count, nonfinite and strided full/axis product VJPs."""
@@ -803,7 +1030,8 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
     axis_options, broadcast_multiply, broadcast_divide,
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
-    unary_math, activation_math, reduction_edges, product_gradient, cumsum_gradient, cumprod_gradient,
+    unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
+    cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions,
 )
 

@@ -155,6 +155,18 @@ when defined(macosx):
     for dimension in axis + 1 ..< arg.rank: inner *= arg.shape[dimension]
     reducePackedFloat32(result.get_offset_ptr, arg.get_offset_ptr,
                        outer, arg.shape[axis], inner, multiply, average)
+proc packedFloat64Axis(arg: Tensor[float64], axis: int;
+                      multiply, average: static[bool]): Tensor[float64] =
+  ## The packed path allocates only its final output, including for means.
+  var shape = arg.shape
+  shape[axis] = 1
+  result = newTensorUninit[float64](shape)
+  var outer = 1'u
+  for dimension in 0 ..< axis: outer *= uint(arg.shape[dimension])
+  var inner = 1'u
+  for dimension in axis + 1 ..< arg.rank: inner *= uint(arg.shape[dimension])
+  reducePackedFloat64Axis(result.get_offset_ptr, arg.get_offset_ptr,
+                         outer, uint(arg.shape[axis]), inner, multiply, average)
 
 proc sumAlongAxis[T](arg: Tensor[T], axis: int): Tensor[T] =
   if arg.rank == 0:
@@ -164,7 +176,10 @@ proc sumAlongAxis[T](arg: Tensor[T], axis: int): Tensor[T] =
     var shape = arg.shape
     shape[axis] = 1
     return newTensor[T](shape)
-  when defined(macosx) and T is float32:
+  when T is float64:
+    if arg.is_C_contiguous:
+      return packedFloat64Axis(arg, axis, false, false)
+  elif defined(macosx) and T is float32:
     if arg.is_C_contiguous:
       return packedFloat32Axis(arg, axis, false, false)
   arg.reduce_axis_inline(axis):
@@ -176,14 +191,18 @@ proc sum*[T](arg: Tensor[T]): sumProductElement(T) =
   when T is SomeInteger or T is bool:
     reduceIntegers(arg, false)
   else:
-    when defined(macosx) and T is float32:
+    when T is float64:
+      if arg.size == 0: return 0.0
+      if arg.is_C_contiguous:
+        reducePackedFloat64(addr result, arg.get_offset_ptr, uint(arg.size), false)
+        return
+    elif defined(macosx) and T is float32:
       if arg.size == 0: return 0'f32
       if arg.is_C_contiguous:
         vDSP_sve(arg.get_offset_ptr, 1.clong, addr result, arg.size.culong)
         return
     arg.reduce_inline():
       x+=y
-
 proc sum*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noinit.} =
   ## Sum along a positive or negative axis, retaining its dimension.
   ## Empty reductions produce zeros; scalar results are independent copies.
@@ -197,13 +216,17 @@ proc sum*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noinit.}
 proc product*[T](arg: Tensor[T]): sumProductElement(T) =
   ## Compute the product of all elements; an empty product is one.
   ## Integers and booleans promote to int64 before modulo-2^64 arithmetic.
-  ## Packed macOS float32 uses vector partial products; rounding and overflow
-  ## depend on that grouping rather than a left-to-right multiplication order.
+  ## Packed float32/float64 products use partial carries; rounding and overflow
+  ## can depend on their grouping rather than a left-to-right multiplication order.
   when T is SomeInteger or T is bool:
     reduceIntegers(arg, true)
   else:
     if arg.size == 0: return productIdentity[T]()
-    when defined(macosx) and T is float32:
+    when T is float64:
+      if arg.is_C_contiguous:
+        reducePackedFloat64(addr result, arg.get_offset_ptr, uint(arg.size), true)
+        return
+    elif defined(macosx) and T is float32:
       if arg.is_C_contiguous:
         reducePackedFloat32(addr result, arg.get_offset_ptr, 1, arg.size, 1, true, false)
         return
@@ -225,7 +248,10 @@ proc product*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noin
       var shape = arg.shape
       shape[axis] = 1
       return newTensorWith[T](shape, productIdentity[T]())
-    when defined(macosx) and T is float32:
+    when T is float64:
+      if arg.is_C_contiguous:
+        return packedFloat64Axis(arg, axis, true, false)
+    elif defined(macosx) and T is float32:
       if arg.is_C_contiguous:
         return packedFloat32Axis(arg, axis, true, false)
     arg.reduce_axis_inline(axis):
@@ -263,7 +289,10 @@ proc mean*[T: SomeFloat](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}
   ## Empty reductions produce NaNs; unreduced empty dimensions are preserved.
   let axis = reductionAxis(arg.rank, axis)
   if arg.rank == 0: return sumAlongAxis(arg, axis)
-  when defined(macosx) and T is float32:
+  when T is float64:
+    if arg.size > 0 and arg.is_C_contiguous:
+      return packedFloat64Axis(arg, axis, false, true)
+  elif defined(macosx) and T is float32:
     if arg.size > 0 and arg.is_C_contiguous:
       return packedFloat32Axis(arg, axis, false, true)
   sumAlongAxis(arg, axis) / arg.shape[axis].T
@@ -502,7 +531,8 @@ proc iqr*[T](arg: Tensor[T]): float =
            percentile(tS, 25, isSorted = true)
 
 proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
-                promoteIntegers: static[bool] = true): Tensor[sumProductElement(T, promoteIntegers)] =
+                promoteIntegers: static[bool] = true;
+                reverse: bool = false): Tensor[sumProductElement(T, promoteIntegers)] =
   ## Promote integers while reading; float32 carries stay wide after rounded stores.
   mixin _
   type U = sumProductElement(T, promoteIntegers)
@@ -543,6 +573,8 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
   for dim in scanAxis + 1 ..< rank:
     inner *= uint(arg.shape[dim])
   let axisLength = uint(arg.shape[scanAxis])
+  template scanCoordinate(step: uint): uint =
+    if reverse: axisLength - 1'u - step else: step
   let groupCount = outer * inner
 
   let inputData = arg.storage.raw_buffer
@@ -556,16 +588,28 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
   when T is float32 or T is float64:
     if arg.is_C_contiguous:
       when defined(macosx) and defined(arm64) and T is float32:
-        scanPackedFloat32(addr output[0], unsafeAddr inputData[arg.offset],
-                          outer, axisLength, inner, multiply, false)
+        if reverse:
+          scanPackedFloat32(addr output[0], unsafeAddr inputData[arg.offset],
+                            outer, axisLength, inner, multiply, true)
+        else:
+          scanPackedFloat32(addr output[0], unsafeAddr inputData[arg.offset],
+                            outer, axisLength, inner, multiply, false)
+      elif defined(macosx) and defined(arm64) and T is float64:
+        if reverse:
+          scanPackedFloat64(addr output[0], unsafeAddr inputData[arg.offset],
+                            outer, axisLength, inner, multiply, true)
+        else:
+          scanPackedFloat64(addr output[0], unsafeAddr inputData[arg.offset],
+                            outer, axisLength, inner, multiply, false)
       else:
         # Valid packed tensors bound the unsigned storage offsets.
         let inputOffset = uint(arg.offset)
         for group in 0'u ..< groupCount:
           let outputBase = (group div inner) * axisLength * inner + group mod inner
           var accumulated = identity
-          for index in 0'u ..< axisLength:
-            let flat = outputBase + index * inner
+          for step in 0'u ..< axisLength:
+            let coordinate = scanCoordinate(step)
+            let flat = outputBase + coordinate * inner
             accumulate(accumulated, float64(inputData[inputOffset + flat]))
             output[flat] = T(accumulated)
       return
@@ -575,22 +619,23 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
       if inner == 1:
         for group in 0'u ..< outer:
           let base = group * axisLength
-          var accumulated = scanValue(inputData[inputOffset + base])
-          output[base] = accumulated
-          for index in 1'u ..< axisLength:
-            let flat = base + index
+          let first = base + scanCoordinate(0'u)
+          var accumulated = scanValue(inputData[inputOffset + first])
+          output[first] = accumulated
+          for step in 1'u ..< axisLength:
+            let flat = base + scanCoordinate(step)
             accumulate(accumulated, scanValue(inputData[inputOffset + flat]))
             output[flat] = accumulated
       else:
         for group in 0'u ..< outer:
           let base = group * axisLength * inner
           for column in 0'u ..< inner:
-            output[base + column] = scanValue(inputData[inputOffset + base + column])
-          for index in 1'u ..< axisLength:
-            let row = base + index * inner
-            for column in 0'u ..< inner:
-              let flat = row + column
-              var accumulated = output[flat - inner]
+            let first = base + scanCoordinate(0'u) * inner + column
+            var accumulated = scanValue(inputData[inputOffset + first])
+            output[first] = accumulated
+            for step in 1'u ..< axisLength:
+              let coordinate = scanCoordinate(step)
+              let flat = base + coordinate * inner + column
               accumulate(accumulated, scanValue(inputData[inputOffset + flat]))
               output[flat] = accumulated
       return
@@ -605,20 +650,23 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
     let outputBase = (group div inner) * axisLength * inner + group mod inner
     when T is float32 or T is float64:
       var accumulated = identity
-      for index in 0'u ..< axisLength:
-        accumulate(accumulated, float64(inputData[inputBase + int(index) * arg.strides[scanAxis]]))
-        writeOutput(outputBase + index * inner, T(accumulated))
+      for step in 0'u ..< axisLength:
+        let coordinate = scanCoordinate(step)
+        accumulate(accumulated,
+                   float64(inputData[inputBase + int(coordinate) * arg.strides[scanAxis]]))
+        writeOutput(outputBase + coordinate * inner, T(accumulated))
     else:
       var accumulated: U
       var hasValue = false
-      for index in 0'u ..< axisLength:
-        let value = scanValue(inputData[inputBase + int(index) * arg.strides[scanAxis]])
+      for step in 0'u ..< axisLength:
+        let coordinate = scanCoordinate(step)
+        let value = scanValue(inputData[inputBase + int(coordinate) * arg.strides[scanAxis]])
         if hasValue:
           accumulate(accumulated, value)
         else:
           accumulated = value
           hasValue = true
-        writeOutput(outputBase + index * inner, accumulated)
+        writeOutput(outputBase + coordinate * inner, accumulated)
 
     if group + 1'u < groupCount:
       for dim in countdown(rank - 1, 0):
@@ -632,28 +680,32 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
         inputBase -= (arg.shape[dim] - 1) * arg.strides[dim]
     inc group
 
-proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[sumProductElement(T)] =
+proc cumsum*[T](arg: Tensor[T], axis: int = 0;
+                reverse: bool = false): Tensor[sumProductElement(T)] =
   ## Return independent, same-shaped inclusive cumulative sums along ``axis``.
   ## Negative axes count from the end; scalars accept axes 0 and -1. Empty
   ## tensors retain their exact shape. Invalid axes raise ``ValueError``.
   ##
   ## Offset, reversed and broadcast views are read through their strides.
+  ## ``reverse`` accumulates from the final coordinate toward the first.
   ## Float32 prefixes accumulate in float64 before rounding each output.
   ## Integers and booleans promote to int64 with modulo-2^64 arithmetic;
   ## other element types retain their type and ordinary ``+`` operation.
-  scanCPU(arg, axis, false)
+  scanCPU(arg, axis, false, reverse = reverse)
 
-proc cumprod*[T](arg: Tensor[T], axis: int = 0): Tensor[sumProductElement(T)] =
+proc cumprod*[T](arg: Tensor[T], axis: int = 0;
+                 reverse: bool = false): Tensor[sumProductElement(T)] =
   ## Return independent, same-shaped inclusive cumulative products along ``axis``.
   ## Negative axes count from the end; scalars accept axes 0 and -1. Empty
   ## tensors retain their exact shape. Invalid axes raise ``ValueError``.
   ##
   ## Offset, reversed and broadcast views are read through their strides.
+  ## ``reverse`` accumulates from the final coordinate toward the first.
   ## Float32 prefixes accumulate in float64, so an overflowed or underflowed
   ## output does not replace the wider carry. Integers and booleans promote
   ## to int64 with modulo-2^64 arithmetic; other types retain their type
   ## and ordinary ``*`` operation.
-  scanCPU(arg, axis, true)
+  scanCPU(arg, axis, true, reverse = reverse)
 
 proc diff_discrete*[T](arg: Tensor[T], n=1, axis: int = -1): Tensor[T] =
   ## Calculate the n-th discrete difference along the given axis.

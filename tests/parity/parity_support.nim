@@ -58,14 +58,14 @@ const
     "autograd.matmul_ranks", "autograd.singleton_views", "tensor.elementwise_shapes",
     "autograd.unary_math", "autograd.activation_math", "tensor.reduction_edges",
     "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient",
-    "tensor.integer_scans", "tensor.integer_reductions"]
+    "tensor.integer_scans", "tensor.integer_reductions", "tensor.float64_reductions"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
     "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
-    "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch"]
+    "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch", "api:autograd"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -352,6 +352,287 @@ proc expectIntegerScanInput(node: JsonNode) =
 proc expectIntegerReductionInput(node: JsonNode) =
   expectIntegerWordsInput(node, "integer reduction", true)
 
+proc jsonShape(shape: openArray[int]): JsonNode =
+  result = newJArray()
+  for dimension in shape: result.add newJInt(dimension)
+
+proc expectFloat64Layout(node: JsonNode, layout, label: string) =
+  expectInputTensor(node)
+  let shape = field(node, "shape")
+  case layout
+  of "identity": discard
+  of "transpose":
+    require(shape.len == 2, label & " transpose input must have rank 2")
+  of "offset":
+    require(shape.len == 2 and shape[0].getInt > 1,
+      label & " offset input must have rank 2 and a sliceable first dimension")
+  of "reverse":
+    require(shape.len == 1, label & " reverse input must have rank 1")
+  of "broadcast":
+    require(shape == %*[1, 3], label & " broadcast input must have shape [1,3]")
+  else:
+    invalid("unknown " & label & " layout")
+
+proc float64LogicalShape(node: JsonNode, layout: string): seq[int] =
+  for dimension in field(node, "shape"): result.add dimension.getInt
+  case layout
+  of "transpose":
+    swap(result[0], result[1])
+  of "offset":
+    let first = result[0]
+    result[0] = result[1]
+    result[1] = first - 1
+  of "reverse": discard
+  of "broadcast": result = @[4, 3]
+  else: discard
+
+proc expectFloat64Axes(node: JsonNode, allowWhole: bool, label: string) =
+  let shape = field(node, "shape")
+  let axes = field(node, "axes")
+  require(axes.kind == JArray and axes.len > 0, label & " axes are required")
+  let dimensions = max(1, shape.len)
+  var seen = initHashSet[string]()
+  var hasWhole = false
+  var hasNonnegativeAxis = false
+  var hasNegativeAxis = false
+  for axis in axes:
+    if allowWhole and axis.kind == JNull:
+      require(not hasWhole, label & " whole-reduction axis is duplicated")
+      hasWhole = true
+    else:
+      require(axis.kind == JInt and axis.getInt >= -dimensions and axis.getInt < dimensions,
+        label & " axis is out of bounds")
+      let key = $axis.getInt
+      require(key notin seen, label & " axis is duplicated")
+      seen.incl(key)
+      hasNonnegativeAxis = hasNonnegativeAxis or axis.getInt >= 0
+      hasNegativeAxis = hasNegativeAxis or axis.getInt < 0
+  if allowWhole:
+    require(hasWhole, label & " whole-reduction axis is required")
+  if shape.len > 1:
+    require(hasNonnegativeAxis and hasNegativeAxis,
+      label & " must include nonnegative and negative axes")
+  elif shape.len == 1:
+    require("0" in seen and "-1" in seen, label & " rank-one axes must include 0 and -1")
+  elif not allowWhole:
+    require("0" in seen and "-1" in seen, label & " scalar scan axes must include 0 and -1")
+proc expectNonUnitFloat64Seed(seed: JsonNode, label: string) =
+  expectInputTensor(seed)
+  var nonUnit = false
+  for value in seed["values"]:
+    nonUnit = nonUnit or (value.getFloat != 1.0 and value.getFloat != -1.0)
+  require(nonUnit, label & " seed must contain a nonunit value")
+
+
+proc float64ReductionShape(shape: seq[int], axis: JsonNode, keepdim: bool): seq[int] =
+  if axis.kind == JNull or shape.len == 0: return @[]
+  var normalized = axis.getInt
+  if normalized < 0: normalized += max(1, shape.len)
+  if keepdim:
+    for dimension in shape: result.add dimension
+    result[normalized] = 1
+  else:
+    for index, dimension in shape:
+      if index != normalized: result.add dimension
+
+proc expectFloat64Observation(node: JsonNode, shape: seq[int], label: string) =
+  expectTensor(node, false)
+  require(field(node, "shape") == jsonShape(shape), label & " shape mismatch")
+
+proc expectFloat64Specials(specials: JsonNode, valueCount: int, label: string) =
+  require(specials.kind == JArray, label & " nonfinite values must be an array")
+  var seen = initHashSet[int]()
+  for special in specials:
+    let index = field(special, "index")
+    require(index.kind == JInt and index.getInt >= 0 and index.getInt < valueCount,
+      label & " nonfinite index out of bounds")
+    require(index.getInt notin seen, label & " nonfinite index is duplicated")
+    seen.incl(index.getInt)
+    require(text(field(special, "value"), label & " nonfinite value") in ["nan", "+inf", "-inf"],
+      label & " invalid nonfinite value")
+
+proc expectFloat64ReductionInputs(inputs: JsonNode) =
+  let reductions = field(inputs, "reductions")
+  let reductionNames = ["packed_odd", "transpose", "offset", "reverse", "broadcast", "scalar", "empty"]
+  require(reductions.kind == JObject and reductions.len == reductionNames.len,
+    "float64 reduction inputs do not match required cases")
+  for name in reductionNames:
+    require(reductions.hasKey(name), "missing float64 reduction input " & name)
+    let spec = reductions[name]
+    let expectedShape = case name
+      of "packed_odd": @[3, 5]
+      of "transpose": @[2, 3]
+      of "offset": @[3, 4]
+      of "reverse": @[5]
+      of "broadcast": @[1, 3]
+      of "empty": @[2, 0, 3]
+      else: @[]
+    let expectedLayout = if name in ["transpose", "offset", "reverse", "broadcast"]: name
+      else: "identity"
+    require(field(spec, "shape") == jsonShape(expectedShape),
+      "float64 reduction shape mismatch for " & name)
+    require(text(field(spec, "layout"), "float64 reduction layout") == expectedLayout,
+      "float64 reduction layout mismatch for " & name)
+    expectFloat64Layout(spec, expectedLayout, "float64 reduction " & name)
+    expectFloat64Axes(spec, true, "float64 reduction " & name)
+
+  let scans = field(inputs, "scans")
+  let scanNames = ["packed_odd", "scan_precision", "transpose", "offset",
+    "reverse", "broadcast", "scalar", "empty"]
+  require(scans.kind == JObject and scans.len == scanNames.len,
+    "float64 scan inputs do not match required cases")
+  for name in scanNames:
+    require(scans.hasKey(name), "missing float64 scan input " & name)
+    let spec = scans[name]
+    let expectedShape = case name
+      of "packed_odd": @[3, 5]
+      of "scan_precision", "reverse": @[5]
+      of "transpose": @[2, 3]
+      of "offset": @[3, 4]
+      of "broadcast": @[1, 3]
+      of "empty": @[2, 0, 3]
+      else: @[]
+    let expectedLayout = if name in ["transpose", "offset", "reverse", "broadcast"]: name
+      else: "identity"
+    require(field(spec, "shape") == jsonShape(expectedShape),
+      "float64 scan shape mismatch for " & name)
+    require(text(field(spec, "layout"), "float64 scan layout") == expectedLayout,
+      "float64 scan layout mismatch for " & name)
+    expectFloat64Layout(spec, expectedLayout, "float64 scan " & name)
+    expectFloat64Axes(spec, false, "float64 scan " & name)
+
+  let reductionVjps = field(inputs, "reduction_vjps")
+  let reductionVjpNames = ["offset", "one_zero", "multiple_zeros", "infinity", "nan",
+    "zero_infinity", "zero_nan"]
+  require(reductionVjps.kind == JObject and reductionVjps.len == reductionVjpNames.len,
+    "float64 reduction VJP inputs do not match required cases")
+  for name in reductionVjpNames:
+    require(reductionVjps.hasKey(name), "missing float64 reduction VJP input " & name)
+    let spec = reductionVjps[name]
+    let layout = text(field(spec, "layout"), "float64 VJP layout")
+    expectFloat64Layout(field(spec, "x"), layout, "float64 VJP " & name)
+    let shape = float64LogicalShape(spec["x"], layout)
+    expectFloat64Specials(field(spec, "nonfinite"), spec["x"]["values"].len,
+      "float64 VJP " & name)
+    let operations = field(spec, "operations")
+    require(operations.kind == JArray and operations.len > 0,
+      "float64 reduction VJP operations are missing")
+    for operation in operations:
+      let kind = text(field(operation, "operation"), "float64 reduction VJP operation")
+      require(kind in ["sum", "prod", "mean"], "invalid float64 reduction VJP operation")
+      let axis = field(operation, "axis")
+      require(axis.kind in {JNull, JInt}, "invalid float64 reduction VJP axis")
+      if axis.kind == JInt:
+        require(axis.getInt >= -max(1, shape.len) and axis.getInt < max(1, shape.len),
+          "float64 reduction VJP axis is out of bounds")
+      require(field(operation, "keepdim").kind == JBool,
+        "float64 reduction VJP keepdim must be boolean")
+      let seed = field(operation, "seed")
+      expectNonUnitFloat64Seed(seed, "float64 reduction VJP")
+      let expectedSeedShape = float64ReductionShape(shape, axis, operation["keepdim"].getBool)
+      require(seed["shape"] == jsonShape(expectedSeedShape),
+        "float64 reduction VJP seed shape mismatch")
+
+  let scanVjps = field(inputs, "scan_vjps")
+  let scanVjpNames = ["packed_odd", "broadcast"]
+  require(scanVjps.kind == JObject and scanVjps.len == scanVjpNames.len,
+    "float64 scan VJP inputs do not match required cases")
+  for name in scanVjpNames:
+    require(scanVjps.hasKey(name), "missing float64 scan VJP input " & name)
+    let spec = scanVjps[name]
+    let layout = text(field(spec, "layout"), "float64 scan VJP layout")
+    expectFloat64Layout(field(spec, "x"), layout, "float64 scan VJP " & name)
+    let shape = float64LogicalShape(spec["x"], layout)
+    expectFloat64Specials(field(spec, "nonfinite"), spec["x"]["values"].len,
+      "float64 scan VJP " & name)
+    let operations = field(spec, "operations")
+    require(operations.kind == JArray and operations.len > 0,
+      "float64 scan VJP operations are missing")
+    for operation in operations:
+      require(text(field(operation, "operation"), "float64 scan VJP operation") in ["cumsum", "cumprod"],
+        "invalid float64 scan VJP operation")
+      let axis = field(operation, "axis")
+      require(axis.kind == JInt and axis.getInt >= -max(1, shape.len) and
+        axis.getInt < max(1, shape.len), "float64 scan VJP axis is out of bounds")
+      let seed = field(operation, "seed")
+      expectNonUnitFloat64Seed(seed, "float64 scan VJP")
+      require(seed["shape"] == jsonShape(shape),
+        "float64 scan VJP seed shape mismatch")
+
+proc expectFloat64Reductions(expected, inputs: JsonNode) =
+  require(expected.kind == JObject and expected.len == 4,
+    "float64 reduction expected groups are incomplete")
+  let reductions = field(inputs, "reductions")
+  let expectedReductions = field(expected, "reductions")
+  require(expectedReductions.kind == JObject and expectedReductions.len == reductions.len,
+    "float64 reduction observations do not match inputs")
+  for name, spec in reductions:
+    let logicalShape = float64LogicalShape(spec, spec["layout"].getStr)
+    let observations = field(expectedReductions, name)
+    require(observations.kind == JObject and observations.len == 3,
+      "float64 reduction operation observations are incomplete for " & name)
+    for operation in ["sum", "prod", "mean"]:
+      let byAxis = field(observations, operation)
+      require(byAxis.kind == JObject and byAxis.len == spec["axes"].len,
+        "float64 reduction axis observations are incomplete for " & name & "." & operation)
+      for axis in spec["axes"]:
+        let key = if axis.kind == JNull: "all" else: $axis.getInt
+        let outputShape = float64ReductionShape(logicalShape, axis, true)
+        expectFloat64Observation(field(byAxis, key), outputShape,
+          "float64 reduction " & name & "." & operation & "." & key)
+
+  let scans = field(inputs, "scans")
+  let expectedScans = field(expected, "scans")
+  require(expectedScans.kind == JObject and expectedScans.len == scans.len,
+    "float64 scan observations do not match inputs")
+  for name, spec in scans:
+    let logicalShape = float64LogicalShape(spec, spec["layout"].getStr)
+    let observations = field(expectedScans, name)
+    require(observations.kind == JObject and observations.len == 2,
+      "float64 scan operation observations are incomplete for " & name)
+    for operation in ["cumsum", "cumprod"]:
+      let byAxis = field(observations, operation)
+      require(byAxis.kind == JObject and byAxis.len == spec["axes"].len,
+        "float64 scan axis observations are incomplete for " & name & "." & operation)
+      for axis in spec["axes"]:
+        let key = $axis.getInt
+        expectFloat64Observation(field(byAxis, key), logicalShape,
+          "float64 scan " & name & "." & operation & "." & key)
+
+  let reductionVjps = field(inputs, "reduction_vjps")
+  let expectedReductionVjps = field(expected, "reduction_vjps")
+  require(expectedReductionVjps.kind == JObject and expectedReductionVjps.len == reductionVjps.len,
+    "float64 reduction VJP observations do not match inputs")
+  for name, spec in reductionVjps:
+    let logicalShape = float64LogicalShape(spec["x"], spec["layout"].getStr)
+    let observations = field(expectedReductionVjps, name)
+    require(observations.kind == JArray and observations.len == spec["operations"].len,
+      "float64 reduction VJP observations are incomplete for " & name)
+    for index in 0 ..< spec["operations"].len:
+      let operation = spec["operations"][index]
+      let axis = field(operation, "axis")
+      let outputShape = float64ReductionShape(logicalShape, axis,
+        operation["keepdim"].getBool)
+      expectFloat64Observation(field(observations[index], "output"), outputShape,
+        "float64 reduction VJP output " & name)
+      expectFloat64Observation(field(observations[index], "grad"), logicalShape,
+        "float64 reduction VJP gradient " & name)
+
+  let scanVjps = field(inputs, "scan_vjps")
+  let expectedScanVjps = field(expected, "scan_vjps")
+  require(expectedScanVjps.kind == JObject and expectedScanVjps.len == scanVjps.len,
+    "float64 scan VJP observations do not match inputs")
+  for name, spec in scanVjps:
+    let logicalShape = float64LogicalShape(spec["x"], spec["layout"].getStr)
+    let observations = field(expectedScanVjps, name)
+    require(observations.kind == JArray and observations.len == spec["operations"].len,
+      "float64 scan VJP observations are incomplete for " & name)
+    for observation in observations:
+      expectFloat64Observation(field(observation, "output"), logicalShape,
+        "float64 scan VJP output " & name)
+      expectFloat64Observation(field(observation, "grad"), logicalShape,
+        "float64 scan VJP gradient " & name)
+
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
   requireSameReference(data, reference, "fixtures")
@@ -443,6 +724,12 @@ proc validateFixtureData*(data, reference: JsonNode) =
           else: "identity"
         require(text(field(spec, "layout"), "integer reduction layout") == expectedLayout,
           "integer reduction layout mismatch for " & name)
+    of "tensor.float64_reductions":
+      require(c["atol"].getFloat == 1e-12 and c["rtol"].getFloat == 1e-12,
+        "float64 reduction fixtures require 1e-12 tolerances")
+      require(inputs.kind == JObject and inputs.len == 4,
+        "float64 reduction input groups are incomplete")
+      expectFloat64ReductionInputs(inputs)
     of "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient":
       let product = id == "autograd.product_gradient"
       require(inputs.kind == JObject and inputs.len > 0, "reduction gradient inputs missing")
@@ -517,6 +804,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
           for axis in spec["axes"]:
             let key = if axis.kind == JNull: "all" else: $axis.getInt
             expectTensor(field(byAxis, key), false, "int64")
+    of "tensor.float64_reductions":
+      expectFloat64Reductions(expected, inputs)
     else: discard
   require(ids.len == RequiredCaseIds.len, "missing required fixture case")
 

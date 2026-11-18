@@ -415,6 +415,12 @@ proc cpuAxisProductGradient[T: SomeFloat](
   for dim in axis + 1 ..< input.rank: inner *= uint(input.shape[dim])
   let inputData = input.storage.raw_buffer
   let output = result.storage.raw_buffer
+  when packed and T is float64 and defined(macosx) and defined(arm64):
+    if inner >= 2 and cachedProduct.is_C_contiguous and seed.is_C_contiguous:
+      if productGradientPackedColumnsFloat64(
+          addr output[0], unsafeAddr inputData[input.offset],
+          cachedProduct.get_offset_ptr, seed.get_offset_ptr, outer, axisLength, inner):
+        return
   for group in 0'u ..< outer * inner:
     let outputBase = (group div inner) * axisLength * inner + group mod inner
     when packed:

@@ -200,6 +200,43 @@ proc main() =
       checkNonFiniteProductGradients[float32]()
       checkNonFiniteProductGradients[float64]()
 
+    test "Float64 column VJPs keep offsets, nonfinite lanes, and zero-tail masks":
+      block:
+        let values = [[Inf, 2.0, 3, 4, -2], [2.0, 3, 4, NaN, Inf]].toTensor
+        var owner = newTensorWith[float64](3, 5, 99.0)
+        for row in 0 ..< 2:
+          for column in 0 ..< 5:
+            owner[row + 1, column] = values[row, column]
+        let ctx = newContext Tensor[float64]
+        let x = ctx.variable(owner[1..2, _], requires_grad = true)
+        let seed = [99.0, 1, 0, NaN, 2, -3, 99].toTensor[1..5].reshape(1, 5)
+        x.product(0).backprop(seed)
+        let expected = [[NaN, 0.0, NaN, NaN, NegInf],
+                        [Inf, 0.0, NaN, NaN, NaN]].toTensor
+        for row in 0 ..< 2:
+          for column in 0 ..< 5:
+            let target = expected[row, column]
+            if target.classify == fcNan:
+              check x.grad[row, column].classify == fcNan
+            else:
+              check x.grad[row, column] == target
+      block:
+        let source = [[2.0, 3, 4, 5, 6],
+                      [3.0, 4, 5, 6, 7],
+                      [4.0, 5, 6, 7, 0]].toTensor
+        let ctx = newContext Tensor[float64]
+        let x = ctx.variable(source, requires_grad = true)
+        x.product(0).backprop([[1.0, 2, 3, 4, 5]].toTensor)
+        check x.grad == [[12.0, 40, 90, 168, 0],
+                         [8.0, 30, 72, 140, 0],
+                         [6.0, 24, 60, 120, 210]].toTensor
+      block:
+        let ctx = newContext Tensor[float64]
+        let x = ctx.variable([[2.0, 3, 4], [5.0, 6, 7]].toTensor, requires_grad = true)
+        let seed = [[2.0, 3, 4]].toTensor[_, 2..0|-1]
+        x.product(0).backprop(seed)
+        check x.grad == [[20.0, 18, 14], [8.0, 9, 8]].toTensor
+
     test "Product backward reads transpose, offset-slice and broadcast views":
       checkProductViews[float32]()
       checkProductViews[float64]()
