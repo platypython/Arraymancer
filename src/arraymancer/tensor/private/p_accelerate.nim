@@ -69,15 +69,21 @@ when defined(macosx):
       {.importc, nodecl, header: "<arm_neon.h>".}
     proc vaddq_f64(a, b: Float64x2): Float64x2
       {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmulq_f64(a, b: Float64x2): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
 
-    proc cumsumPackedFloat32*(output, input: ptr float32;
-                             outer, axisLength, inner: uint;
-                             reverse: static[bool]) =
+    proc scanPackedFloat32*(output, input: ptr float32;
+                           outer, axisLength, inner: uint;
+                           multiply, reverse: static[bool]) =
       ## Scan disjoint packed spans, preserving sequential float64 accumulation.
       ## SIMD lanes are separate scans, never reassociated prefixes of one scan.
       withCompilerOptimHints()
       let destination {.restrict.} = cast[ptr UncheckedArray[float32]](output)
       let source = cast[ptr UncheckedArray[float32]](input)
+      const identity = when multiply: 1.0 else: 0.0
+      template combine(a, b: Float64x2): Float64x2 =
+        when multiply: vmulq_f64(a, b)
+        else: vaddq_f64(a, b)
       template coordinate(step: uint): uint =
         when reverse: axisLength - 1 - step
         else: step
@@ -88,7 +94,7 @@ when defined(macosx):
           let base1 = base0 + axisLength
           let base2 = base1 + axisLength
           let base3 = base2 + axisLength
-          var low = vdupq_n_f64(0)
+          var low = vdupq_n_f64(identity)
           var high = low
           for step in 0'u ..< axisLength:
             let index = coordinate(step)
@@ -96,8 +102,8 @@ when defined(macosx):
                                  vdup_n_f32(source[base0 + index]), 1)
             let b = vset_lane_f32(source[base3 + index],
                                  vdup_n_f32(source[base2 + index]), 1)
-            low = vaddq_f64(low, vcvt_f64_f32(a))
-            high = vaddq_f64(high, vcvt_f64_f32(b))
+            low = combine(low, vcvt_f64_f32(a))
+            high = combine(high, vcvt_f64_f32(b))
             let packedLow = vcvt_f32_f64(low)
             let packedHigh = vcvt_f32_f64(high)
             destination[base0 + index] = vget_lane_f32(packedLow, 0)
@@ -107,31 +113,33 @@ when defined(macosx):
           group += 4
         for tail in group ..< outer:
           let base = tail * axisLength
-          var accumulated = 0.0
+          var accumulated = identity
           for step in 0'u ..< axisLength:
             let index = base + coordinate(step)
-            accumulated += float64(source[index])
+            when multiply: accumulated *= float64(source[index])
+            else: accumulated += float64(source[index])
             destination[index] = float32(accumulated)
         return
       for group in 0'u ..< outer:
         let base = group * axisLength * inner
         var column = 0'u
         while column + 4 <= inner:
-          var low = vdupq_n_f64(0)
+          var low = vdupq_n_f64(identity)
           var high = low
           for step in 0'u ..< axisLength:
             let index = base + coordinate(step) * inner + column
             let values = vld1q_f32(unsafeAddr source[index])
-            low = vaddq_f64(low, vcvt_f64_f32(vget_low_f32(values)))
-            high = vaddq_f64(high, vcvt_f64_f32(vget_high_f32(values)))
+            low = combine(low, vcvt_f64_f32(vget_low_f32(values)))
+            high = combine(high, vcvt_f64_f32(vget_high_f32(values)))
             vst1q_f32(addr destination[index],
                      vcombine_f32(vcvt_f32_f64(low), vcvt_f32_f64(high)))
           column += 4
         for tail in column ..< inner:
-          var accumulated = 0.0
+          var accumulated = identity
           for step in 0'u ..< axisLength:
             let index = base + coordinate(step) * inner + tail
-            accumulated += float64(source[index])
+            when multiply: accumulated *= float64(source[index])
+            else: accumulated += float64(source[index])
             destination[index] = float32(accumulated)
 
   proc reduceFloat32Span(input: ptr float32; count: int;

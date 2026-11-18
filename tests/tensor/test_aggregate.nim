@@ -377,6 +377,70 @@ proc main() =
                                  [1, 9, 45],
                                  [3, 12, 12]].toTensor
 
+      test "cumprod keeps wide carries, scalar signs and empty shapes":
+        let large = [1e20'f32, 1e20'f32, 1e-20'f32].toTensor
+        let largePrefixes = large.cumprod()
+        check largePrefixes[1].classify == fcInf
+        check largePrefixes[2] == large[0]
+        let small = [1e-30'f32, 1e-30'f32, 1e30'f32].toTensor
+        let smallPrefixes = small.cumprod()
+        check smallPrefixes[1] == 0'f32
+        check smallPrefixes[2] == small[0]
+        check [1e200, 1e200, 1e-200].toTensor.cumprod()[2].classify == fcInf
+
+        let scalar = newTensorWith[float64]([], cast[float64](0x8000000000000000'u64))
+        var scalarResult = scalar.cumprod(-1)
+        check scalarResult.rank == 0
+        check scalarResult.atContiguousIndex(0).classify == fcNegZero
+        scalarResult.unsafe_raw_offset[0] = 2.0
+        check scalar.atContiguousIndex(0).classify == fcNegZero
+        for axis in 0 ..< 3:
+          let empty = newTensor[float32](2, 0, 3).cumprod(axis)
+          check empty.shape == [2, 0, 3]
+          check empty.size == 0
+        expect ValueError:
+          discard scalar.cumprod(1)
+        expect ValueError:
+          discard newTensor[float32](2, 0, 3).cumprod(-4)
+
+      test "cumprod handles packed SIMD tails and signed or broadcast views":
+        var storage = newTensor[float32](195)
+        let pattern = [1e20'f32, 1e20'f32, 1e-20'f32, -1'f32, 0.5'f32,
+                       2'f32, cast[float32](0x80000000'u32)]
+        for index in 0 ..< storage.size:
+          storage[index] = pattern[index mod pattern.len]
+        storage[87] = Inf.float32
+        storage[88] = NegInf.float32
+        storage[177] = NaN.float32
+        let source = storage[3..191].reshape(3, 7, 9)
+        for axis in 0 ..< 3:
+          let actual = source.cumprod(axis - 3)
+          let actual64 = source.asType(float64).cumprod(axis)
+          check actual.shape == source.shape
+          for i in 0 ..< 3:
+            for j in 0 ..< 7:
+              for k in 0 ..< 9:
+                let coordinate = [i, j, k]
+                var expected = 1.0
+                for prefix in 0 .. coordinate[axis]:
+                  var inputCoordinate = coordinate
+                  inputCoordinate[axis] = prefix
+                  expected *= float64(source[inputCoordinate[0], inputCoordinate[1],
+                                             inputCoordinate[2]])
+                if expected.classify == fcNan:
+                  check actual[i, j, k].classify == fcNan
+                  check actual64[i, j, k].classify == fcNan
+                else:
+                  check cast[uint32](actual[i, j, k]) == cast[uint32](float32(expected))
+                  check cast[uint64](actual64[i, j, k]) == cast[uint64](expected)
+
+        check [99, 1, 2, 3, 4, 99].toTensor[4..1|-1].cumprod() ==
+          [4, 12, 24, 24].toTensor
+        check [[1, 4], [2, 5], [3, 6]].toTensor.transpose.cumprod(0) ==
+          [[1, 2, 3], [4, 10, 18]].toTensor
+        check [2, -3].toTensor.reshape(1, 2).broadcast(3, 2).cumprod(0) ==
+          [[2, -3], [4, 9], [8, -27]].toTensor
+
     test "diff":
       let a = arange(12).reshape([3, 4])
       block:

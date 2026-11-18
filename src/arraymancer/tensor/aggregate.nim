@@ -384,26 +384,23 @@ proc iqr*[T](arg: Tensor[T]): float =
   result = percentile(tS, 75, isSorted = true) -
            percentile(tS, 25, isSorted = true)
 
-proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
-  ## Return an independent, same-shaped tensor with inclusive cumulative sums
-  ## along ``axis``. Negative axes count from the end; scalar tensors accept
-  ## axes 0 and -1. Empty tensors preserve their exact shape.
-  ## Invalid axes raise ``ValueError``.
-  ##
-  ## Reads follow the input's strides, including offset, reversed, and
-  ## broadcast views. Float32 inputs accumulate in float64 before each
-  ## prefix is rounded to float32; other element types retain their type and
-  ## use their ordinary ``+`` operation.
+proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool]): Tensor[T] =
+  ## Read each prefix once; float32 carries stay wide even after rounded stores.
   mixin _
+  when T is float32 or T is float64:
+    const identity = when multiply: 1.0 else: 0.0
+  template accumulate(acc, value: untyped) =
+    when multiply: acc = acc * value
+    else: acc = acc + value
   let rank = arg.rank
-  var sumAxis: int
+  var scanAxis: int
   if rank == 0:
     if axis != 0 and axis != -1:
-      raise newException(ValueError, "Cumulative sum axis is outside input rank")
+      raise newException(ValueError, "Cumulative axis is outside input rank")
   elif axis >= -rank and axis < rank:
-    sumAxis = if axis < 0: axis + rank else: axis
+    scanAxis = if axis < 0: axis + rank else: axis
   else:
-    raise newException(ValueError, "Cumulative sum axis is outside input rank")
+    raise newException(ValueError, "Cumulative axis is outside input rank")
 
   result = newTensorUninit[T](arg.shape)
   if arg.size == 0:
@@ -413,12 +410,12 @@ proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
     return
 
   var outer = 1'u
-  for dim in 0 ..< sumAxis:
+  for dim in 0 ..< scanAxis:
     outer *= uint(arg.shape[dim])
   var inner = 1'u
-  for dim in sumAxis + 1 ..< rank:
+  for dim in scanAxis + 1 ..< rank:
     inner *= uint(arg.shape[dim])
-  let axisLength = uint(arg.shape[sumAxis])
+  let axisLength = uint(arg.shape[scanAxis])
   let groupCount = outer * inner
 
   let inputData = arg.storage.raw_buffer
@@ -432,17 +429,17 @@ proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
   when T is float32 or T is float64:
     if arg.is_C_contiguous:
       when defined(macosx) and defined(arm64) and T is float32:
-        cumsumPackedFloat32(addr output[0], unsafeAddr inputData[arg.offset],
-                            outer, axisLength, inner, false)
+        scanPackedFloat32(addr output[0], unsafeAddr inputData[arg.offset],
+                          outer, axisLength, inner, multiply, false)
       else:
         # Valid packed tensors bound the unsigned storage offsets.
         let inputOffset = uint(arg.offset)
         for group in 0'u ..< groupCount:
           let outputBase = (group div inner) * axisLength * inner + group mod inner
-          var accumulated = 0.0
+          var accumulated = identity
           for index in 0'u ..< axisLength:
             let flat = outputBase + index * inner
-            accumulated += float64(inputData[inputOffset + flat])
+            accumulate(accumulated, float64(inputData[inputOffset + flat]))
             output[flat] = T(accumulated)
       return
 
@@ -454,23 +451,18 @@ proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
   var group = 0'u
   while group < groupCount:
     let outputBase = (group div inner) * axisLength * inner + group mod inner
-    when T is float32:
-      var accumulated = 0.0
+    when T is float32 or T is float64:
+      var accumulated = identity
       for index in 0'u ..< axisLength:
-        accumulated += float64(inputData[inputBase + int(index) * arg.strides[sumAxis]])
-        writeOutput(outputBase + index * inner, T(accumulated))
-    elif T is float64:
-      var accumulated = 0.0
-      for index in 0'u ..< axisLength:
-        accumulated += inputData[inputBase + int(index) * arg.strides[sumAxis]]
+        accumulate(accumulated, float64(inputData[inputBase + int(index) * arg.strides[scanAxis]]))
         writeOutput(outputBase + index * inner, T(accumulated))
     else:
       var accumulated: T
       var hasValue = false
       for index in 0'u ..< axisLength:
-        let value = inputData[inputBase + int(index) * arg.strides[sumAxis]]
+        let value = inputData[inputBase + int(index) * arg.strides[scanAxis]]
         if hasValue:
-          accumulated = accumulated + value
+          accumulate(accumulated, value)
         else:
           accumulated = value
           hasValue = true
@@ -478,7 +470,7 @@ proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
 
     if group + 1'u < groupCount:
       for dim in countdown(rank - 1, 0):
-        if dim == sumAxis:
+        if dim == scanAxis:
           continue
         if coordinates[dim] < arg.shape[dim] - 1:
           inc coordinates[dim]
@@ -488,21 +480,26 @@ proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
         inputBase -= (arg.shape[dim] - 1) * arg.strides[dim]
     inc group
 
-proc cumprod*[T](arg: Tensor[T], axis: int = 0): Tensor[T] = # from hugogranstrom
-  ## Calculates the cumulative sum of a rank-n Tensor.
-  ## Inputs:
-  ##  - t: a rank-n tensor to cumulatively sum
-  ##  - axis: int
-  ## Returns:
-  ##  - A tensor cumulatively summed at axis, that is, add each value to
-  mixin `_`
-  result = zeros_like(arg)
-  for i, tAxis in enumerateAxis(arg, axis):
-    var temp = result.atAxisIndex(axis, i)
-    if i == 0:
-      temp[_] = tAxis
-    else:
-      temp[_] = result.atAxisIndex(axis, i-1) *. tAxis
+proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
+  ## Return independent, same-shaped inclusive cumulative sums along ``axis``.
+  ## Negative axes count from the end; scalars accept axes 0 and -1. Empty
+  ## tensors retain their exact shape. Invalid axes raise ``ValueError``.
+  ##
+  ## Offset, reversed and broadcast views are read through their strides.
+  ## Float32 prefixes accumulate in float64 before rounding each output; other
+  ## element types retain their type and use their ordinary ``+`` operation.
+  scanCPU(arg, axis, false)
+
+proc cumprod*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
+  ## Return independent, same-shaped inclusive cumulative products along ``axis``.
+  ## Negative axes count from the end; scalars accept axes 0 and -1. Empty
+  ## tensors retain their exact shape. Invalid axes raise ``ValueError``.
+  ##
+  ## Offset, reversed and broadcast views are read through their strides.
+  ## Float32 prefixes accumulate in float64, so an overflowed or underflowed
+  ## output does not replace the wider carry. Other types retain their type
+  ## and use their ordinary ``*`` operation; integer promotion is not provided.
+  scanCPU(arg, axis, true)
 
 proc diff_discrete*[T](arg: Tensor[T], n=1, axis: int = -1): Tensor[T] =
   ## Calculate the n-th discrete difference along the given axis.

@@ -59,8 +59,8 @@ proc cpuReverseCumsumGradient[T: SomeFloat](
 
   if seed.is_C_contiguous:
     when defined(macosx) and defined(arm64) and T is float32:
-      cumsumPackedFloat32(addr output[0], unsafeAddr seedData[seed.offset],
-                          outer, axisLength, inner, true)
+      scanPackedFloat32(addr output[0], unsafeAddr seedData[seed.offset],
+                        outer, axisLength, inner, false, true)
     else:
       # Backprop validates the seed shape before this packed traversal.
       let seedOffset = uint(seed.offset)

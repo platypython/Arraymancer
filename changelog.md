@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Fix CPU cumulative products to retain wide float32 carries after overflowed
+  or underflowed outputs. Share the single-output scan traversal with cumulative
+  sums and use independent ARM64 float64 SIMD lanes. Preserve scalar signs,
+  empty shapes and signed/broadcast reads; accept negative axes explicitly.
 - Add seeded cumulative-sum autograd for CPU float32/float64, including scalar
   and empty tensors, signed/broadcast views and nonfinite inputs/seeds. Normalize
   negative axes and accumulate CPU float32 prefixes in float64 without reloading
