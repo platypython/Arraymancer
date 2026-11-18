@@ -71,6 +71,12 @@ when defined(macosx):
       {.importc, nodecl, header: "<arm_neon.h>".}
     proc vmulq_f64(a, b: Float64x2): Float64x2
       {.importc, nodecl, header: "<arm_neon.h>".}
+    type UInt32x4 {.importc: "uint32x4_t", bycopy, header: "<arm_neon.h>".} = object
+      raw: array[4, uint32]
+    proc vceqq_f32(a, b: Float32x4): UInt32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxvq_u32(value: UInt32x4): uint32
+      {.importc, nodecl, header: "<arm_neon.h>".}
 
     proc scanPackedFloat32*(output, input: ptr float32;
                            outer, axisLength, inner: uint;
@@ -141,6 +147,54 @@ when defined(macosx):
             when multiply: accumulated *= float64(source[index])
             else: accumulated += float64(source[index])
             destination[index] = float32(accumulated)
+
+    proc cumprodGradientPackedColumnsFloat32*(
+        output, input, prefixes, seed: ptr float32;
+        outer, axisLength, inner: uint): bool =
+      ## Vectorize independent zero-free columns, not terms within a reverse sum.
+      ## Return false before writing when a zero needs the generic first-zero masks.
+      withCompilerOptimHints()
+      let destination {.restrict.} = cast[ptr UncheckedArray[float32]](output)
+      let source = cast[ptr UncheckedArray[float32]](input)
+      let cached = cast[ptr UncheckedArray[float32]](prefixes)
+      let upstream = cast[ptr UncheckedArray[float32]](seed)
+      let count = outer * axisLength * inner
+      let zero = vdupq_n_f32(0'f32)
+      var cursor = 0'u
+      while cursor + 4 <= count:
+        if vmaxvq_u32(vceqq_f32(vld1q_f32(unsafeAddr source[cursor]), zero)) != 0:
+          return false
+        cursor += 4
+      for tail in cursor ..< count:
+        if source[tail] == 0'f32: return false
+      for group in 0'u ..< outer:
+        let base = group * axisLength * inner
+        var column = 0'u
+        while column + 4 <= inner:
+          var low = vdupq_n_f64(0.0)
+          var high = low
+          var remaining = axisLength
+          while remaining > 0:
+            dec remaining
+            let index = base + remaining * inner + column
+            let weight = vmulq_f32(vld1q_f32(unsafeAddr cached[index]),
+                                   vld1q_f32(unsafeAddr upstream[index]))
+            low = vaddq_f64(low, vcvt_f64_f32(vget_low_f32(weight)))
+            high = vaddq_f64(high, vcvt_f64_f32(vget_high_f32(weight)))
+            let rounded = vcombine_f32(vcvt_f32_f64(low), vcvt_f32_f64(high))
+            vst1q_f32(addr destination[index],
+                      vdivq_f32(rounded, vld1q_f32(unsafeAddr source[index])))
+          column += 4
+        for tail in column ..< inner:
+          var accumulated = 0.0
+          var remaining = axisLength
+          while remaining > 0:
+            dec remaining
+            let index = base + remaining * inner + tail
+            let weight = cached[index] * upstream[index]
+            accumulated += float64(weight)
+            destination[index] = float32(accumulated) / source[index]
+      return true
 
   proc reduceFloat32Span(input: ptr float32; count: int;
                         multiply: static[bool]): float32 =

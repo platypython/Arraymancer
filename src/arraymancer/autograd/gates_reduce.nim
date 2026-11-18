@@ -550,6 +550,12 @@ proc cpuCumprodGradient[T: SomeFloat](
   let prefixData = prefixes.storage.raw_buffer
   let seedData = seed.storage.raw_buffer
   let output = result.storage.raw_buffer
+  when packed and T is float32 and defined(macosx) and defined(arm64):
+    if inner >= 4 and cumprodGradientPackedColumnsFloat32(
+        addr output[0], unsafeAddr inputData[input.offset],
+        unsafeAddr prefixData[prefixes.offset], unsafeAddr seedData[seed.offset],
+        outer, length, inner):
+      return
   let prefixOffset = uint(prefixes.offset)
   when packed:
     let inputOffset = uint(input.offset)

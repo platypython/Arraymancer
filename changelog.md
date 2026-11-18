@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Vectorize packed CPU float32 cumulative-product column VJPs across independent
+  ARM64 lanes. Preserve rounded float32 weights and float64 reverse carries;
+  keep scalar tails and zero-aware derivative masks.
 - Add native Metal float32 cumulative sums and seeded reverse-inclusive VJPs.
   Scan signed/broadcast views without input copies, preserve scalar bits and
   empty shapes, and retain queued owners across stream/event handoffs. Keep

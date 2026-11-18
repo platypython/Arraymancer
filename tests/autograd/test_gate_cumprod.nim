@@ -130,6 +130,47 @@ suite "Autograd cumulative product":
       output.backprop([1'f32, 2'f32, 3'f32].toTensor)
       for value in x.grad: check value.classify == fcInf
 
+  test "Packed column packets keep rounded weights, wide carries and independent tails":
+    let values = [[1e-30'f32, 2, 1, 1e20, 0.5],
+                  [1e-30'f32, -3, 2, 1e20, 2],
+                  [1e30'f32, 4, 3, 1e-20, -1],
+                  [1'f32, 0.5, 4, 1, -1]].toTensor
+    let seeds = [[1'f32, 1, Inf.float32, 1, -2],
+                 [2'f32, 2, 1, 2, 0],
+                 [3'f32, 3, 0, 3, 3],
+                 [4'f32, 4, -1, 4, 1]].toTensor
+    let expected = [[8'f32, -65, Inf.float32, Inf.float32, -6],
+                    [7'f32, 44, -11, Inf.float32, -1],
+                    [0'f32, -30, -8, Inf.float32, 2],
+                    [4e-30'f32, -96, -6, 4e20, -1]].toTensor
+    var owner = newTensor[float32](4, 4, 5)
+    var seedOwner = newTensor[float32](4, 4, 5)
+    for batch in 0 ..< 2:
+      for row in 0 ..< 4:
+        for column in 0 ..< 5:
+          owner[batch + 1, row, column] = values[row, column]
+          seedOwner[batch + 1, row, column] = seeds[row, column]
+    seedOwner[2, 2, 2] = NaN.float32
+    let context = newContext Tensor[float32]
+    let x = context.variable(owner[1..2, _, _], requires_grad = true)
+    let output = x.cumprod(1)
+    output.backprop(seedOwner[1..2, _, _])
+    check output.value.shape == [2, 4, 5]
+    check x.grad.shape == [2, 4, 5]
+    check output.value[0, 1, 0] == 0'f32
+    check output.value[0, 3, 0] > 0'f32
+    for batch in 0 ..< 2:
+      for row in 0 ..< 4:
+        for column in 0 ..< 5:
+          let actual = x.grad[batch, row, column]
+          let target = expected[row, column]
+          if batch == 1 and column == 2 and row < 3:
+            check actual.classify == fcNan
+          elif target.classify == fcInf:
+            check actual.classify == fcInf
+          else:
+            check abs(actual - target) <= 2e-6'f32 * max(1e-35'f32, abs(target))
+
   test "Scalar, singleton-axis and empty scans retain identity VJPs":
     checkIdentityShapes[float32]()
     checkIdentityShapes[float64]()
