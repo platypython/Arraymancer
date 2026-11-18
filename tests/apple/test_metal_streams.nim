@@ -66,6 +66,35 @@ suite "Metal streams and pending owners":
       check pressure.cpu == newTensorWith[float32]([192, 196], -3'f32)
       check metalMemoryStats().inFlightBytes == baseline
 
+  test "Queued clones preserve snapshots and dropped owners across dependent writes":
+    for queue in [defaultMetalStream(), newMetalStream()]:
+      metalSynchronize(queue)
+      let baseline = metalMemoryStats().inFlightBytes
+      let gate = newMetalEvent()
+      var released = false
+      defer:
+        if not released: signalMetalEvent(gate, 1)
+        metalSynchronize(queue)
+      var snapshot, output, mutated: MetalTensor[float32]
+      block:
+        let input = [1'f32, 2, 3, 4].toTensor.metal
+        wait(queue, gate, 1)
+        withMetalStream(queue):
+          var generated = input + 1'f32
+          snapshot = generated.clone
+          generated.fill(9'f32)
+          output = snapshot * 2'f32
+          mutated = generated
+      let pressure = newTensorWith[float32]([4], -99'f32).metal
+      check not metalStreamIsComplete(queue)
+      signalMetalEvent(gate, 1)
+      released = true
+      check snapshot.cpu == [2'f32, 3, 4, 5].toTensor
+      check output.cpu == [4'f32, 6, 8, 10].toTensor
+      check mutated.cpu == [9'f32, 9, 9, 9].toTensor
+      check pressure.cpu == [-99'f32, -99, -99, -99].toTensor
+      check metalMemoryStats().inFlightBytes == baseline
+
   test "Default-stream work completes without another submission or completion query":
     let stream = defaultMetalStream()
     metalSynchronize(stream)

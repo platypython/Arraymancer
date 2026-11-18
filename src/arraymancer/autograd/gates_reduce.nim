@@ -52,7 +52,7 @@ when defined(metal) or defined(coreai):
     value.sum(axis)
 
   proc meanAlongAxis(value: MetalTensor[float32], axis: int): MetalTensor[float32] =
-    value.sum(axis) / float32(value.shape[axis])
+    value.mean(axis)
 
 type MeanGate*[TT] {.final.} = ref object of Gate[TT]
   ## TODO: generalize to C <- alpha AB + C

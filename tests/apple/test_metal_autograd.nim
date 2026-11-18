@@ -300,6 +300,19 @@ suite "Metal autograd on the existing tape":
     average.backprop([3'f32, 6].toTensor.metal)
     x.grad.checkValues([2, 3], [3'f32, 3, 3, 6, 6, 6])
 
+  test "Column means preserve nonuniform cotangents through vectorized broadcasts":
+    var source = newTensorUninit[float32](3, 8)
+    for row in 0 ..< 3:
+      for column in 0 ..< 8: source[row, column] = float32(row * 8 + column + 1)
+    let context = newContext(MetalTensor[float32])
+    let input = context.variable(source.metal, requires_grad = true)
+    let output = input.mean(0)
+    let seed = [[1'f32, -2, 3, -4, 5, -6, 7, -8]].toTensor
+    output.backprop(seed.metal)
+    check output.value.cpu == source.mean(0)
+    let expected = (seed / 3'f32).broadcast(3, 8)
+    check input.grad.cpu.mean_relative_error(expected) < 2e-6
+
   test "Retained seeded VJPs recompute GPU intermediates and accumulate leaves":
     let ctx = newContext(MetalTensor[float32])
     let x = ctx.variable([2'f32, 3].toTensor.metal, requires_grad = true)

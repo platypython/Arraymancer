@@ -4,9 +4,15 @@ import std/[algorithm, json, math, monotimes, os, times]
 import arraymancer
 
 const cases = ["prod", "sum_rows", "sum_columns", "mean_rows", "mean_columns",
-               "prod_rows", "prod_columns"]
+               "prod_rows", "prod_columns", "mean_rows_backward", "mean_columns_backward"]
 
 proc execute(name: string; input: MetalTensor[float32]): MetalTensor[float32] =
+  if name in ["mean_rows_backward", "mean_columns_backward"]:
+    let context = newContext(MetalTensor[float32])
+    let variable = context.variable(input, requires_grad = true)
+    let output = variable.mean(if name == "mean_rows_backward": -1 else: -2)
+    output.backprop(output.value.ones_like)
+    return variable.grad
   case name
   of "prod": input.prod
   of "sum_rows": input.sum(-1)

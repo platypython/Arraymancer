@@ -231,6 +231,13 @@ suite "Native Metal float32 math":
     let tall = tallData.metal
     check tall.prod(0).cpu == [[2'f32, 3, 4]].toTensor
     check tall.mean(0).cpu.mean_relative_error(tallData.mean(0)) < 2e-6
+    for width in [12, 20]:
+      var data = ones[float32](17, width)
+      for column in 0 ..< width: data[16, column] = float32(column + 2)
+      let input = data.metal
+      check input.prod(0).cpu == data.product(0)
+      check input.sum(0).cpu == data.sum(0)
+      check input.mean(0).cpu.mean_relative_error(data.mean(0)) < 2e-6
   test "Reduction packets preserve mixed shapes, guards and dependent reads":
     for operation in [22'i32, 26, 27]:
       var inputs: seq[MetalTensor[float32]]
@@ -259,6 +266,18 @@ suite "Native Metal float32 math":
                      elif operation == 26: 129'f32
                      else: 3'f32
       check dependent.cpu == newTensorWith[float32]([4, 1], expected)
+    var inputs, outputs: seq[MetalTensor[float32]]
+    for index in 0 ..< 40:
+      let count = if index mod 2 == 0: 31 else: 257
+      var data = ones[float32](count)
+      data[0] = if index mod 2 == 0: -2'f32 else: 2'f32
+      data[count - 1] = 3'f32
+      inputs.add data.metal
+    for input in inputs: outputs.add input.prod
+    inputs.setLen(0)
+    for index, output in outputs:
+      let expected = if index mod 2 == 0: -6'f32 else: 6'f32
+      check output.cpu == newTensorWith[float32]([], expected)
   test "Queued snapshots survive later input mutation and dependent writes":
     var state = ones[float32](257).metal
     let before = state + 2'f32

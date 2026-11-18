@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Use fused axis means in Metal autograd. Batch bit-preserving GPU clones with
+  their arithmetic producers/consumers while retaining copy accounting and
+  independent snapshot storage. Cooperatively reduce packed column blocks,
+  packet full products, and vectorize aligned inner-span binary arithmetic.
 - Add native Metal float32 full/axis products and axis means. Sum, product and
   mean accept negative and scalar axes, preserve unreduced empty dimensions,
   and use zero/one/NaN for empty sum/product/mean. Read signed and broadcast

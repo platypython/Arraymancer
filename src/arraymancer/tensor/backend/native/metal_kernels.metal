@@ -180,6 +180,36 @@ ELEMENTWISE_KERNEL(math_elementwise, 0)
 ELEMENTWISE_KERNEL(math_elementwise_packed, 1)
 ELEMENTWISE_KERNEL(math_elementwise_inner_span, 2)
 
+float4 innerSpanVector(device const float *input, uint index, constant Descriptor &d) {
+  const long address = innerSpanAddress(index, d);
+  if (d.strides[d.rank - 1] == 0) return float4(input[address]);
+  return *reinterpret_cast<device const float4 *>(input + address);
+}
+
+kernel void math_binary_inner_span4(
+    device const float *a [[buffer(0)]], device const float *b [[buffer(1)]],
+    device float *output [[buffer(2)]],
+    constant Descriptor &ad [[buffer(3)]], constant Descriptor &bd [[buffer(4)]],
+    constant Descriptor &od [[buffer(5)]],
+    constant MathParameters &parameters [[buffer(6)]],
+    uint tid [[thread_position_in_grid]]) {
+  const ulong index = ulong(tid) * 4ul;
+  if (index >= elementCount(od)) return;
+  const float4 av = innerSpanVector(a, uint(index), ad);
+  const float4 bv = parameters.scalar_input ? float4(parameters.scalar) :
+      innerSpanVector(b, uint(index), bd);
+  float4 value;
+  switch (parameters.operation) {
+    case 1: value = av + bv; break;
+    case 2: value = av - bv; break;
+    case 3: value = av * bv; break;
+    case 4: value = av / bv; break;
+    case 7: value = av - parameters.scalar * bv; break;
+    default: return;
+  }
+  reinterpret_cast<device float4 *>(output + od.offset)[tid] = value;
+}
+
 struct PackedUnaryParameters {
   uint count;
   long inputOffset, outputOffset;
@@ -834,3 +864,63 @@ PACKED_REDUCTION_KERNEL(math_prod_rows_tasks, 26, false)
 PACKED_REDUCTION_KERNEL(math_sum_columns_tasks, 22, true)
 PACKED_REDUCTION_KERNEL(math_mean_columns_tasks, 27, true)
 PACKED_REDUCTION_KERNEL(math_prod_columns_tasks, 26, true)
+
+template<int operation>
+void packedColumnReduction(constant PackedReductionTask &task, uint group,
+                           uint lane, uint width) {
+  const uint columnLanes = min(4u, width);
+  const uint block = group * columnLanes + lane % columnLanes;
+  const uint blocks = task.outputs / 4u;
+  float4 value = operation == 26 ? float4(1.0f) : float4(0.0f);
+  if (block < blocks) {
+    device const float4 *input = reinterpret_cast<device const float4 *>(task.input);
+    for (uint row = lane / columnLanes; row < task.inner; row += width / columnLanes) {
+      const float4 item = input[ulong(row) * blocks + block];
+      value = operation == 26 ? value * item : value + item;
+    }
+  }
+  for (uint delta = columnLanes; delta < width; delta *= 2u)
+    value = operation == 26 ? value * simd_shuffle_xor(value, delta) :
+        value + simd_shuffle_xor(value, delta);
+  if (lane < columnLanes && block < blocks) {
+    if (operation == 27) value /= float(task.inner);
+    reinterpret_cast<device float4 *>(task.output)[block] = value;
+  }
+}
+
+#define PACKED_COLUMN_REDUCTION_KERNEL(NAME, OPERATION) \
+kernel void NAME(constant PackedReductionTask *tasks [[buffer(0)]], \
+    uint3 group [[threadgroup_position_in_grid]], \
+    uint lane [[thread_index_in_simdgroup]], \
+    uint width [[threads_per_simdgroup]]) { \
+  packedColumnReduction<OPERATION>(tasks[group.z], group.x, lane, width); \
+}
+PACKED_COLUMN_REDUCTION_KERNEL(math_sum_columns4_tasks, 22)
+PACKED_COLUMN_REDUCTION_KERNEL(math_prod_columns4_tasks, 26)
+PACKED_COLUMN_REDUCTION_KERNEL(math_mean_columns4_tasks, 27)
+
+kernel void math_product_tasks(
+    constant PackedReductionTask *tasks [[buffer(0)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simdGroup [[simdgroup_index_in_threadgroup]],
+    uint width [[threads_per_simdgroup]]) {
+  constant PackedReductionTask &task = tasks[group.z];
+  threadgroup float partial[256];
+  float value = 1.0f;
+  for (uint index = tid; index < task.inner; index += 256u)
+    value *= task.input[index];
+  for (uint mask = width / 2; mask > 0; mask >>= 1)
+    value *= simd_shuffle_xor(value, ushort(mask));
+  if (lane == 0) partial[simdGroup] = value;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simdGroup == 0) {
+    value = 1.0f;
+    for (uint index = lane; index < (256u + width - 1u) / width; index += width)
+      value *= partial[index];
+    for (uint mask = width / 2; mask > 0; mask >>= 1)
+      value *= simd_shuffle_xor(value, ushort(mask));
+    if (lane == 0) task.output[0] = value;
+  }
+}

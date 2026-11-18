@@ -1233,9 +1233,10 @@ static AMStatus admitMathCommand(AMStream *stream, id<MTLCommandBuffer> command,
                                  NSArray *leases, AMBuffer *output, AMEvidence evidence,
                                  id<MTLComputePipelineState> builtinPipeline = nil,
                                  AMBuffer *__unsafe_unretained const *mathBuffers = nullptr,
-                                 NSUInteger mathBufferCount = 0) {
+                                 NSUInteger mathBufferCount = 0,
+                                 uint64_t materializationBytes = 0) {
   AMStatus status = submitCommandDetailed(stream, command, leases, nil, @[],
-      evidence.invocation_id, evidence, 0, nullptr, true, builtinPipeline,
+      evidence.invocation_id, evidence, materializationBytes, nullptr, true, builtinPipeline,
       mathBuffers, mathBufferCount, output);
   if (status.code && !stream.batchRecords.count) {
     AMStatus cleanup = flushMathBatch(stream);
@@ -2126,6 +2127,15 @@ static bool innerSpanMathInput(AMTensorDescriptor input, AMTensorDescriptor outp
   return input.shape[axis] == 1 || input.strides[axis] == 0 || input.strides[axis] == 1;
 }
 
+static bool vectorInnerSpanMathInput(AMTensorDescriptor input) {
+  if (input.shape[input.rank - 1] % 4) return false;
+  if (input.strides[input.rank - 1] == 0) return true;
+  if (input.offset % 4) return false;
+  for (int axis = 0; axis < input.rank - 1; ++axis)
+    if (input.shape[axis] > 1 && input.strides[axis] % 4) return false;
+  return true;
+}
+
 static AMCompute *compute(id<MTLDevice> device, const char *directory, NSError **error) {
   if (!device || !directory) return nil;
   const uint64_t registryID = device.registryID;
@@ -2194,10 +2204,10 @@ static AMStatus runMathCommand(AMCompute *context,
                                AMBuffer *output, const AMTensorDescriptor &ad,
                                const AMTensorDescriptor &bd, const AMTensorDescriptor &od,
                                const AMMathParameters &parameters,
-                               uint64_t outputCount, MTLSize groups,
+                               uint64_t inputCount, uint64_t outputCount, MTLSize groups,
                                MTLSize threads, int32_t operation,
                                bool packedUnary, bool packedUnaryTasks,
-                               bool packedDot, bool packedVectorMatrix, bool packedAxis) {
+                               bool packedDot, bool packedVectorMatrix, bool packedReduction) {
   AMStream *stream = nil;
   AMStatus status = selectedStream(output.buffer.device, context.state, &stream);
   if (status.code) return status;
@@ -2207,7 +2217,7 @@ static AMStatus runMathCommand(AMCompute *context,
     // Single-output contractions trade no useful work for concurrent scheduling.
     const bool dot = operation == 20 && od.rank == 2 && ad.shape[ad.rank - 2] == 1 &&
         bd.shape[bd.rank - 1] == 1;
-    const bool packedMath = packedUnaryTasks || packedVectorMatrix || packedAxis;
+    const bool packedMath = packedUnaryTasks || packedVectorMatrix || packedReduction;
     // Packed tasks already expose their parallel work inside one dispatch.
     id<MTLComputeCommandEncoder> encoder = mathComputeEncoder(stream, command, output,
         dot || packedMath);
@@ -2239,7 +2249,7 @@ static AMStatus runMathCommand(AMCompute *context,
           stream.packedPipeline = pipeline;
           stream->packedGroups = groups;
           stream->packedThreads = threads;
-          stream->packedRows = packedVectorMatrix || packedAxis;
+          stream->packedRows = packedVectorMatrix || packedReduction;
           stream->packedRepeatedWrites = false;
         }
         if (orderedWrites && stream->packedTaskCount)
@@ -2249,8 +2259,10 @@ static AMStatus runMathCommand(AMCompute *context,
           packedVectorMatrix ? b.gpuAddress + (uint64_t)bd.offset * sizeof(float) : 0,
           packedOutputAddress,
           packedVectorMatrix ? (uint32_t)ad.shape[1] :
-              (packedAxis ? (uint32_t)ad.shape[parameters.axis] : (uint32_t)outputCount),
-          packedVectorMatrix ? (uint32_t)bd.shape[1] : (packedAxis ? (uint32_t)outputCount : 0)};
+              (packedReduction ? (uint32_t)(operation == 25 ? inputCount :
+                  ad.shape[parameters.axis]) : (uint32_t)outputCount),
+          packedVectorMatrix ? (uint32_t)bd.shape[1] :
+              (packedReduction ? (uint32_t)outputCount : 0)};
         if (!stream.aggregateMath) flushPackedMath(stream, encoder);
         return finishMathEncoding(stream);
       }
@@ -2618,6 +2630,8 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     bool packedDot = false;
     bool packedVectorMatrix = false;
     bool packedAxis = false;
+    bool packedAxisColumns4 = false;
+    bool packedFullProduct = false;
 
     if (elementwise) {
       if (operation == 13 || operation == 15 || operation == 17 || operation == 19 || operation == 23) {
@@ -2666,6 +2680,11 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
         } else if ((!a || innerSpanMathInput(ad, od)) &&
                    (!b || innerSpanMathInput(bd, od))) {
           kernelName = @"math_elementwise_inner_span";
+          if ((operation <= 4 || operation == 7) && a && od.offset % 4 == 0 &&
+              vectorInnerSpanMathInput(ad) && (!b || vectorInnerSpanMathInput(bd))) {
+            kernelName = @"math_binary_inner_span4";
+            dispatchCount = outputCount / 4;
+          }
         }
       }
       threads = MTLSizeMake(MIN((NSUInteger)256, (NSUInteger)outputCount), 1, 1);
@@ -2735,6 +2754,9 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
       parameters.axis = small && packedMathInput(ad);
       threads = MTLSizeMake(256, 1, 1);
       groups = MTLSizeMake(partialCount, 1, 1);
+      packedFullProduct = operation == 25 && parameters.axis &&
+          output.state.supportsIndirectMath;
+      if (packedFullProduct) kernelName = @"math_product_tasks";
     } else if (operation == 24) {
       if (!b || parameters.scalar_input || !sameShape(ad, bd) ||
           aCount != bCount || od.rank != 0 || outputCount != 1)
@@ -2778,6 +2800,11 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
         else
           kernelName = operation == 22 ? @"math_sum_columns_tasks" :
               (operation == 26 ? @"math_prod_columns_tasks" : @"math_mean_columns_tasks");
+        packedAxisColumns4 = parameters.axis == 0 && ad.shape[1] % 4 == 0 &&
+            ad.offset % 4 == 0 && od.offset % 4 == 0;
+        if (packedAxisColumns4)
+          kernelName = operation == 22 ? @"math_sum_columns4_tasks" :
+              (operation == 26 ? @"math_prod_columns4_tasks" : @"math_mean_columns4_tasks");
       }
     }
 
@@ -2800,6 +2827,14 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
       groups.width = (outputCount + outputsPerGroup - 1) / outputsPerGroup;
       if (groups.width * threads.width > UINT32_MAX)
         return failure(2, "axis reduction grid exceeds Metal index limits");
+    }
+    if (packedAxisColumns4) {
+      const NSUInteger simdWidth = pipeline.threadExecutionWidth;
+      if (!simdWidth || simdWidth > 256 || (simdWidth & (simdWidth - 1)))
+        return failure(7, "column reduction pipeline has an unsupported SIMD width");
+      threads.width = simdWidth;
+      const uint64_t outputsPerGroup = 4 * MIN((NSUInteger)4, simdWidth);
+      groups.width = (outputCount + outputsPerGroup - 1) / outputsPerGroup;
     }
     if (([kernelName isEqualToString:@"math_axis_serial"] ||
          (packedAxis && parameters.axis == 0)) && groups.width * threads.width > UINT32_MAX)
@@ -2827,9 +2862,9 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     }
 
     return runMathCommand(context, pipeline, a, b, output,
-                          ad, bd, od, parameters, outputCount,
+                          ad, bd, od, parameters, aCount, outputCount,
                           groups, threads, operation, packedUnary, packedUnaryTasks,
-                          packedDot, packedVectorMatrix, packedAxis);
+                          packedDot, packedVectorMatrix, packedAxis || packedFullProduct);
   }
 }
 AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,
@@ -3010,26 +3045,34 @@ AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
     AMStream *stream = nil;
     status = selectedStream(src.buffer.device, context.state, &stream);
     if (status.code) return status;
-    id<MTLCommandBuffer> command = [stream.queue commandBuffer];
-    if (!command) return failure(5, "cannot create Metal copy command");
-    id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-    if (!encoder) return failure(5, "cannot create Metal copy encoder");
-    command.label = name;
-    [encoder setComputePipelineState:pipeline];
-    [encoder setBuffer:src.buffer offset:0 atIndex:0];
-    [encoder setBuffer:dst.buffer offset:0 atIndex:1];
-    [encoder setBytes:&input length:sizeof(input) atIndex:2];
-    [encoder setBytes:&output length:sizeof(output) atIndex:3];
-    [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(MIN(count, pipeline.maxTotalThreadsPerThreadgroup), 1, 1)];
-    [encoder endEncoding];
-    const uint64_t invocation = nextInvocation.fetch_add(1);
-    AMEvidence evidence = {invocation, dst.buffer.device.registryID, 0,
-      0, 0, 0, 2, (int32_t)(dtypeWidth(input.dtype) * 8)};
-    status = submitCommand(stream, command, @[src, dst, pipeline], dst,
-                           invocation, evidence, count * dtypeWidth(input.dtype), nullptr);
-    if (status.code) abandonBufferProducer(dst, invocation);
-    return status;
+    @synchronized(stream.encodingLock) {
+      id<MTLCommandBuffer> command = mathCommandBuffer(stream);
+      if (!command) return failure(5, "cannot create Metal copy command");
+      id<MTLComputeCommandEncoder> encoder = mathComputeEncoder(stream, command, dst, false);
+      if (!encoder) return failure(5, "cannot create Metal copy encoder");
+      const uint64_t invocation = nextInvocation.fetch_add(1);
+      AMEvidence evidence = {invocation, dst.buffer.device.registryID, 0,
+        0, 0, 0, 2, (int32_t)(dtypeWidth(input.dtype) * 8)};
+      AMBuffer *__unsafe_unretained leases[] = {src, dst};
+      status = admitMathCommand(stream, command, nil, dst, evidence, pipeline,
+          leases, 2, count * dtypeWidth(input.dtype));
+      if (status.code) return status;
+      @try {
+        // A clone participates in the same producer/consumer ordering as arithmetic.
+        flushPackedMath(stream, encoder);
+        orderMathAccess(stream, dst, src);
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:src.buffer offset:0 atIndex:0];
+        [encoder setBuffer:dst.buffer offset:0 atIndex:1];
+        [encoder setBytes:&input length:sizeof(input) atIndex:2];
+        [encoder setBytes:&output length:sizeof(output) atIndex:3];
+        [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(MIN(count, pipeline.maxTotalThreadsPerThreadgroup), 1, 1)];
+      } @catch (NSException *exception) {
+        return failMathEncoding(stream, invocation, exception.reason);
+      }
+      return finishMathEncoding(stream);
+    }
   }
 }
 

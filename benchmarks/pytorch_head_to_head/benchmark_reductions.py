@@ -26,9 +26,10 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "0"
 import torch
 
 CASES = ("prod", "sum_rows", "sum_columns", "mean_rows", "mean_columns",
-         "prod_rows", "prod_columns")
+         "prod_rows", "prod_columns", "mean_rows_backward", "mean_columns_backward")
 ARTIFACTS = (
     "src/arraymancer/tensor/aggregate_metal.nim",
+    "src/arraymancer/autograd/gates_reduce.nim",
     "src/arraymancer/tensor/backend/native/metal_bridge.mm",
     "src/arraymancer/tensor/backend/native/metal_kernels.metal",
     "benchmarks/pytorch_head_to_head/reduction_runner.nim",
@@ -40,6 +41,17 @@ ARTIFACTS = (
 
 def operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
     """Resolve the callable before timing; include output allocation each call."""
+    if name.endswith("_backward"):
+        axis = -1 if name == "mean_rows_backward" else -2
+
+        def backward() -> torch.Tensor:
+            leaf = value.detach().requires_grad_(True)
+            output = leaf.mean(dim=axis, keepdim=True)
+            output.backward(torch.ones_like(output))
+            assert leaf.grad is not None
+            return leaf.grad
+
+        return backward
     if name == "prod":
         return lambda: value.prod()
     kind, direction = name.split("_")
