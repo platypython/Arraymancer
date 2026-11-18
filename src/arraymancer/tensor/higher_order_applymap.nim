@@ -153,23 +153,24 @@ proc applyUnary*(dest: var Tensor[float32]; src: Tensor[float32];
   ## Disjoint contiguous macOS buffers use bulk math without input copies.
   if dest.shape != src.shape:
     raise newException(ValueError, "Unary input and output shapes must agree")
-  if src.size == 0: return
+  let count = src.size
+  if count == 0: return
   when defined(macosx):
     if dest.is_C_contiguous and src.is_C_contiguous and disjointOwnedStorage(dest, src):
       when operation == unarySqrt:
         sqrtFloat32(addr dest.storage.raw_buffer[dest.offset],
-            addr src.storage.raw_buffer[src.offset], src.size)
+            addr src.storage.raw_buffer[src.offset], count)
       else:
         var offset = 0
-        while offset < src.size:
-          var count = min(src.size - offset, high(cint).int).cint
+        while offset < count:
+          var chunk = min(count - offset, high(cint).int).cint
           let destination = addr dest.storage.raw_buffer[dest.offset + offset]
           let source = addr src.storage.raw_buffer[src.offset + offset]
           when operation == unaryExp:
-            vvexpf(destination, source, addr count)
+            vvexpf(destination, source, addr chunk)
           else:
-            vvlogf(destination, source, addr count)
-          offset += count.int
+            vvlogf(destination, source, addr chunk)
+          offset += chunk.int
       return
   when operation == unaryExp:
     dest.apply2_inline(src, math.exp(y))

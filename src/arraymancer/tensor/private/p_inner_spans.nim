@@ -62,7 +62,8 @@ iterator spanOffsets*[N: static int](shape: Metadata; strides: array[N, Metadata
 
 func disjointOwnedStorage*[T, U: KnownSupportsCopyMem](a: Tensor[T], b: Tensor[U]): bool =
   ## Foreign buffers may overlap even when their storage wrappers differ.
-  a.size > 0 and b.size > 0 and a.storage.isMemOwner and b.storage.isMemOwner and
+  not a.storage.isNil and not b.storage.isNil and
+    a.storage.isMemOwner and b.storage.isMemOwner and
     cast[pointer](a.storage.raw_buffer) != cast[pointer](b.storage.raw_buffer)
 
 template withSpanStep*(step: int; stride: untyped; body: untyped) =

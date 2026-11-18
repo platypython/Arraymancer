@@ -13,6 +13,7 @@ Arraymancer v0.7.x
   spans while preserving offset views, aliases and managed-element traversal;
   mark only fresh or checked-disjoint output pointers as nonaliasing.
   Advance outer-span coordinates incrementally instead of decoding each with divisions.
+  Reuse unary element counts and check owned storage without repeated shape products.
 - Preserve CPU empty-axis reduction shapes and neutral elements for sum/product,
   including a scalar empty product of one. Sum, product and mean accept negative
   axes and rank-zero scalars; floating-point empty means produce NaNs. Preserve
