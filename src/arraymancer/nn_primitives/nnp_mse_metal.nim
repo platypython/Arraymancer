@@ -1,19 +1,19 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
 ## Provides native float32 mean-MSE forward and backward primitives.
-import ../tensor/[metal_types, init_metal, shapeshifting_metal, operators_metal, aggregate_metal]
+import ../tensor/[metal_types, init_metal, shapeshifting_metal, operators_metal, data_structure]
 
 proc mse_forward_metal*(prediction, target: MetalTensor[float32]): MetalTensor[float32] =
-  ## Fuse subtraction and squaring on the GPU, then reduce to a scalar mean.
+  ## Reduce squared differences directly to a native scalar, without an error tensor.
   validateMetalView(prediction)
   validateMetalView(target)
   if prediction.shape != target.shape:
     raise newException(MetalError, "Metal MSE prediction and target shapes differ")
-  let squaredDifference = newMetalTensorUninit[float32](prediction.shape, prediction.storage.device)
-  dispatchMetalMath(prediction, target, squaredDifference, 23)
-  mean(squaredDifference)
+  result = newMetalTensorUninit[float32]([], prediction.storage.device)
+  dispatchMetalMath(prediction, target, result, 24)
 
-proc mse_backward_metal*(upstream, prediction, target: MetalTensor[float32]): MetalTensor[float32] =
-  ## Read the scalar upstream gradient in a fused GPU kernel; never materialize it on host.
+proc mse_backward_reduced_metal*(upstream, prediction, target: MetalTensor[float32];
+                                target_shape: Metadata): MetalTensor[float32] =
+  ## Sum broadcast contributions directly into the requested original operand shape.
   validateMetalView(upstream)
   validateMetalView(prediction)
   validateMetalView(target)
@@ -22,9 +22,13 @@ proc mse_backward_metal*(upstream, prediction, target: MetalTensor[float32]): Me
   if prediction.shape != target.shape:
     raise newException(MetalError, "Metal MSE prediction and target shapes differ")
 
-  result = newMetalTensorUninit[float32](prediction.shape, prediction.storage.device)
+  result = newMetalTensorUninit[float32](target_shape, prediction.storage.device)
   checkMetal metalApi().mseBackward(
     upstream.storage.owner.handle, descriptor(upstream),
     prediction.storage.owner.handle, descriptor(prediction),
     target.storage.owner.handle, descriptor(target),
     result.storage.owner.handle, descriptor(result), arraymancerAppleLibDir.cstring)
+
+proc mse_backward_metal*(upstream, prediction, target: MetalTensor[float32]): MetalTensor[float32] =
+  ## Read the scalar seed on-device and return the full prediction-shaped gradient.
+  mse_backward_reduced_metal(upstream, prediction, target, prediction.shape)

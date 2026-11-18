@@ -14,7 +14,7 @@ proc run(executable: string; args: openArray[string]): string =
   if code != 0: raise newException(IOError, executable & " failed: " & result)
 proc buildMetallib(source, name, output: string) =
   ## Tests load a separately compiled library, not the runtime compiler's output.
-  echo run("xcrun", ["-sdk", "macosx", "metal", "-std=metal3.2", "-fno-fast-math",
+  echo run("xcrun", ["-sdk", "macosx", "metal", "-O3", "-std=metal3.2", "-fno-fast-math",
     "-mmacosx-version-min=27.0", "-c", source, "-o", output / (name & ".air")])
   echo run("xcrun", ["-sdk", "macosx", "metallib", output / (name & ".air"),
     "-o", output / (name & ".metallib")])
@@ -27,9 +27,10 @@ proc buildMetal(root, output, sdk: string) =
   if fileExists(testShader):
     buildMetallib(testShader, "arraymancer_test", output)
   let library = absolutePath(output / "libarraymancer_metal.dylib")
-  echo run(clang, ["-std=c++17", "-fobjc-arc", "-dynamiclib", "-arch", "arm64",
+  echo run(clang, ["-O3", "-std=c++17", "-fobjc-arc", "-dynamiclib", "-arch", "arm64",
     "-target", "arm64-apple-macos27.0", "-isysroot", sdk, "-framework", "Metal",
-    "-framework", "Foundation", "-install_name", "@rpath/libarraymancer_metal.dylib",
+    "-framework", "MetalPerformanceShaders", "-framework", "Foundation",
+    "-install_name", "@rpath/libarraymancer_metal.dylib",
     root / "src/arraymancer/tensor/backend/native/metal_bridge.mm", "-o", library])
   echo "Built " & library
 

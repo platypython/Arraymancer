@@ -1,6 +1,6 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
 ## Provides the lazy, typed Metal ABI loader without link-time SDK dependencies.
-import std/[dynlib, os, locks]
+import std/[dynlib, os, locks, atomics]
 when not (defined(macosx) and defined(arm64)):
   {.error: "Metal and Core AI require macOS arm64".}
 
@@ -103,10 +103,15 @@ const arraymancerAppleLibDir* {.strdefine.} = currentSourcePath().parentDir.pare
 var api: MetalApi
 var library: LibHandle
 var loaderLock: Lock
+var apiReady: Atomic[bool]
 initLock(loaderLock)
 
-proc metalApi*(): MetalApi {.gcsafe.} =
+proc metalApi*(): lent MetalApi {.gcsafe.} =
+  ## Borrow the immutable loaded table instead of copying every function pointer.
   ## Load only on an explicit backend operation; a failed load can be retried.
+  ## Publish only a complete table; subsequent calls need no loader mutex.
+  if apiReady.load(moAcquire):
+    return api
   withLock loaderLock:
     if library == nil:
       let handle = loadLib(arraymancerAppleLibDir / "libarraymancer_metal.dylib")
@@ -153,6 +158,7 @@ proc metalApi*(): MetalApi {.gcsafe.} =
       resolve(rngSeed, "am_rng_seed")
       resolve(rand, "am_rand")
       library = handle
+      apiReady.store(true, moRelease)
     result = api
 
 proc checkMetal*(status: AMStatus) {.gcsafe.} =

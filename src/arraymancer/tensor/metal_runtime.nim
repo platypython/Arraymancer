@@ -4,6 +4,11 @@
 ## no implicit ordering; use events for cross-stream dependencies. Tensor readback
 ## waits for the tensor's producing work, not for unrelated streams. Stream sync
 ## waits only that queue; device sync waits previous work on every registered queue.
+## Default-stream built-in math shares command buffers up to 32 dispatches or 4 MiB
+## of queued output capacity, with a 100-microsecond submission deadline. An
+## independent timer submits idle batches; host scheduling can delay that timer.
+## Explicit streams commit eagerly. Sync, events, readback and foreign access flush
+## pending math before exposing or waiting for its work.
 import std/os
 import ./[metal_types, init_metal]
 export metal_types, init_metal

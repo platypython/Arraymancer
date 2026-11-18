@@ -7,43 +7,53 @@ import ./coreai_test_support
 suite "Core AI same-queue inference":
   test "Metal producer, encoded identity and Metal consumer share one queue without readback":
     let function = openCoreAIModel(coreAISourceAsset).loadFunction("identity_matrix").get
-    let queue = newMetalStream()
-    let stream = newCoreAIStream(queue)
-    let unrelated = newMetalStream()
-    let gate = newMetalEvent()
-    defer:
-      signalMetalEvent(gate, 1)
-      metalSynchronize(unrelated)
-    wait(unrelated, gate, 1)
-    let source = [[1'f32, 2, 3], [4'f32, 5, 6]].toTensor.metal
-    var produced: MetalTensor[float32]
-    withMetalStream(queue): produced = source + 1'f32
-    let output = newTensorWith[float32]([2, 3], 0'f32).metal
-    let outputIdentity = originalMetalBufferIdentity(output)
-    let inputView = coreAIView(produced)
-    let outputView = coreAIView(output)
-    let job = function.encodeInference([CoreAIBinding(name: "x", array: inputView)],
-      states = [], outputViews = [CoreAIBinding(name: "y", array: outputView)], stream = stream)
-    check job.wait().len == 0
-    let inference = job.coreAIJobEvidence
-    check inference.completed and inference.sdkStreamCompleted
-    check not inference.metalQueueCompleted
-    check inference.streamIdentity == queue.identity
-    check inference.hostCopyBytes == 0 and inference.materializationBytes == 0
-    check inference.borrowedInputCount == 1
-    check inputView.descriptor.hostCopyBytes == 0
-    check outputView.descriptor.hostCopyBytes == 0
-    check outputView.descriptor.bufferIdentity == outputIdentity
-    var consumer: MetalTensor[float32]
-    withMetalStream(queue): consumer = output * 2'f32
-    let boundary = awaitCurrentWorkCompleted(stream)
-    check boundary.completed and boundary.sdkStreamCompleted and boundary.metalQueueCompleted
-    check boundary.streamIdentity == queue.identity
-    check metalStreamIsComplete(queue)
-    check not metalStreamIsComplete(unrelated)
-    check consumer.cpu == [[4'f32, 6, 8], [10'f32, 12, 14]].toTensor
-    check inputView.descriptor.hostCopyBytes == 0
-    check outputView.descriptor.hostCopyBytes == 0
+    for queue in [defaultMetalStream(), newMetalStream()]:
+      let stream = newCoreAIStream(queue)
+      let unrelated = newMetalStream()
+      let gate = newMetalEvent()
+      defer:
+        signalMetalEvent(gate, 1)
+        metalSynchronize(unrelated)
+      wait(unrelated, gate, 1)
+      let source = [[1'f32, 2, 3], [4'f32, 5, 6]].toTensor.metal
+      var produced: MetalTensor[float32]
+      withMetalStream(queue): produced = source + 1'f32
+      var output = newTensorWith[float32]([2, 3], 0'f32).metal
+      let outputIdentity = originalMetalBufferIdentity(output)
+      let inputView = coreAIView(produced)
+      let outputView = coreAIView(output)
+      let producerGate = newMetalEvent()
+      var producersReleased = false
+      defer:
+        if not producersReleased: signalMetalEvent(producerGate, 1)
+      wait(queue, producerGate, 1)
+      withMetalStream(queue):
+        for value in 0 ..< 40: output.fill(float32(value))
+      let job = function.encodeInference([CoreAIBinding(name: "x", array: inputView)],
+        states = [], outputViews = [CoreAIBinding(name: "y", array: outputView)], stream = stream)
+      expect CoreAITimeoutError: discard job.wait(timeoutMs = 0)
+      signalMetalEvent(producerGate, 1)
+      producersReleased = true
+      check job.wait().len == 0
+      let inference = job.coreAIJobEvidence
+      check inference.completed and inference.sdkStreamCompleted
+      check not inference.metalQueueCompleted
+      check inference.streamIdentity == queue.identity
+      check inference.hostCopyBytes == 0 and inference.materializationBytes == 0
+      check inference.borrowedInputCount == 1
+      check inputView.descriptor.hostCopyBytes == 0
+      check outputView.descriptor.hostCopyBytes == 0
+      check outputView.descriptor.bufferIdentity == outputIdentity
+      var consumer: MetalTensor[float32]
+      withMetalStream(queue): consumer = output * 2'f32
+      let boundary = awaitCurrentWorkCompleted(stream)
+      check boundary.completed and boundary.sdkStreamCompleted and boundary.metalQueueCompleted
+      check boundary.streamIdentity == queue.identity
+      check metalStreamIsComplete(queue)
+      check not metalStreamIsComplete(unrelated)
+      check consumer.cpu == [[4'f32, 6, 8], [10'f32, 12, 14]].toTensor
+      check inputView.descriptor.hostCopyBytes == 0
+      check outputView.descriptor.hostCopyBytes == 0
 
   test "Queue marker waits preceding work and mutable leases reject access until completion":
     let function = openCoreAIModel(coreAISourceAsset).loadFunction("identity_matrix").get

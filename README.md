@@ -323,6 +323,21 @@ For a manual build, use `nim c -r tools/build_apple.nim` (`--backend=metal` buil
 only Metal). Enable `-d:metal` or `-d:coreai` when compiling a runner; the latter
 also includes Metal for interop. Manual profiling requires `MTL_CAPTURE_ENABLED=1`.
 
+Built-in Metal math batches automatically on the default stream; explicit streams
+commit eagerly. Batches flush at 32 dispatches, 4 MiB of queued output capacity or
+a 100-microsecond submission deadline. A timer submits idle batches, subject to
+host scheduling. Synchronization, events, tensor readback and foreign access flush
+pending math. Buffers stay retained until GPU completion, including dropped results.
+
+Apple Silicon buffers up to 1 MiB use tracked automatic heaps, capped at 4 MiB
+and the configured memory budget. Reserved bytes include whole heap capacities;
+empty heaps are reclaimed when clearing cached storage. GPU leases prevent reuse
+of allocations still in flight.
+
+Packed row products and compatible exp/ln/sqrt calls can share a GPU dispatch.
+Unary packets parallelize independent outputs and keep repeated destination writes
+in per-element order. Dependencies, incompatible layouts and encoder changes close each group.
+
 Core AI loads real `.aimodel` and SDK-matching `.aimodelc` assets through Swift.
 `availableCoreAIComputeUnits()` reports SDK availability; allowed and preferred
 units describe specialization policy, not observed GPU or Neural Engine execution.

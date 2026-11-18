@@ -1,6 +1,6 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
 ## Exercises real event dependencies, queue-local fences and retained pending tensor owners.
-import std/[unittest, locks]
+import std/[unittest, locks, monotimes, times, os]
 import ../../src/arraymancer
 
 type ThreadSelection = object
@@ -31,6 +31,69 @@ proc threadProbe(state: ptr ThreadSelection) {.thread.} =
       signal(state.condition)
 
 suite "Metal streams and pending owners":
+  test "Default-stream chains retain dropped inputs through immediate readback":
+    withMetalStream(defaultMetalStream()):
+      var output: MetalTensor[float32]
+      block:
+        var current = [1'f32, 2, 3].toTensor.metal
+        for index in 0 ..< 4096:
+          current = current + 1'f32
+        output = current
+      check output.cpu == [4097'f32, 4098, 4099].toTensor
+
+  test "Queued dense products retain dropped shared inputs":
+    for queue in [defaultMetalStream(), newMetalStream()]:
+      metalSynchronize(queue)
+      let baseline = metalMemoryStats().inFlightBytes
+      let gate = newMetalEvent()
+      var released = false
+      defer:
+        if not released: signalMetalEvent(gate, 1)
+        metalSynchronize(queue)
+      wait(queue, gate, 1)
+      var output: MetalTensor[float32]
+      block:
+        withMetalStream(queue):
+          let input = ones[float32](192, 196).metal.metalView(
+            [192, 192].toMetadata, [196, 1].toMetadata, 0)
+          output = input * input
+      let pressure = newTensorWith[float32]([192, 196], -3'f32).metal
+      check not metalStreamIsComplete(queue)
+      signalMetalEvent(gate, 1)
+      released = true
+      check output.shape == [192, 192].toMetadata
+      check output.cpu == newTensorWith[float32]([192, 192], 192'f32)
+      check pressure.cpu == newTensorWith[float32]([192, 196], -3'f32)
+      check metalMemoryStats().inFlightBytes == baseline
+
+  test "Default-stream work completes without another submission or completion query":
+    let stream = defaultMetalStream()
+    metalSynchronize(stream)
+    let baseline = metalMemoryStats().inFlightBytes
+    var output: MetalTensor[float32]
+    withMetalStream(stream):
+      let input = [2'f32, 3].toTensor.metal
+      output = input * 2'f32
+    let deadline = getMonoTime() + initDuration(seconds = 5)
+    while metalMemoryStats().inFlightBytes > baseline and getMonoTime() < deadline:
+      sleep(1)
+    check metalMemoryStats().inFlightBytes == baseline
+    check output.cpu == [4'f32, 6].toTensor
+
+  test "Default-stream events publish pending work to an explicit consumer":
+    let producer = defaultMetalStream()
+    let consumer = newMetalStream()
+    let ready = newMetalEvent()
+    var intermediate, output: MetalTensor[float32]
+    withMetalStream(producer):
+      intermediate = [1'f32, 2].toTensor.metal + 3'f32
+      record(ready, producer)
+    withMetalStream(consumer):
+      wait(consumer, ready)
+      output = intermediate * 2'f32
+    metalSynchronize(consumer)
+    check output.cpu == [8'f32, 10].toTensor
+
   test "Selection is thread-local and restored across exceptions":
     let previous = currentMetalStream()
     defer: setMetalStream(previous)

@@ -246,6 +246,22 @@ suite "Metal autograd on the existing tape":
         prediction.grad.checkValues([2, 1], [0'f32, 12'f32 / divisor])
         target.grad.checkValues([3], [-8'f32 / divisor, -4'f32 / divisor, 0])
 
+  test "Reduced mean MSE preserves offset seeds, target-only and shared gradients":
+    let ctx = newContext(MetalTensor[float32])
+    let storage = [2'f32, 4].toTensor.metal
+    let prediction = ctx.variable(storage.metalView(
+      [2, 1].toMetadata, [-1, 0].toMetadata, 1), requires_grad = false)
+    let target = ctx.variable([1'f32, 2, 3].toTensor.metal, requires_grad = true)
+    let seed = [99'f32, 2].toTensor.metal.metalView(Metadata(), Metadata(), 1)
+    let loss = prediction.mse_loss(target)
+    loss.backprop(seed)
+    target.grad.checkValues([3], [-16'f32 / 6, -8'f32 / 6, 0])
+    let shared = ctx.variable([[2'f32], [4'f32]].toTensor.metal, requires_grad = true)
+    let sharedLoss = shared.mse_loss(shared.transpose2d)
+    sharedLoss.value.checkValues([], [2'f32])
+    sharedLoss.backprop()
+    shared.grad.checkValues([2, 1], [-2'f32, 2])
+
   test "Empty broadcast MSE reduces to zero sums and NaN means on the GPU":
     for reduction in [mseMean, mseSum, mseNone]:
       let ctx = newContext(MetalTensor[float32])

@@ -2,10 +2,15 @@
 // Provides native shared storage; producers belong to storage, not metadata aliases.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #import <dispatch/dispatch.h>
 #include "apple_abi.h"
+#include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <chrono>
+#include <deque>
+#include <vector>
 #include <stdlib.h>
 #include <string.h>
 
@@ -17,8 +22,11 @@
 @class AMPendingUse;
 @class AMPendingCommand;
 @class AMStream;
+// These adapter-private classes have no dynamic overrides or external selectors.
+__attribute__((objc_direct_members))
 @interface AMBuffer : NSObject
 @property(nonatomic, strong) id<MTLBuffer> buffer;
+@property(nonatomic) uint64_t gpuAddress;
 @property(nonatomic, strong) id<MTLCommandBuffer> producer;
 @property(nonatomic) uint64_t producerInvocation;
 @property(nonatomic, copy) NSString *producerError;
@@ -35,6 +43,7 @@
 @implementation AMBuffer
 @end
 
+__attribute__((objc_direct_members))
 @interface AMGenerator : NSObject {
  @public
   AMRngState rng;
@@ -44,32 +53,51 @@
 @implementation AMGenerator
 @end
 
-@interface AMPendingCommand : NSObject
-@property(nonatomic, strong) id<MTLCommandBuffer> command;
-@property(nonatomic, copy) NSArray *retainedHandles;
-@property(nonatomic, copy) NSArray<AMBuffer *> *bufferLeases;
-@property(nonatomic, copy) NSArray<AMBuffer *> *outputs;
+__attribute__((objc_direct_members))
+@interface AMPendingCommand : NSObject {
+@public
+  // Unlike the claimed flag, this publishes evidence, leases and stream retirement.
+  std::atomic<bool> completionPublished;
+}
+// Synchronization snapshots race completion handlers releasing the command.
+@property(atomic, strong) id<MTLCommandBuffer> command;
+// Invocation handles stay private; shared batch leases grow only before commit.
+@property(nonatomic, strong) NSArray *retainedHandles;
+@property(nonatomic, strong) id<MTLComputePipelineState> builtinPipeline;
+@property(nonatomic, strong) NSMutableSet<AMBuffer *> *bufferLeases;
+// Built-in math retains its one output without allocating an array per dispatch.
+@property(nonatomic, strong) AMBuffer *singleOutput;
+@property(nonatomic, strong) NSArray<AMBuffer *> *outputs;
 @property(nonatomic, copy) NSArray *customLeases;
 @property(nonatomic) uint64_t sequence;
 @property(nonatomic) uint64_t invocation;
 @property(nonatomic) uint64_t materializationBytes;
 @property(nonatomic) BOOL finalized;
-@property(nonatomic, copy) NSArray<AMPendingUse *> *pendingUses;
+@property(nonatomic, copy) NSString *submissionError;
+@property(nonatomic, strong) AMPendingUse *pendingUse;
+// Sealed math records share one completion winner instead of racing per record.
+@property(atomic, strong) AMPendingUse *completionUse;
 @end
 @implementation AMPendingCommand
 @end
 
-@interface AMPendingUse : NSObject
-@property(nonatomic, weak) AMBuffer *owner;
+__attribute__((objc_direct_members))
+@interface AMPendingUse : NSObject {
+@public
+  std::atomic<bool> completionPublished;
+  // Borrow identities from the command's strong buffer leases.
+  std::vector<AMBuffer *__unsafe_unretained> writes;
+}
 @property(nonatomic, weak) AMStream *stream;
+// Eager commands use one record; batches retain their complete record array.
 @property(nonatomic, weak) AMPendingCommand *record;
 @property(nonatomic, strong) id<MTLCommandBuffer> command;
-@property(nonatomic) uint64_t invocation;
-@property(nonatomic) int32_t access;
+@property(nonatomic, weak) NSArray<AMPendingCommand *> *records;
 @end
 @implementation AMPendingUse
 @end
 
+__attribute__((objc_direct_members))
 @interface AMBufferLease : NSObject
 @property(nonatomic, strong) AMBuffer *owner;
 @property(nonatomic, copy) NSArray<AMPendingUse *> *uses;
@@ -82,6 +110,7 @@
 @implementation AMBufferLease
 @end
 
+__attribute__((objc_direct_members))
 @interface AMCapture : NSObject
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) MTLCaptureManager *manager;
@@ -98,11 +127,39 @@ static AMCapture *activeCapture;
 static void ensureCustomLeaseLock(void);
 static BOOL releaseBufferLease(AMBufferLease *lease);
 
-@interface AMStream : NSObject
+// Row kernels consume K/N; unary kernels consume element count/zero.
+struct AMPackedMathTask {
+  uint64_t a, b, output;
+  uint32_t count, columns;
+};
+static_assert(sizeof(AMPackedMathTask) == 32, "Metal packed task layout");
+
+struct AMMatrixDescriptorEntry {
+  NSUInteger rows = 0, columns = 0, rowBytes = 0;
+  __strong MPSMatrixDescriptor *descriptor = nil;
+};
+
+__attribute__((objc_direct_members))
+@interface AMStream : NSObject {
+@public
+  // Slots preserve admission order, including holes from out-of-order completion.
+  std::deque<AMPendingCommand *__strong> pending;
+  uint64_t pendingBase;
+  AMPackedMathTask packedTasks[32];
+  NSUInteger packedTaskCount;
+  bool packedRows;
+  bool packedRepeatedWrites;
+  MTLSize packedGroups, packedThreads;
+  // Three operand layouts cover one matrix product without holding buffer storage.
+  AMMatrixDescriptorEntry matrixDescriptors[3];
+  NSUInteger matrixDescriptorCursor;
+}
+@property(nonatomic, weak) AMDeviceState *state;
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLCommandQueue> queue;
+// Driver allocation may wait for completion callbacks; keep their monitor free.
+@property(nonatomic, strong) NSObject *encodingLock;
 @property(nonatomic) uint64_t identity;
-@property(nonatomic, strong) NSMutableDictionary<NSNumber *, AMPendingCommand *> *pending;
 @property(nonatomic) uint64_t acceptedSequence;
 @property(nonatomic) uint64_t completedSequence;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *failures;
@@ -110,9 +167,29 @@ static BOOL releaseBufferLease(AMBufferLease *lease);
 @property(nonatomic) BOOL lastAcceptedComplete;
 @property(nonatomic) BOOL lastAcceptedFailed;
 @property(nonatomic, copy) NSString *lastAcceptedError;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, MPSKernel *> *matrixKernels;
+@property(nonatomic) BOOL aggregateMath;
+@property(nonatomic) BOOL foreignQueueExposed;
+@property(nonatomic) BOOL encoderConcurrent;
+// Admission owns every key until these encoding-only identity sets are cleared.
+@property(nonatomic) CFMutableSetRef encoderReads;
+@property(nonatomic) CFMutableSetRef encoderWrites;
+@property(nonatomic, strong) id<MTLCommandBuffer> batchCommand;
+@property(nonatomic, strong) id<MTLComputeCommandEncoder> batchEncoder;
+@property(nonatomic, strong) id<MTLComputePipelineState> packedPipeline;
+@property(nonatomic, strong) NSMutableArray<AMPendingCommand *> *batchRecords;
+@property(nonatomic, strong) AMPendingCommand *batchLeaseRecord;
+@property(nonatomic) uint64_t batchBytes;
+@property(nonatomic) uint64_t batchStarted;
+@property(nonatomic) uint64_t batchGeneration;
 @end
 @implementation AMStream
+- (void)dealloc {
+  if (_encoderReads) CFRelease(_encoderReads);
+  if (_encoderWrites) CFRelease(_encoderWrites);
+}
 @end
+__attribute__((objc_direct_members))
 @interface AMStreamFence : NSObject
 @property(nonatomic, strong) AMStream *stream;
 @property(nonatomic, copy) NSArray<AMPendingCommand *> *snapshot;
@@ -124,6 +201,7 @@ static BOOL releaseBufferLease(AMBufferLease *lease);
 @implementation AMStreamFence
 @end
 
+__attribute__((objc_direct_members))
 @interface AMCustomLease : NSObject
 @property(nonatomic, weak) AMBuffer *owner;
 @property(nonatomic) uint64_t byteStart;
@@ -134,6 +212,7 @@ static BOOL releaseBufferLease(AMBufferLease *lease);
 @implementation AMCustomLease
 @end
 
+__attribute__((objc_direct_members))
 @interface AMEvent : NSObject
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLSharedEvent> shared;
@@ -143,12 +222,16 @@ static BOOL releaseBufferLease(AMBufferLease *lease);
 @implementation AMEvent
 @end
 
+__attribute__((objc_direct_members))
 @interface AMDeviceState : NSObject
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) AMGenerator *defaultGenerator;
 @property(nonatomic, strong) AMStream *defaultStream;
 @property(nonatomic, strong) NSHashTable<AMStream *> *streams;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray<AMBuffer *> *> *bufferCache;
+@property(nonatomic, strong) NSMutableArray<id<MTLHeap>> *bufferHeaps;
+@property(nonatomic) BOOL supportsSharedHeaps;
+@property(nonatomic) BOOL supportsIndirectMath;
 @property(nonatomic) uint64_t liveBytes;
 @property(nonatomic) uint64_t cachedBytes;
 @property(nonatomic) uint64_t inFlightBytes;
@@ -160,6 +243,7 @@ static BOOL releaseBufferLease(AMBufferLease *lease);
 @implementation AMDeviceState
 @end
 
+__attribute__((objc_direct_members))
 @interface AMCompute : NSObject
 @property(nonatomic, strong) AMDeviceState *state;
 @property(nonatomic, strong) id<MTLLibrary> library;
@@ -167,6 +251,7 @@ static BOOL releaseBufferLease(AMBufferLease *lease);
 @end
 @implementation AMCompute
 @end
+__attribute__((objc_direct_members))
 @interface AMLibrary : NSObject
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLLibrary> library;
@@ -176,6 +261,7 @@ static BOOL releaseBufferLease(AMBufferLease *lease);
 @implementation AMLibrary
 @end
 
+__attribute__((objc_direct_members))
 @interface AMKernel : NSObject
 @property(nonatomic, strong) AMLibrary *owner;
 @property(nonatomic, strong) id<MTLComputePipelineState> pipeline;
@@ -189,6 +275,9 @@ static AMStatus failure(int32_t code, const char *text) {
 static AMStatus ok();
 static std::atomic<uint64_t> nextInvocation{1};
 static AMStatus ok() { return {0, nullptr}; }
+static AMStatus flushMathBatch(AMStream *stream);
+static AMStatus flushDeviceMathBatches(id<MTLDevice> device);
+static AMStatus flushOwnerMathBatches(AMBuffer *owner);
 static uint64_t saturatedAdd(uint64_t left, uint64_t right) {
   return right > UINT64_MAX - left ? UINT64_MAX : left + right;
 }
@@ -203,11 +292,12 @@ static uint64_t memoryLimitBytes(AMDeviceState *state) {
 }
 
 // All cache/accounting helpers run under @synchronized(state).
-static BOOL removeCachedOwnerLocked(AMDeviceState *state, AMBuffer *owner) {
+static BOOL removeCachedOwnerLocked(AMDeviceState *state, AMBuffer *owner,
+                                    NSUInteger index = NSNotFound) {
   if (!owner.cached) return NO;
   NSNumber *key = @(owner.buffer.length);
   NSMutableArray<AMBuffer *> *bin = state.bufferCache[key];
-  NSUInteger index = [bin indexOfObjectIdenticalTo:owner];
+  if (index == NSNotFound) index = [bin indexOfObjectIdenticalTo:owner];
   if (index == NSNotFound) return NO;
   [bin removeObjectAtIndex:index];
   if (!bin.count) [state.bufferCache removeObjectForKey:key];
@@ -230,21 +320,35 @@ static void cacheOwnerLocked(AMDeviceState *state, AMBuffer *owner) {
   state.cachedBytes = saturatedAdd(state.cachedBytes, owner.buffer.length);
 }
 
+static BOOL releaseEmptyHeapsLocked(AMDeviceState *state) {
+  BOOL released = NO;
+  for (NSUInteger index = state.bufferHeaps.count; index > 0;) {
+    id<MTLHeap> heap = state.bufferHeaps[--index];
+    if (heap.usedSize) continue;
+    state.reservedBytes -= heap.size;
+    [state.bufferHeaps removeObjectAtIndex:index];
+    released = YES;
+  }
+  return released;
+}
+
 static BOOL evictOneCachedOwnerLocked(AMDeviceState *state) {
   for (NSNumber *key in state.bufferCache.allKeys) {
     NSMutableArray<AMBuffer *> *bin = state.bufferCache[key];
     if (!bin.count) continue;
     AMBuffer *owner = bin.lastObject;
     const uint64_t length = owner.buffer.length;
+    id<MTLHeap> heap = owner.buffer.heap;
     [bin removeLastObject];
     if (!bin.count) [state.bufferCache removeObjectForKey:key];
     owner.cached = NO;
     owner.buffer = nil;
     state.cachedBytes -= length;
-    state.reservedBytes -= length;
+    if (heap) releaseEmptyHeapsLocked(state);
+    else state.reservedBytes -= length;
     return YES;
   }
-  return NO;
+  return releaseEmptyHeapsLocked(state);
 }
 
 static void ensureCaptureLock(void) {
@@ -260,6 +364,10 @@ static NSString *stopCaptureLocked(AMCapture *capture) {
     activeCapture = nil;
     return @"Metal capture is no longer active";
   }
+  AMStatus status = flushDeviceMathBatches(capture.device);
+  NSString *batchError = status.code
+      ? [NSString stringWithUTF8String:status.message ?: "Metal batch flush failed"] : nil;
+  if (status.message) free(status.message);
   @try {
     [capture.manager stopCapture];
   } @catch (NSException *exception) {
@@ -270,7 +378,7 @@ static NSString *stopCaptureLocked(AMCapture *capture) {
   }
   capture.active = NO;
   activeCapture = nil;
-  return nil;
+  return batchError;
 }
 
 void am_message_free(char *message) { free(message); }
@@ -336,16 +444,29 @@ void am_release(void *handle) {
   }
   CFRelease((__bridge CFTypeRef)object);
 }
-static NSString *const currentStreamKey = @"org.arraymancer.metal.currentStream";
+struct AMThreadState {
+  __strong AMStream *stream = nil;
+  __strong AMDeviceState *deviceState = nil;
+  __strong AMCompute *compute = nil;
+  uint64_t registryID = 0;
+  __strong AMCompute *pipelineContext = nil;
+  __strong NSString *pipelineName = nil;
+  __strong id<MTLComputePipelineState> pipeline = nil;
+};
+// Selection and immutable compiled objects keep ownership until thread exit.
+static thread_local AMThreadState threadState;
 
-static AMStream *newStream(id<MTLDevice> device, id<MTLCommandQueue> queue) {
-  if (!device || !queue) return nil;
+static AMStream *newStream(AMDeviceState *state, id<MTLCommandQueue> queue) {
+  if (!state || !state.device || !queue) return nil;
   AMStream *stream = [AMStream new];
-  stream.device = device;
+  stream.device = state.device;
+  stream.state = state;
   stream.queue = queue;
+  stream.encodingLock = [NSObject new];
   stream.identity = (uint64_t)(uintptr_t)(__bridge void *)queue;
-  stream.pending = [NSMutableDictionary new];
+  stream->pendingBase = 1;
   stream.failures = [NSMutableDictionary new];
+  stream.matrixKernels = [NSMutableDictionary new];
   stream.lastAcceptedComplete = YES;
   return stream;
 }
@@ -356,6 +477,9 @@ static AMDeviceState *deviceState(id<MTLDevice> device, NSError **error) {
     device = devices.firstObject;
   }
   if (!device) return nil;
+  // Canonical states stay process-owned; repeated allocations need no global lookup.
+  AMDeviceState *cached = threadState.deviceState;
+  if (cached && cached.device == device) return cached;
 
   static NSMutableDictionary<NSNumber *, AMDeviceState *> *states;
   static dispatch_once_t once;
@@ -363,7 +487,10 @@ static AMDeviceState *deviceState(id<MTLDevice> device, NSError **error) {
   @synchronized(states) {
     NSNumber *key = @(device.registryID);
     AMDeviceState *state = states[key];
-    if (state) return state;
+    if (state) {
+      threadState.deviceState = state;
+      return state;
+    }
 
     id<MTLCommandQueue> queue = [device newCommandQueue];
     if (!queue) {
@@ -373,20 +500,24 @@ static AMDeviceState *deviceState(id<MTLDevice> device, NSError **error) {
     }
     state = [AMDeviceState new];
     state.device = device;
+    state.supportsSharedHeaps = device.hasUnifiedMemory && [device supportsFamily:MTLGPUFamilyApple1];
+    state.supportsIndirectMath = device.argumentBuffersSupport == MTLArgumentBuffersTier2;
     state.streams = [NSHashTable weakObjectsHashTable];
     state.bufferCache = [NSMutableDictionary new];
     state.memoryFraction = 1.0;
-    state.defaultStream = newStream(device, queue);
+    state.defaultStream = newStream(state, queue);
+    state.defaultStream.aggregateMath = YES;
     [state.streams addObject:state.defaultStream];
     states[key] = state;
+    threadState.deviceState = state;
     return state;
   }
 }
 
 static AMStatus selectedStream(id<MTLDevice> device, AMDeviceState *state,
-                               AMStream **result) {
+                               AMStream *__strong *result) {
   if (!device || !state || !result) return failure(2, "invalid Metal stream request");
-  AMStream *selected = NSThread.currentThread.threadDictionary[currentStreamKey];
+  AMStream *selected = threadState.stream;
   if (selected && selected.device.registryID != device.registryID)
     return failure(2, "selected Metal stream belongs to a different device");
   *result = selected ?: state.defaultStream;
@@ -483,14 +614,22 @@ static void prepareBufferProducer(AMBuffer *owner, id<MTLCommandBuffer> command,
                                   uint64_t invocation, AMEvidence evidence);
 
 static void ensureCustomLeaseLock(void);
-static void finishStreamCommand(AMStream *stream, AMPendingCommand *record) {
+static void finishStreamCommand(AMStream *stream, AMPendingCommand *record,
+                                NSString *submissionError) {
   id<MTLCommandBuffer> command = record.command;
   const uint64_t sequence = record.sequence;
-  NSString *message = command.status == MTLCommandBufferStatusError
-      ? (command.error.localizedDescription ?: @"Metal command failed") : nil;
+  NSString *message = submissionError ?: (command.status == MTLCommandBufferStatusError
+      ? (command.error.localizedDescription ?: @"Metal command failed") : nil);
   @synchronized(stream) {
     if (sequence > stream.completedSequence) stream.completedSequence = sequence;
-    [stream.pending removeObjectForKey:@(sequence)];
+    if (sequence >= stream->pendingBase) {
+      const uint64_t index = sequence - stream->pendingBase;
+      if (index < stream->pending.size()) stream->pending[index] = nil;
+    }
+    while (!stream->pending.empty() && !stream->pending.front()) {
+      stream->pending.pop_front();
+      ++stream->pendingBase;
+    }
     if (sequence == stream.acceptedSequence) {
       stream.lastAcceptedComplete = YES;
       stream.lastAcceptedFailed = message != nil;
@@ -502,9 +641,9 @@ static void finishStreamCommand(AMStream *stream, AMPendingCommand *record) {
 }
 
 static void finishBufferProducer(AMBuffer *owner, uint64_t invocation,
-                                 id<MTLCommandBuffer> command) {
-  NSString *message = command.status == MTLCommandBufferStatusError
-      ? (command.error.localizedDescription ?: @"Metal command failed") : nil;
+                                 id<MTLCommandBuffer> command, NSString *submissionError) {
+  NSString *message = submissionError ?: (command.status == MTLCommandBufferStatusError
+      ? (command.error.localizedDescription ?: @"Metal command failed") : nil);
   @synchronized(owner) {
     if (owner.producerInvocation == invocation) {
       owner.producer = nil;
@@ -518,18 +657,30 @@ static void finishBufferProducer(AMBuffer *owner, uint64_t invocation,
   }
 }
 
-static void finalizeCommand(AMStream *stream, AMPendingCommand *record) {
+static void finalizeSingleCommand(AMStream *stream, AMPendingCommand *record) {
+  NSString *submissionError = nil;
   @synchronized(record) {
     id<MTLCommandBuffer> command = record.command;
+    submissionError = record.submissionError;
     if (record.finalized ||
         (command.status != MTLCommandBufferStatusCompleted &&
-         command.status != MTLCommandBufferStatusError)) return;
+         command.status != MTLCommandBufferStatusError &&
+         !(submissionError && command.status == MTLCommandBufferStatusNotEnqueued))) return;
     record.finalized = YES;
-    for (AMBuffer *output in record.outputs)
-      finishBufferProducer(output, record.invocation, command);
+    AMBuffer *singleOutput = record.singleOutput;
+    NSArray<AMBuffer *> *outputs = record.outputs;
+    const NSUInteger outputCount = singleOutput ? 1 : outputs.count;
+    auto outputAt = [&](NSUInteger index) -> AMBuffer * {
+      return singleOutput ?: outputs[index];
+    };
+    for (NSUInteger index = 0; index < outputCount; ++index) {
+      AMBuffer *output = outputAt(index);
+      finishBufferProducer(output, record.invocation, command, submissionError);
+    }
     if (command.status == MTLCommandBufferStatusCompleted &&
         record.materializationBytes) {
-      for (AMBuffer *output in record.outputs) {
+      for (NSUInteger index = 0; index < outputCount; ++index) {
+        AMBuffer *output = outputAt(index);
         @synchronized(output) {
           if (output.evidence.invocation_id == record.invocation) {
             AMEvidence evidence = output.evidence;
@@ -540,21 +691,22 @@ static void finalizeCommand(AMStream *stream, AMPendingCommand *record) {
       }
     }
 
-    ensureCustomLeaseLock();
-    @synchronized(customLeaseLock) {
-      for (AMCustomLease *lease in record.customLeases) {
-        AMBuffer *owner = lease.owner;
-        [owner.customLeases removeObjectIdenticalTo:lease];
+    if (record.pendingUse || record.customLeases.count) {
+      ensureCustomLeaseLock();
+      @synchronized(customLeaseLock) {
+        for (AMCustomLease *lease in record.customLeases) {
+          AMBuffer *owner = lease.owner;
+          [owner.customLeases removeObjectIdenticalTo:lease];
+        }
+        for (AMBuffer *owner in record.bufferLeases)
+          [owner.pendingUses removeObjectIdenticalTo:record.pendingUse];
+        record.pendingUse = nil;
+        record.customLeases = @[];
       }
-      for (AMPendingUse *use in record.pendingUses) {
-        AMBuffer *owner = use.owner;
-        [owner.pendingUses removeObjectIdenticalTo:use];
-      }
-      record.pendingUses = @[];
-      record.customLeases = @[];
     }
 
-    AMDeviceState *state = deviceState(stream.device, nil);
+    AMDeviceState *state = record.bufferLeases.count || record.materializationBytes
+        ? stream.state : nil;
     if (state) {
       @synchronized(state) {
         for (AMBuffer *owner in record.bufferLeases) {
@@ -570,12 +722,279 @@ static void finalizeCommand(AMStream *stream, AMPendingCommand *record) {
               state.materializationBytes, record.materializationBytes);
       }
     }
+    finishStreamCommand(stream, record, submissionError);
+    record.command = nil;
+    record.retainedHandles = @[];
+    record.builtinPipeline = nil;
+    record.bufferLeases = nil;
+    record.singleOutput = nil;
+    record.outputs = @[];
+    record->completionPublished.store(true, std::memory_order_release);
   }
-  finishStreamCommand(stream, record);
-  record.command = nil;
-  record.retainedHandles = @[];
-  record.bufferLeases = @[];
-  record.outputs = @[];
+}
+
+static void finalizeCommand(AMStream *stream, AMPendingCommand *record) {
+  if (record->completionPublished.load(std::memory_order_acquire)) return;
+  AMPendingUse *use = record.completionUse;
+  if (!use) {
+    finalizeSingleCommand(stream, record);
+    return;
+  }
+  if (use->completionPublished.load(std::memory_order_acquire)) return;
+  id<MTLCommandBuffer> command = record.command;
+  const MTLCommandBufferStatus status = command.status;
+  if (status != MTLCommandBufferStatusCompleted && status != MTLCommandBufferStatusError) {
+    // Uncommitted submission failures still publish one record at a time.
+    finalizeSingleCommand(stream, record);
+    return;
+  }
+  @synchronized(use) {
+    if (use->completionPublished.load(std::memory_order_relaxed)) return;
+    // The callback owns this array until every member has published.
+    NSArray<AMPendingCommand *> *records = use.records;
+    for (AMPendingCommand *member in records) finalizeSingleCommand(stream, member);
+    use->completionPublished.store(true, std::memory_order_release);
+  }
+}
+
+static uint64_t monotonicNanoseconds() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static void clearMathAccess(AMStream *stream) {
+  if (stream.encoderReads) CFSetRemoveAllValues(stream.encoderReads);
+  if (stream.encoderWrites) CFSetRemoveAllValues(stream.encoderWrites);
+}
+
+// Batch indirect residency declarations instead of calling the driver per owner.
+static void useMathResources(id<MTLComputeCommandEncoder> encoder,
+                             CFSetRef owners, MTLResourceUsage usage) {
+  if (!owners || !CFSetGetCount(owners)) return;
+  struct Group {
+    id<MTLComputeCommandEncoder> __unsafe_unretained encoder;
+    id<MTLResource> __unsafe_unretained resources[32];
+    MTLResourceUsage usage;
+    NSUInteger count;
+  } group;
+  group.encoder = encoder;
+  group.usage = usage;
+  group.count = 0;
+  // Admission already owns these buffers; residency needs only borrowed pointers.
+  CFSetApplyFunction(owners, [](const void *value, void *context) {
+    Group *group = static_cast<Group *>(context);
+    group->resources[group->count++] = ((__bridge AMBuffer *)value).buffer;
+    if (group->count == 32) {
+      [group->encoder useResources:group->resources count:group->count usage:group->usage];
+      group->count = 0;
+    }
+  }, &group);
+  if (group.count) [encoder useResources:group.resources count:group.count usage:usage];
+}
+
+// Each independent packed operation owns its grid slice and result.
+static void flushPackedMath(AMStream *stream, id<MTLComputeCommandEncoder> encoder) {
+  const NSUInteger count = stream->packedTaskCount;
+  if (!count) return;
+  id<MTLComputePipelineState> pipeline = stream.packedPipeline;
+  MTLSize groups = stream->packedGroups;
+  const bool ordered = !stream->packedRows && stream->packedRepeatedWrites;
+  groups.depth = ordered ? 1 : count;
+  if (!stream->packedRows) stream->packedTasks[0].b = ordered ? count : 0;
+  MTLSize threads = stream->packedThreads;
+  stream->packedTaskCount = 0;
+  stream.packedPipeline = nil;
+  useMathResources(encoder, stream.encoderReads, MTLResourceUsageRead);
+  useMathResources(encoder, stream.encoderWrites, MTLResourceUsageWrite);
+  [encoder setComputePipelineState:pipeline];
+  [encoder setBytes:stream->packedTasks length:count * sizeof(AMPackedMathTask) atIndex:0];
+  [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
+}
+
+// The encoding monitor excludes producers without blocking driver completion.
+static AMStatus flushMathBatch(AMStream *stream) {
+  if (!stream) return ok();
+  @synchronized(stream.encodingLock) {
+    id<MTLCommandBuffer> command = stream.batchCommand;
+    if (!command) return ok();
+    id<MTLComputeCommandEncoder> encoder = stream.batchEncoder;
+    NSArray<AMPendingCommand *> *records = stream.batchRecords;
+    AMPendingCommand *leaseRecord = stream.batchLeaseRecord;
+    AMPendingCommand *lastRecord = records.lastObject;
+    if (leaseRecord && leaseRecord != lastRecord) {
+      // Keep one owner while encoding; release only after every invocation publishes.
+      lastRecord.bufferLeases = leaseRecord.bufferLeases;
+      lastRecord.pendingUse = leaseRecord.pendingUse;
+      leaseRecord.bufferLeases = nil;
+      leaseRecord.pendingUse = nil;
+    }
+    AMPendingUse *completionUse = lastRecord.pendingUse;
+    for (AMPendingCommand *record in records) record.completionUse = completionUse;
+    stream.batchEncoder = nil;
+    stream.batchCommand = nil;
+    stream.batchRecords = nil;
+    stream.batchLeaseRecord = nil;
+    stream.batchBytes = 0;
+    @try {
+      flushPackedMath(stream, encoder);
+      clearMathAccess(stream);
+      [encoder endEncoding];
+      if (!records.count) return ok();
+      [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+        @autoreleasepool {
+          (void)completed;
+          for (AMPendingCommand *record in records) finalizeCommand(stream, record);
+          for (AMPendingCommand *record in records) record.completionUse = nil;
+        }
+      }];
+      [command commit];
+      return ok();
+    } @catch (NSException *exception) {
+      clearMathAccess(stream);
+      NSString *message = exception.reason ?: @"Metal math batch submission failed";
+      for (AMPendingCommand *record in records) {
+        @synchronized(record) { record.submissionError = message; }
+        finalizeCommand(stream, record);
+        @synchronized(stream) {
+          if (record.sequence > stream.synchronizedSequence)
+            stream.failures[@(record.sequence)] = message;
+        }
+      }
+      for (AMPendingCommand *record in records) record.completionUse = nil;
+      @synchronized(stream) {
+        stream.lastAcceptedFailed = YES;
+        stream.lastAcceptedError = message;
+      }
+      return failure(5, message.UTF8String);
+    }
+  }
+}
+
+static id<MTLCommandBuffer> mathCommandBuffer(AMStream *stream) {
+  if (!stream.batchCommand) {
+    // Admission retains buffers and pipelines through completion; avoid duplicate driver leases.
+    stream.batchCommand = [stream.queue commandBufferWithUnretainedReferences];
+    if (!stream.batchCommand) return nil;
+    stream.batchCommand.label = @"arraymancer.math.batch";
+    stream.batchRecords = [[NSMutableArray alloc] initWithCapacity:32];
+    stream.batchBytes = 0;
+    stream.batchStarted = 0;
+    ++stream.batchGeneration;
+  }
+  return stream.batchCommand;
+}
+
+static AMStatus finishMathEncoding(AMStream *stream) {
+  const NSUInteger count = stream.batchRecords.count;
+  if (!stream.aggregateMath || count >= 32 || stream.batchBytes >= 4 * 1024 * 1024)
+    return flushMathBatch(stream);
+  constexpr uint64_t deadlineNanoseconds = 100000;
+  if (monotonicNanoseconds() - stream.batchStarted >= deadlineNanoseconds)
+    return flushMathBatch(stream);
+  if (count == 1) {
+    const uint64_t generation = stream.batchGeneration;
+    const uint64_t elapsed = monotonicNanoseconds() - stream.batchStarted;
+    const int64_t delay = elapsed < deadlineNanoseconds ? deadlineNanoseconds - elapsed : 0;
+    __weak AMStream *weakStream = stream;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay),
+        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      @autoreleasepool {
+        AMStream *current = weakStream;
+        @synchronized(current.encodingLock) {
+          if (current.batchGeneration == generation) {
+            AMStatus status = flushMathBatch(current);
+            if (status.message) free(status.message);
+          }
+        }
+      }
+    });
+  }
+  return ok();
+}
+static id<MTLComputeCommandEncoder> mathComputeEncoder(
+    AMStream *stream, id<MTLCommandBuffer> command, AMBuffer *output,
+    bool favorSerial) {
+  if (favorSerial && stream.encoderConcurrent && stream.batchEncoder) {
+    flushPackedMath(stream, stream.batchEncoder);
+    [stream.batchEncoder endEncoding];
+    stream.batchEncoder = nil;
+  }
+  if (!stream.batchEncoder) {
+    BOOL concurrent = NO;
+    if (stream.aggregateMath && !favorSerial) {
+      // Reused destinations favor serial ordering over one barrier per write.
+      @synchronized(output) { concurrent = output.producerInvocation == 0; }
+    }
+    stream.encoderConcurrent = concurrent;
+    stream.batchEncoder = [command computeCommandEncoderWithDispatchType:
+        concurrent ? MTLDispatchTypeConcurrent : MTLDispatchTypeSerial];
+    clearMathAccess(stream);
+  }
+  return stream.batchEncoder;
+}
+
+static void orderMathAccess(AMStream *stream, AMBuffer *output,
+                             AMBuffer *a, AMBuffer *b = nil, AMBuffer *c = nil,
+                             bool indirect = false, bool orderedWrites = false) {
+  if (!stream.encoderConcurrent && (!indirect || !stream.aggregateMath)) {
+    if (indirect) {
+      for (AMBuffer *input : {a, b, c})
+        if (input) [stream.batchEncoder useResource:input.buffer usage:MTLResourceUsageRead];
+      [stream.batchEncoder useResource:output.buffer usage:MTLResourceUsageWrite];
+    }
+    return;
+  }
+  if (!stream.encoderReads)
+    stream.encoderReads = CFSetCreateMutable(kCFAllocatorDefault, 32, nullptr);
+  if (!stream.encoderWrites)
+    stream.encoderWrites = CFSetCreateMutable(kCFAllocatorDefault, 32, nullptr);
+  AMBuffer *__unsafe_unretained inputs[] = {a, b, c};
+  // Unary packet threads preserve element ownership across repeated writes.
+  BOOL conflict = CFSetContainsValue(stream.encoderReads, (__bridge const void *)output) ||
+      (!orderedWrites && CFSetContainsValue(stream.encoderWrites, (__bridge const void *)output));
+  for (AMBuffer *input : inputs)
+    if (input && CFSetContainsValue(stream.encoderWrites, (__bridge const void *)input)) conflict = YES;
+  if (conflict) {
+    flushPackedMath(stream, stream.batchEncoder);
+    // Concurrent passes need explicit read/write and write/write ordering.
+    if (stream.encoderConcurrent)
+      [stream.batchEncoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    clearMathAccess(stream);
+  }
+  for (AMBuffer *input : inputs) {
+    if (!input) continue;
+    CFSetAddValue(stream.encoderReads, (__bridge const void *)input);
+  }
+  CFSetAddValue(stream.encoderWrites, (__bridge const void *)output);
+}
+
+
+static AMStatus flushDeviceMathBatches(id<MTLDevice> device) {
+  AMDeviceState *state = deviceState(device, nil);
+  if (!state) return failure(1, "Metal device unavailable");
+  NSArray<AMStream *> *streams = nil;
+  @synchronized(state) { streams = state.streams.allObjects; }
+  for (AMStream *stream in streams) {
+    AMStatus status = flushMathBatch(stream);
+    if (status.code) return status;
+  }
+  return ok();
+}
+
+static AMStatus flushOwnerMathBatches(AMBuffer *owner) {
+  ensureCustomLeaseLock();
+  NSMutableSet<AMStream *> *streams = [NSMutableSet new];
+  @synchronized(customLeaseLock) {
+    for (AMPendingUse *use in owner.pendingUses) {
+      AMStream *stream = use.stream;
+      if (stream) [streams addObject:stream];
+    }
+  }
+  for (AMStream *stream in streams) {
+    AMStatus status = flushMathBatch(stream);
+    if (status.code) return status;
+  }
+  return ok();
 }
 
 static NSArray<AMBuffer *> *uniqueBufferOwners(NSArray *handles) {
@@ -589,7 +1008,7 @@ static NSArray<AMBuffer *> *uniqueBufferOwners(NSArray *handles) {
     }
     if (!found) [owners addObject:owner];
   }
-  return [owners copy];
+  return owners;
 }
 
 static void ensureCustomLeaseLock(void) {
@@ -605,6 +1024,7 @@ static BOOL releaseBufferLease(AMBufferLease *lease) {
     if (!lease.active) return YES;
     lease.active = NO;
     AMBuffer *owner = lease.owner;
+    [owner.nativeLeases removeObject:lease];
     AMDeviceState *state = owner.state;
     @synchronized(state) {
       if (owner.inFlightLeases) {
@@ -625,20 +1045,44 @@ static AMStatus submitCommandDetailed(
     AMStream *stream, id<MTLCommandBuffer> command, NSArray *leases,
     NSArray<AMBuffer *> *outputs, NSArray<AMCustomLease *> *customLeases,
     uint64_t invocation, AMEvidence evidence, uint64_t materializationBytes,
-    uint64_t *submittedSequence) {
+    uint64_t *submittedSequence, bool deferred = false,
+    id<MTLComputePipelineState> builtinPipeline = nil,
+    AMBuffer *__unsafe_unretained const *mathBuffers = nullptr,
+    NSUInteger mathBufferCount = 0, AMBuffer *singleOutput = nil) {
   if (!stream || !command) return failure(5, "cannot submit Metal command");
-  NSMutableArray *retainedHandles = [leases mutableCopy] ?: [NSMutableArray new];
-  for (AMBuffer *output in outputs)
-    if (![retainedHandles containsObject:output]) [retainedHandles addObject:output];
-  NSArray *ownedHandles = [retainedHandles copy];
-  NSArray<AMBuffer *> *bufferLeases = uniqueBufferOwners(ownedHandles);
-  NSArray<AMBuffer *> *retainedOutputs = uniqueBufferOwners(outputs ?: @[]);
-  AMDeviceState *state = deviceState(stream.device, nil);
+  NSArray<AMBuffer *> *retainedOutputs = singleOutput ? nil :
+      (outputs.count <= 1 ? (outputs ?: @[]) : uniqueBufferOwners(outputs));
+  const NSUInteger outputCount = singleOutput ? 1 : retainedOutputs.count;
+  auto outputAt = [&](NSUInteger index) -> AMBuffer * {
+    return singleOutput ?: retainedOutputs[index];
+  };
+  NSArray *ownedHandles = leases ?: @[];
+  NSMutableArray *retainedHandles = nil;
+  if (!mathBuffers) {
+    for (NSUInteger index = 0; index < outputCount; ++index) {
+      AMBuffer *output = outputAt(index);
+      if ([ownedHandles containsObject:output]) continue;
+      if (!retainedHandles) {
+        retainedHandles = [ownedHandles mutableCopy];
+        ownedHandles = retainedHandles;
+      }
+      [retainedHandles addObject:output];
+    }
+  }
+  // Stack lists stay borrowed only until shared ownership records every buffer.
+  NSArray<AMBuffer *> *bufferLeases = mathBuffers ? nil : uniqueBufferOwners(ownedHandles);
+  const NSUInteger bufferCount = mathBuffers ? mathBufferCount : bufferLeases.count;
+  auto bufferAt = [&](NSUInteger index) -> AMBuffer * {
+    return mathBuffers ? mathBuffers[index] : bufferLeases[index];
+  };
+  AMDeviceState *state = stream.state;
   if (!state) return failure(1, "Metal device accounting state unavailable");
-  for (AMBuffer *owner in bufferLeases)
-    if (owner.state != state || !owner.buffer ||
-        owner.buffer.device.registryID != stream.device.registryID)
+  for (NSUInteger index = 0; index < bufferCount; ++index) {
+    AMBuffer *owner = bufferAt(index);
+    // Both owners bind their canonical device accounting state at creation.
+    if (owner.state != state || !owner.buffer)
       return failure(2, "Metal command buffers belong to different devices");
+  }
 
   for (AMCustomLease *lease in customLeases) {
     if (!lease.owner || ![bufferLeases containsObject:lease.owner] ||
@@ -648,33 +1092,46 @@ static AMStatus submitCommandDetailed(
   }
 
   AMPendingCommand *record = [AMPendingCommand new];
+  record->completionPublished.store(false, std::memory_order_relaxed);
   record.command = command;
   record.retainedHandles = ownedHandles;
-  record.bufferLeases = bufferLeases;
+  record.builtinPipeline = builtinPipeline;
+  record.singleOutput = singleOutput;
   record.outputs = retainedOutputs;
   record.customLeases = [customLeases copy] ?: @[];
   record.invocation = invocation;
   record.materializationBytes = materializationBytes;
 
   ensureCustomLeaseLock();
-  @synchronized(stream) {
+  @synchronized(stream.encodingLock) {
+    if (!deferred) {
+      AMStatus status = flushMathBatch(stream);
+      if (status.code) return status;
+    } else if (command != stream.batchCommand) {
+      return failure(5, "Metal math command does not belong to the open batch");
+    }
     if (stream.acceptedSequence == UINT64_MAX)
       return failure(5, "Metal stream command sequence exhausted");
     @synchronized(customLeaseLock) {
       @synchronized(state) {
-        for (AMBuffer *owner in bufferLeases)
+        for (NSUInteger index = 0; index < bufferCount; ++index) {
+          AMBuffer *owner = bufferAt(index);
           if (!owner.externalReferences || owner.cached ||
               owner.inFlightLeases == UINT64_MAX)
             return failure(2, "Metal command cannot lease an unowned buffer");
+        }
       }
 
-      for (AMBuffer *owner in bufferLeases) {
-        const BOOL writes = [retainedOutputs containsObject:owner];
+      for (NSUInteger index = 0; index < bufferCount; ++index) {
+        AMBuffer *owner = bufferAt(index);
+        const BOOL writes = owner == singleOutput || [retainedOutputs containsObject:owner];
         const int32_t access = writes ? 1 : 0;
-        for (AMBufferLease *active in owner.nativeLeases.allObjects) {
-          if (!active.active || (active.access == 0 && access == 0))
-            continue;
-          return failure(10, "Metal buffer has a conflicting Core AI borrow lease");
+        if (owner.nativeLeases.count) {
+          for (AMBufferLease *active in owner.nativeLeases.allObjects) {
+            if (!active.active || (active.access == 0 && access == 0))
+              continue;
+            return failure(10, "Metal buffer has a conflicting Core AI borrow lease");
+          }
         }
         for (AMCustomLease *active in owner.customLeases) {
           if (active.streamIdentity == stream.identity ||
@@ -696,29 +1153,45 @@ static AMStatus submitCommandDetailed(
         }
       }
 
+      // A GPU command needs one ownership lease per buffer, not per invocation.
+      // Every invocation still publishes its own producer evidence and failure.
+      AMPendingCommand *leaseRecord = deferred ? stream.batchLeaseRecord : nil;
+      if (!leaseRecord) leaseRecord = record;
+      AMPendingUse *use = leaseRecord.pendingUse;
+      if (!use && bufferCount) {
+        use = [AMPendingUse new];
+        use->completionPublished.store(false, std::memory_order_relaxed);
+        use.stream = stream;
+        if (!deferred) use.record = leaseRecord;
+        use.command = command;
+        use.records = deferred ? stream.batchRecords : nil;
+        use->writes.reserve(deferred && stream.aggregateMath ? 32 : outputCount);
+        leaseRecord.pendingUse = use;
+        const NSUInteger spareOutputs = deferred && stream.aggregateMath ? 31 : 0;
+        leaseRecord.bufferLeases =
+            [[NSMutableSet alloc] initWithCapacity:bufferCount + spareOutputs];
+      }
       @synchronized(state) {
-        for (AMBuffer *owner in bufferLeases) {
+        for (NSUInteger index = 0; index < bufferCount; ++index) {
+          AMBuffer *owner = bufferAt(index);
+          if ([leaseRecord.bufferLeases containsObject:owner]) continue;
           if (!owner.inFlightLeases)
             state.inFlightBytes = saturatedAdd(state.inFlightBytes, owner.capacity);
           ++owner.inFlightLeases;
+          [leaseRecord.bufferLeases addObject:owner];
+          if (!owner.pendingUses) owner.pendingUses = [NSMutableArray new];
+          [owner.pendingUses addObject:use];
         }
       }
-
-      NSMutableArray<AMPendingUse *> *pendingUses =
-          [NSMutableArray arrayWithCapacity:bufferLeases.count];
-      for (AMBuffer *owner in bufferLeases) {
-        AMPendingUse *use = [AMPendingUse new];
-        use.owner = owner;
-        use.stream = stream;
-        use.record = record;
-        use.command = command;
-        use.invocation = invocation;
-        use.access = [retainedOutputs containsObject:owner] ? 1 : 0;
-        if (!owner.pendingUses) owner.pendingUses = [NSMutableArray new];
-        [owner.pendingUses addObject:use];
-        [pendingUses addObject:use];
+      for (NSUInteger index = 0; index < outputCount; ++index) {
+        AMBuffer *output = outputAt(index);
+        const bool firstWrite = deferred &&
+            std::find(use->writes.begin(), use->writes.end(), output) == use->writes.end();
+        use->writes.push_back(output);
+        if (firstWrite)
+          stream.batchBytes = saturatedAdd(stream.batchBytes, output.capacity);
       }
-      record.pendingUses = [pendingUses copy];
+      if (deferred && !stream.batchLeaseRecord) stream.batchLeaseRecord = leaseRecord;
 
       for (AMCustomLease *lease in customLeases) {
         if (!lease.owner.customLeases)
@@ -726,25 +1199,60 @@ static AMStatus submitCommandDetailed(
         [lease.owner.customLeases addObject:lease];
       }
 
-      const uint64_t sequence = ++stream.acceptedSequence;
-      record.sequence = sequence;
-      for (AMBuffer *output in retainedOutputs)
-        prepareBufferProducer(output, command, invocation, evidence);
-      stream.lastAcceptedComplete = NO;
-      stream.lastAcceptedFailed = NO;
-      stream.lastAcceptedError = nil;
-      stream.pending[@(sequence)] = record;
-      [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-        @autoreleasepool {
-          (void)completed;
-          finalizeCommand(stream, record);
-        }
-      }];
+      uint64_t sequence = 0;
+      @synchronized(stream) {
+        sequence = ++stream.acceptedSequence;
+        record.sequence = sequence;
+        for (NSUInteger index = 0; index < outputCount; ++index)
+          prepareBufferProducer(outputAt(index), command, invocation, evidence);
+        stream.lastAcceptedComplete = NO;
+        stream.lastAcceptedFailed = NO;
+        stream.lastAcceptedError = nil;
+        stream->pending.push_back(record);
+      }
+      if (deferred) {
+        // Charge the deadline from first admission, not encoder/wrapper preparation.
+        if (!stream.batchRecords.count) stream.batchStarted = monotonicNanoseconds();
+        [stream.batchRecords addObject:record];
+      } else {
+        [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+          @autoreleasepool {
+            (void)completed;
+            finalizeCommand(stream, record);
+          }
+        }];
+        [command commit];
+      }
       if (submittedSequence) *submittedSequence = sequence;
-      [command commit];
     }
   }
   return ok();
+}
+
+static AMStatus admitMathCommand(AMStream *stream, id<MTLCommandBuffer> command,
+                                 NSArray *leases, AMBuffer *output, AMEvidence evidence,
+                                 id<MTLComputePipelineState> builtinPipeline = nil,
+                                 AMBuffer *__unsafe_unretained const *mathBuffers = nullptr,
+                                 NSUInteger mathBufferCount = 0) {
+  AMStatus status = submitCommandDetailed(stream, command, leases, nil, @[],
+      evidence.invocation_id, evidence, 0, nullptr, true, builtinPipeline,
+      mathBuffers, mathBufferCount, output);
+  if (status.code && !stream.batchRecords.count) {
+    AMStatus cleanup = flushMathBatch(stream);
+    if (cleanup.message) free(cleanup.message);
+  }
+  return status;
+}
+
+static AMStatus failMathEncoding(AMStream *stream, uint64_t invocation, NSString *message,
+                                 int32_t code = 5) {
+  message = message ?: @"Metal math encoding failed";
+  AMPendingCommand *record = stream.batchRecords.lastObject;
+  if (record.invocation == invocation)
+    @synchronized(record) { record.submissionError = message; }
+  AMStatus status = flushMathBatch(stream);
+  if (status.message) free(status.message);
+  return failure(code, message.UTF8String);
 }
 
 static AMStatus submitCommand(AMStream *stream, id<MTLCommandBuffer> command,
@@ -808,21 +1316,21 @@ static NSArray<AMPendingCommand *> *pendingThrough(AMStream *stream,
                                                    uint64_t target) {
   NSMutableArray<AMPendingCommand *> *snapshot = [NSMutableArray new];
   @synchronized(stream) {
-    for (AMPendingCommand *record in stream.pending.allValues)
-      if (record.sequence <= target) [snapshot addObject:record];
+    for (AMPendingCommand *__unsafe_unretained record : stream->pending) {
+      if (!record) continue;
+      if (record.sequence > target) break;
+      [snapshot addObject:record];
+    }
   }
-  [snapshot sortUsingComparator:^NSComparisonResult(AMPendingCommand *left,
-                                                      AMPendingCommand *right) {
-    if (left.sequence < right.sequence) return NSOrderedAscending;
-    if (left.sequence > right.sequence) return NSOrderedDescending;
-    return NSOrderedSame;
-  }];
   return snapshot;
 }
 
 static void waitAndFinalize(AMStream *stream,
                             NSArray<AMPendingCommand *> *snapshot) {
+  AMStatus status = flushMathBatch(stream);
+  if (status.message) free(status.message);
   for (AMPendingCommand *record in snapshot) {
+    if (record->completionPublished.load(std::memory_order_acquire)) continue;
     [record.command waitUntilCompleted];
     finalizeCommand(stream, record);
   }
@@ -863,10 +1371,9 @@ static AMStatus beginBufferLease(AMBuffer *owner, int32_t access,
       savedError = owner.producerError;
       if (access == 0) {
         id<MTLCommandBuffer> producer = owner.producer;
-        const uint64_t invocation = owner.producerInvocation;
         if (producer) {
           for (AMPendingUse *use in owner.pendingUses) {
-            if (use.invocation == invocation && use.command == producer) {
+            if (use.command == producer) {
               [snapshot addObject:use];
               break;
             }
@@ -891,8 +1398,12 @@ static AMStatus beginBufferLease(AMBuffer *owner, int32_t access,
     lease.savedError = savedError;
     lease.uses = [snapshot copy];
     uint64_t producerCount = 0;
-    for (AMPendingUse *use in lease.uses)
-      if (use.access != 0) ++producerCount;
+    for (AMPendingUse *use in lease.uses) {
+      if (access == 0)
+        producerCount += std::find(use->writes.begin(), use->writes.end(), owner) != use->writes.end();
+      else
+        producerCount += std::count(use->writes.begin(), use->writes.end(), owner);
+    }
     lease.producerCount = producerCount;
     lease.active = YES;
     lease.externalReferences = 1;
@@ -906,17 +1417,32 @@ static AMStatus waitBufferLease(AMBufferLease *lease) {
   if (!lease) return failure(2, "null Metal buffer lease");
   for (AMPendingUse *use in lease.uses) {
     id<MTLCommandBuffer> command = use.command;
+    AMStatus status = flushMathBatch(use.stream);
+    if (status.code) return status;
     if (!command) continue;
+    if (command.status == MTLCommandBufferStatusNotEnqueued)
+      return failure(5, "Metal producer command was not submitted");
     [command waitUntilCompleted];
-    AMPendingCommand *record = use.record;
     AMStream *stream = use.stream;
-    if (record && stream) finalizeCommand(stream, record);
+    // The shared lease may represent an earlier invocation in the same batch.
+    // Publish every invocation before observing the latest producer's error.
+    NSArray<AMPendingCommand *> *records = use.records;
+    if (stream && records) {
+      for (AMPendingCommand *record in records) finalizeCommand(stream, record);
+    } else {
+      AMPendingCommand *record = use.record;
+      if (record && stream) finalizeCommand(stream, record);
+    }
     if (command.status == MTLCommandBufferStatusError)
       return failure(5, command.error.localizedDescription.UTF8String
           ?: "preceding Metal buffer use failed");
   }
-  return lease.savedError
-      ? failure(5, lease.savedError.UTF8String) : ok();
+  NSString *message = lease.savedError;
+  AMBuffer *owner = lease.owner;
+  @synchronized(owner) {
+    if (!message) message = owner.producerError;
+  }
+  return message ? failure(5, message.UTF8String) : ok();
 }
 
 AMStatus am_buffer_lease_begin(void *buffer, int32_t access, void **lease,
@@ -947,6 +1473,8 @@ AMStatus am_buffer_lease_wait(void *leaseHandle) {
 AMStatus am_buffer_evidence(void *buffer, AMEvidence *evidence) {
   if (!buffer || !evidence) return failure(2, "null evidence handle");
   AMBuffer *owner = (__bridge AMBuffer *)buffer;
+  AMStatus status = flushOwnerMathBatches(owner);
+  if (status.code) return status;
   NSString *message = nil;
   @synchronized(owner) {
     id<MTLCommandBuffer> producer = owner.producer;
@@ -984,6 +1512,17 @@ static AMStatus enqueueMarker(AMStream *stream, id<MTLCommandBuffer> *marker,
   if (marker) *marker = command;
   return ok();
 }
+static AMStatus synchronizationPoint(AMStream *stream, uint64_t *sequence) {
+  @synchronized(stream.encodingLock) {
+    // Foreign clients can enqueue commands outside our accepted-sequence ledger.
+    if (stream.foreignQueueExposed) return enqueueMarker(stream, nil, sequence);
+    AMStatus status = flushMathBatch(stream);
+    if (status.code) return status;
+    @synchronized(stream) { *sequence = stream.acceptedSequence; }
+    return ok();
+  }
+}
+
 AMStatus am_stream_info(void *streamHandle, void **metalQueue,
                         uint64_t *identity) {
   if (!metalQueue || !identity)
@@ -996,9 +1535,14 @@ AMStatus am_stream_info(void *streamHandle, void **metalQueue,
     return failure(2, "invalid Metal stream handle");
   AMStream *stream = (AMStream *)object;
   if (!stream.queue) return failure(1, "Metal stream queue unavailable");
-  *metalQueue = (__bridge void *)stream.queue;
-  *identity = stream.identity;
-  return ok();
+  @synchronized(stream.encodingLock) {
+    AMStatus status = flushMathBatch(stream);
+    if (status.code) return status;
+    stream.foreignQueueExposed = YES;
+    *metalQueue = (__bridge void *)stream.queue;
+    *identity = stream.identity;
+    return ok();
+  }
 }
 
 AMStatus am_stream_fence(void *streamHandle, void **fenceHandle) {
@@ -1095,7 +1639,7 @@ AMStatus am_stream(void *deviceHandle, int32_t mode, void **out,
     if (mode == 0) {
       id<MTLCommandQueue> queue = [device newCommandQueue];
       if (!queue) return failure(1, "cannot create Metal command queue");
-      stream = newStream(device, queue);
+      stream = newStream(state, queue);
       @synchronized(state) { [state.streams addObject:stream]; }
     }
     *identity = stream.identity;
@@ -1106,11 +1650,7 @@ AMStatus am_stream(void *deviceHandle, int32_t mode, void **out,
 
 AMStatus am_stream_set(void *streamHandle) {
   @autoreleasepool {
-    NSMutableDictionary *dictionary = NSThread.currentThread.threadDictionary;
-    if (streamHandle)
-      dictionary[currentStreamKey] = (__bridge AMStream *)streamHandle;
-    else
-      [dictionary removeObjectForKey:currentStreamKey];
+    threadState.stream = (__bridge AMStream *)streamHandle;
   }
   return ok();
 }
@@ -1120,10 +1660,9 @@ AMStatus am_stream_sync(void *streamHandle) {
     if (!streamHandle) return failure(2, "null Metal stream");
     AMStream *stream = (__bridge AMStream *)streamHandle;
     uint64_t sequence = 0;
-    AMStatus status = enqueueMarker(stream, nil, &sequence);
+    AMStatus status = synchronizationPoint(stream, &sequence);
     if (status.code) return status;
-    // Waiting only the marker's status is insufficient: publish every prior
-    // command's native lease/accounting completion before returning.
+    // Finalize every captured record, including handlers still publishing leases.
     NSArray<AMPendingCommand *> *snapshot = pendingThrough(stream, sequence);
     waitAndFinalize(stream, snapshot);
     return streamFailureThrough(stream, sequence);
@@ -1144,7 +1683,7 @@ AMStatus am_device_sync(void *deviceHandle) {
     NSMutableArray<NSNumber *> *sequences = [NSMutableArray new];
     for (AMStream *stream in streams) {
       uint64_t sequence = 0;
-      AMStatus status = enqueueMarker(stream, nil, &sequence);
+      AMStatus status = synchronizationPoint(stream, &sequence);
       if (status.code) return status;
       [sequences addObject:@(sequence)];
     }
@@ -1173,15 +1712,18 @@ AMStatus am_stream_complete(void *streamHandle, int32_t *complete) {
   if (!streamHandle || !complete)
     return failure(2, "null Metal stream completion argument");
   AMStream *stream = (__bridge AMStream *)streamHandle;
+  AMStatus status = flushMathBatch(stream);
+  if (status.code) return status;
   AMPendingCommand *latest = nil;
   @synchronized(stream) {
     if (!stream.lastAcceptedComplete && stream.acceptedSequence)
-      latest = stream.pending[@(stream.acceptedSequence)];
+      latest = stream->pending.empty() ? nil : stream->pending.back();
   }
   if (latest &&
       (latest.command.status == MTLCommandBufferStatusCompleted ||
        latest.command.status == MTLCommandBufferStatusError))
-    finalizeCommand(stream, latest);
+    for (AMPendingCommand *record in pendingThrough(stream, latest.sequence))
+      finalizeCommand(stream, record);
   NSString *message = nil;
   @synchronized(stream) {
     *complete = stream.acceptedSequence == 0 || stream.lastAcceptedComplete ? 1 : 0;
@@ -1280,10 +1822,47 @@ static AMBuffer *cachedOwnerForRequestLocked(AMDeviceState *state,
                                              uint64_t bytes,
                                              uint64_t nativeLength) {
   NSMutableArray<AMBuffer *> *bin = state.bufferCache[@(nativeLength)];
-  for (AMBuffer *owner in [bin copy])
-    if (owner.capacity == bytes && removeCachedOwnerLocked(state, owner))
+  // Pop recent storage without shifting the other cached owners.
+  for (NSUInteger index = bin.count; index > 0;) {
+    AMBuffer *owner = bin[--index];
+    if (owner.capacity == bytes && removeCachedOwnerLocked(state, owner, index))
       return owner;
+  }
   return nil;
+}
+
+// Cached storage keeps its containers, but every allocation gets fresh evidence.
+static void initializeBufferOwnerLocked(AMDeviceState *state, AMBuffer *owner) {
+  owner.externalReferences = 1;
+  owner.producer = nil;
+  [owner.nativeLeases removeAllObjects];
+  owner.producerInvocation = 0;
+  owner.producerError = nil;
+  owner.evidence = {nextInvocation.fetch_add(1), state.device.registryID, 0, 0, 0, 1, 1};
+  state.liveBytes = saturatedAdd(state.liveBytes, owner.capacity);
+}
+
+static id<MTLBuffer> bufferFromHeapLocked(AMDeviceState *state, uint64_t length,
+                                         const MTLSizeAndAlign &layout) {
+  for (NSUInteger index = state.bufferHeaps.count; index > 0;) {
+    id<MTLHeap> heap = state.bufferHeaps[--index];
+    if ([heap maxAvailableSizeWithAlignment:layout.align] < layout.size) continue;
+    id<MTLBuffer> buffer = [heap newBufferWithLength:length
+        options:MTLResourceStorageModeShared | MTLResourceHazardTrackingModeTracked];
+    if (buffer) return buffer;
+  }
+  return nil;
+}
+
+static AMBuffer *newBufferOwnerLocked(AMDeviceState *state, id<MTLBuffer> native,
+                                      uint64_t bytes) {
+  AMBuffer *owner = [AMBuffer new];
+  owner.buffer = native;
+  owner.gpuAddress = state.supportsIndirectMath ? native.gpuAddress : 0;
+  owner.state = state;
+  owner.capacity = bytes;
+  initializeBufferOwnerLocked(state, owner);
+  return owner;
 }
 
 AMStatus am_buffer(void *deviceHandle, uint64_t bytes, void **buffer) {
@@ -1291,60 +1870,100 @@ AMStatus am_buffer(void *deviceHandle, uint64_t bytes, void **buffer) {
     if (!deviceHandle || !buffer) return failure(2, "null allocation handle");
     *buffer = nullptr;
     id<MTLDevice> dev = (__bridge id<MTLDevice>)deviceHandle;
-    const uint64_t requestedLength = MAX(bytes, 1);
-    if (bytes > dev.maxBufferLength || requestedLength > dev.maxBufferLength)
+    // Empty tensors still need one packed vector for typed no-read bindings.
+    const uint64_t requestedLength = MAX(bytes, 4 * sizeof(float));
+    if (requestedLength > dev.maxBufferLength)
       return failure(4, "Metal allocation exceeds maxBufferLength");
 
     NSError *error = nil;
     AMDeviceState *state = deviceState(dev, &error);
     if (!state)
       return failure(1, error.localizedDescription.UTF8String ?: "Metal device unavailable");
+    const BOOL pooled = requestedLength <= 1024 * 1024 && state.supportsSharedHeaps;
+    MTLSizeAndAlign layout = {requestedLength, 1};
+    BOOL pressure = NO;
     AMBuffer *owner = nil;
     @synchronized(state) {
       const uint64_t limit = memoryLimitBytes(state);
-      const uint64_t liveReserved = state.reservedBytes - state.cachedBytes;
-      // A cache hit is still subject to the requested limit. In particular,
-      // a fraction smaller than this allocation cannot be bypassed by reuse.
-      if (requestedLength > limit ||
-          wouldExceed(liveReserved, requestedLength, limit))
+      const BOOL withinLimit = state.reservedBytes <= limit && requestedLength <= limit;
+      if (withinLimit) {
+        owner = cachedOwnerForRequestLocked(state, bytes, requestedLength);
+        if (owner) {
+          initializeBufferOwnerLocked(state, owner);
+          *buffer = (__bridge_retained void *)owner;
+          return ok();
+        }
+      }
+      if (pooled) {
+        layout = [dev heapBufferSizeAndAlignWithLength:requestedLength
+            options:MTLResourceStorageModeShared | MTLResourceHazardTrackingModeTracked];
+        if (!layout.size || !layout.align) return failure(4, "Metal heap layout unavailable");
+        if (withinLimit) {
+          id<MTLBuffer> native = bufferFromHeapLocked(state, requestedLength, layout);
+          if (native) {
+            owner = newBufferOwnerLocked(state, native, bytes);
+            *buffer = (__bridge_retained void *)owner;
+            return ok();
+          }
+        }
+      }
+      pressure = wouldExceed(state.reservedBytes, layout.size, limit);
+    }
+    if (pressure) {
+      AMStatus status = flushDeviceMathBatches(dev);
+      if (status.code) return status;
+    }
+    @synchronized(state) {
+      const uint64_t limit = memoryLimitBytes(state);
+      if (requestedLength > limit)
         return failure(4, "Metal allocation exceeds the configured memory fraction");
+      while (state.reservedBytes > limit)
+        if (!evictOneCachedOwnerLocked(state))
+          return failure(4, "Metal reserved memory exceeds the configured limit");
 
       owner = cachedOwnerForRequestLocked(state, bytes, requestedLength);
-      if (owner) {
-        while (state.reservedBytes > limit)
-          if (!evictOneCachedOwnerLocked(state))
-            return failure(4, "Metal reserved memory exceeds the configured limit");
-      } else {
-        while (wouldExceed(state.reservedBytes, requestedLength, limit))
+      if (owner) initializeBufferOwnerLocked(state, owner);
+      else {
+        id<MTLBuffer> native = pooled
+            ? bufferFromHeapLocked(state, requestedLength, layout) : nil;
+        while (!native && wouldExceed(state.reservedBytes, layout.size, limit)) {
           if (!evictOneCachedOwnerLocked(state))
             return failure(4, "Metal allocation exceeds the configured memory fraction");
-        id<MTLBuffer> native =
-            [dev newBufferWithLength:requestedLength options:MTLResourceStorageModeShared];
-        if (!native) return failure(4, "Metal allocation failed");
-        const uint64_t actualLength = native.length;
-        while (wouldExceed(state.reservedBytes, actualLength, limit))
-          if (!evictOneCachedOwnerLocked(state)) {
-            native = nil;
-            return failure(4, "Metal allocation exceeds the configured memory fraction");
+          if (pooled) native = bufferFromHeapLocked(state, requestedLength, layout);
+        }
+        if (!native) {
+          const uint64_t available = limit - state.reservedBytes;
+          const NSUInteger alignment = MAX(layout.align, NSPageSize());
+          NSUInteger heapLength = pooled ? MIN(4 * 1024 * 1024, available) : 0;
+          heapLength -= heapLength % alignment;
+          if (pooled && heapLength >= layout.size) {
+            // Automatic placement never aliases resources still owned by GPU leases.
+            MTLHeapDescriptor *descriptor = [MTLHeapDescriptor new];
+            descriptor.size = heapLength;
+            descriptor.storageMode = MTLStorageModeShared;
+            descriptor.hazardTrackingMode = MTLHazardTrackingModeTracked;
+            descriptor.type = MTLHeapTypeAutomatic;
+            id<MTLHeap> heap = [dev newHeapWithDescriptor:descriptor];
+            if (!heap) return failure(4, "Metal heap allocation failed");
+            if (heap.size > available)
+              return failure(4, "Metal heap exceeds the configured memory fraction");
+            native = [heap newBufferWithLength:requestedLength
+                options:MTLResourceStorageModeShared | MTLResourceHazardTrackingModeTracked];
+            if (!native) return failure(4, "Metal heap buffer allocation failed");
+            if (!state.bufferHeaps) state.bufferHeaps = [NSMutableArray new];
+            [state.bufferHeaps addObject:heap];
+            state.reservedBytes = saturatedAdd(state.reservedBytes, heap.size);
+          } else {
+            native = [dev newBufferWithLength:requestedLength options:MTLResourceStorageModeShared];
+            if (!native) return failure(4, "Metal allocation failed");
+            while (wouldExceed(state.reservedBytes, native.length, limit))
+              if (!evictOneCachedOwnerLocked(state))
+                return failure(4, "Metal allocation exceeds the configured memory fraction");
+            state.reservedBytes = saturatedAdd(state.reservedBytes, native.length);
           }
-        owner = [AMBuffer new];
-        owner.buffer = native;
-        state.reservedBytes = saturatedAdd(state.reservedBytes, actualLength);
+        }
+        owner = newBufferOwnerLocked(state, native, bytes);
       }
-
-      owner.state = state;
-      owner.capacity = bytes;
-      owner.externalReferences = 1;
-      owner.inFlightLeases = 0;
-      owner.cached = NO;
-      owner.producer = nil;
-      owner.customLeases = [NSMutableArray new];
-      owner.pendingUses = [NSMutableArray new];
-      owner.nativeLeases = [NSHashTable weakObjectsHashTable];
-      owner.producerInvocation = 0;
-      owner.producerError = nil;
-      owner.evidence = {nextInvocation.fetch_add(1), dev.registryID, 0, 0, 0, 1, 1};
-      state.liveBytes = saturatedAdd(state.liveBytes, bytes);
     }
     *buffer = (__bridge_retained void *)owner;
     return ok();
@@ -1449,6 +2068,8 @@ AMStatus am_buffer_info(void *buffer, AMTensorDescriptor d,
     if (byteEnd > owner.capacity || byteEnd > owner.buffer.length)
       return failure(2, "Metal descriptor view exceeds physical buffer bounds");
   }
+  status = flushOwnerMathBatches(owner);
+  if (status.code) return status;
 
   void *native = (__bridge void *)owner.buffer;
   *metalBuffer = native;
@@ -1486,11 +2107,33 @@ static bool broadcastAligned(AMTensorDescriptor input, AMTensorDescriptor output
   return true;
 }
 
+static bool packedMathInput(AMTensorDescriptor descriptor) {
+  int64_t stride = 1;
+  for (int axis = descriptor.rank - 1; axis >= 0; --axis) {
+    const int64_t dimension = descriptor.shape[axis];
+    if (!dimension) return false;
+    if (dimension == 1) continue;
+    if (descriptor.strides[axis] != stride || stride > INT64_MAX / dimension)
+      return false;
+    stride *= dimension;
+  }
+  return true;
+}
+
+static bool innerSpanMathInput(AMTensorDescriptor input, AMTensorDescriptor output) {
+  if (!sameShape(input, output) || !input.rank) return false;
+  const int axis = input.rank - 1;
+  return input.shape[axis] == 1 || input.strides[axis] == 0 || input.strides[axis] == 1;
+}
+
 static AMCompute *compute(id<MTLDevice> device, const char *directory, NSError **error) {
-  static NSMutableDictionary<NSNumber *, AMCompute *> *contexts = [NSMutableDictionary new];
   if (!device || !directory) return nil;
+  const uint64_t registryID = device.registryID;
+  if (threadState.compute && threadState.registryID == registryID)
+    return threadState.compute;
+  static NSMutableDictionary<NSNumber *, AMCompute *> *contexts = [NSMutableDictionary new];
   @synchronized(contexts) {
-    AMCompute *context = contexts[@(device.registryID)];
+    AMCompute *context = contexts[@(registryID)];
     if (!context) {
       context = [AMCompute new];
       context.state = deviceState(device, error);
@@ -1500,13 +2143,17 @@ static AMCompute *compute(id<MTLDevice> device, const char *directory, NSError *
       context.library = [device newLibraryWithURL:url error:error];
       if (!context.library) return nil;
       context.pipelines = [NSMutableDictionary new];
-      contexts[@(device.registryID)] = context;
+      contexts[@(registryID)] = context;
     }
+    threadState.compute = context;
+    threadState.registryID = registryID;
     return context;
   }
 }
 
 static id<MTLComputePipelineState> pipelineFor(AMCompute *context, NSString *name, NSError **error) {
+  if (threadState.pipeline && threadState.pipelineContext == context && threadState.pipelineName == name)
+    return threadState.pipeline;
   @synchronized(context) {
     id<MTLComputePipelineState> pipeline = context.pipelines[name];
     if (!pipeline) {
@@ -1515,80 +2162,314 @@ static id<MTLComputePipelineState> pipelineFor(AMCompute *context, NSString *nam
       pipeline = [context.state.device newComputePipelineStateWithFunction:function error:error];
       if (pipeline) context.pipelines[name] = pipeline;
     }
+    threadState.pipelineContext = context;
+    threadState.pipelineName = name;
+    threadState.pipeline = pipeline;
     return pipeline;
   }
 }
 
+struct AMPackedUnaryParameters {
+  uint32_t count;
+  int64_t inputOffset, outputOffset;
+};
+static_assert(sizeof(AMPackedUnaryParameters) == 24, "direct unary parameter layout");
+
+struct AMDotParameters {
+  uint64_t inner;
+  int64_t leftOffset, rightOffset, outputOffset, leftStride, rightStride;
+};
+static_assert(sizeof(AMDotParameters) == 48, "dot parameter ABI mismatch");
+
+struct AMVectorMatrixParameters {
+  uint64_t inner, columns;
+  int64_t inputOffset, matrixOffset, outputOffset;
+  int64_t inputStride, matrixRowStride, matrixColumnStride, outputStride;
+};
+static_assert(sizeof(AMVectorMatrixParameters) == 72, "vector-matrix parameter ABI mismatch");
+
 static AMStatus runMathCommand(AMCompute *context,
                                id<MTLComputePipelineState> pipeline,
-                               NSString *name, AMBuffer *a, AMBuffer *b,
-                               AMBuffer *output, AMTensorDescriptor ad,
-                               AMTensorDescriptor bd, AMTensorDescriptor od,
-                               AMMathParameters parameters,
+                               AMBuffer *a, AMBuffer *b,
+                               AMBuffer *output, const AMTensorDescriptor &ad,
+                               const AMTensorDescriptor &bd, const AMTensorDescriptor &od,
+                               const AMMathParameters &parameters,
                                uint64_t outputCount, MTLSize groups,
-                               MTLSize threads, int32_t operation) {
+                               MTLSize threads, int32_t operation,
+                               bool packedUnary, bool packedUnaryTasks,
+                               bool packedDot, bool packedVectorMatrix) {
   AMStream *stream = nil;
   AMStatus status = selectedStream(output.buffer.device, context.state, &stream);
   if (status.code) return status;
-  id<MTLCommandBuffer> command = [stream.queue commandBuffer];
-  if (!command) return failure(5, "cannot create Metal math command");
-  id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-  if (!encoder) return failure(5, "cannot create Metal math encoder");
-  command.label = name;
-  [encoder setComputePipelineState:pipeline];
-  switch (operation) {
-    case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9:
-    case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 17: case 18: case 19: case 23:
-      [encoder setBuffer:(a ? a.buffer : output.buffer) offset:0 atIndex:0];
-      [encoder setBuffer:(b ? b.buffer : output.buffer) offset:0 atIndex:1];
-      [encoder setBuffer:output.buffer offset:0 atIndex:2];
-      [encoder setBytes:&ad length:sizeof(ad) atIndex:3];
-      [encoder setBytes:&bd length:sizeof(bd) atIndex:4];
-      [encoder setBytes:&od length:sizeof(od) atIndex:5];
-      [encoder setBytes:&parameters length:sizeof(parameters) atIndex:6];
-      break;
-    case 20:
-      [encoder setBuffer:a.buffer offset:0 atIndex:0];
-      [encoder setBuffer:b.buffer offset:0 atIndex:1];
-      [encoder setBuffer:output.buffer offset:0 atIndex:2];
-      [encoder setBytes:&ad length:sizeof(ad) atIndex:3];
-      [encoder setBytes:&bd length:sizeof(bd) atIndex:4];
-      [encoder setBytes:&od length:sizeof(od) atIndex:5];
-      break;
-    case 21:
-      [encoder setBuffer:a.buffer offset:0 atIndex:0];
-      [encoder setBuffer:output.buffer offset:0 atIndex:1];
-      [encoder setBytes:&ad length:sizeof(ad) atIndex:2];
-      [encoder setBytes:&od length:sizeof(od) atIndex:3];
-      [encoder setBytes:&parameters length:sizeof(parameters) atIndex:4];
-      break;
-    case 22:
-      [encoder setBuffer:a.buffer offset:0 atIndex:0];
-      [encoder setBuffer:output.buffer offset:0 atIndex:1];
-      [encoder setBytes:&ad length:sizeof(ad) atIndex:2];
-      [encoder setBytes:&od length:sizeof(od) atIndex:3];
-      [encoder setBytes:&parameters length:sizeof(parameters) atIndex:4];
-      break;
-    default:
-      [encoder endEncoding];
-      return failure(2, "unsupported Metal math operation");
+  @synchronized(stream.encodingLock) {
+    id<MTLCommandBuffer> command = mathCommandBuffer(stream);
+    if (!command) return failure(5, "cannot create Metal math command");
+    // Single-output contractions trade no useful work for concurrent scheduling.
+    const bool dot = operation == 20 && od.rank == 2 && ad.shape[ad.rank - 2] == 1 &&
+        bd.shape[bd.rank - 1] == 1;
+    const bool packedMath = packedUnaryTasks || packedVectorMatrix;
+    // Packed tasks already expose their parallel work inside one dispatch.
+    id<MTLComputeCommandEncoder> encoder = mathComputeEncoder(stream, command, output,
+        dot || packedMath);
+    if (!encoder) return failure(5, "cannot create Metal math encoder");
+    const uint64_t invocation = nextInvocation.fetch_add(1);
+    AMEvidence evidence = {invocation, output.buffer.device.registryID,
+                           0, 0, 0, 0, 2, 100 + operation};
+    AMBuffer *__unsafe_unretained leases[3];
+    NSUInteger leaseCount = 0;
+    if (a) leases[leaseCount++] = a;
+    if (b && b != a) leases[leaseCount++] = b;
+    if (output != a && output != b) leases[leaseCount++] = output;
+    status = admitMathCommand(stream, command, nil, output, evidence, pipeline,
+        leases, leaseCount);
+    if (status.code) return status;
+    @try {
+      const uint64_t packedOutputAddress = packedMath ?
+          output.gpuAddress + (uint64_t)od.offset * sizeof(float) : 0;
+      if (!packedMath || (stream->packedTaskCount &&
+          (stream->packedTaskCount == 32 || stream.packedPipeline != pipeline ||
+           stream->packedGroups.width != groups.width ||
+           stream->packedThreads.width != threads.width)))
+        flushPackedMath(stream, encoder);
+      const bool orderedWrites = packedUnaryTasks && stream->packedTaskCount &&
+          stream->packedTasks[0].output == packedOutputAddress;
+      orderMathAccess(stream, output, a, b, nil, packedMath, orderedWrites);
+      if (packedMath) {
+        if (!stream->packedTaskCount) {
+          stream.packedPipeline = pipeline;
+          stream->packedGroups = groups;
+          stream->packedThreads = threads;
+          stream->packedRows = packedVectorMatrix;
+          stream->packedRepeatedWrites = false;
+        }
+        if (orderedWrites && stream->packedTaskCount)
+          stream->packedRepeatedWrites = true;
+        stream->packedTasks[stream->packedTaskCount++] = {
+          a.gpuAddress + (uint64_t)ad.offset * sizeof(float),
+          packedVectorMatrix ? b.gpuAddress + (uint64_t)bd.offset * sizeof(float) : 0,
+          packedOutputAddress,
+          packedVectorMatrix ? (uint32_t)ad.shape[1] : (uint32_t)outputCount,
+          packedVectorMatrix ? (uint32_t)bd.shape[1] : 0};
+        if (!stream.aggregateMath) flushPackedMath(stream, encoder);
+        return finishMathEncoding(stream);
+      }
+      [encoder setComputePipelineState:pipeline];
+      if (packedUnary) {
+        AMPackedUnaryParameters packed = {(uint32_t)outputCount, ad.offset, od.offset};
+        [encoder setBuffer:a.buffer offset:0 atIndex:0];
+        [encoder setBuffer:output.buffer offset:0 atIndex:1];
+        [encoder setBytes:&packed length:sizeof(packed) atIndex:2];
+      } else switch (operation) {
+        case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9:
+        case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 17: case 18: case 19: case 23: case 24:
+          [encoder setBuffer:(a ? a.buffer : output.buffer) offset:0 atIndex:0];
+          [encoder setBuffer:(b ? b.buffer : output.buffer) offset:0 atIndex:1];
+          [encoder setBuffer:output.buffer offset:0 atIndex:2];
+          [encoder setBytes:&ad length:sizeof(ad) atIndex:3];
+          [encoder setBytes:&bd length:sizeof(bd) atIndex:4];
+          [encoder setBytes:&od length:sizeof(od) atIndex:5];
+          [encoder setBytes:&parameters length:sizeof(parameters) atIndex:6];
+          break;
+        case 20:
+          [encoder setBuffer:a.buffer offset:(packedDot ? (NSUInteger)ad.offset * sizeof(float) : 0) atIndex:0];
+          [encoder setBuffer:b.buffer offset:(packedDot ? (NSUInteger)bd.offset * sizeof(float) : 0) atIndex:1];
+          [encoder setBuffer:output.buffer offset:(packedDot ? (NSUInteger)od.offset * sizeof(float) : 0) atIndex:2];
+          if (packedDot) {
+            const uint32_t inner = (uint32_t)ad.shape[1];
+            [encoder setBytes:&inner length:sizeof(inner) atIndex:3];
+          } else if (od.rank == 2 && ad.shape[0] == 1 && bd.shape[1] == 1) {
+            AMDotParameters compact = {(uint64_t)ad.shape[1], ad.offset, bd.offset,
+                od.offset, ad.strides[1], bd.strides[0]};
+            [encoder setBytes:&compact length:sizeof(compact) atIndex:3];
+          } else if (od.rank == 2 && ad.shape[0] == 1 && bd.shape[1] > 1) {
+            AMVectorMatrixParameters compact = {
+              (uint64_t)ad.shape[1], (uint64_t)bd.shape[1], ad.offset, bd.offset, od.offset,
+              ad.strides[1], bd.strides[0], bd.strides[1], od.strides[1]};
+            [encoder setBytes:&compact length:sizeof(compact) atIndex:3];
+          } else {
+            [encoder setBytes:&ad length:sizeof(ad) atIndex:3];
+            [encoder setBytes:&bd length:sizeof(bd) atIndex:4];
+            [encoder setBytes:&od length:sizeof(od) atIndex:5];
+          }
+          break;
+        case 21: case 22:
+          [encoder setBuffer:a.buffer offset:0 atIndex:0];
+          [encoder setBuffer:output.buffer offset:0 atIndex:1];
+          [encoder setBytes:&ad length:sizeof(ad) atIndex:2];
+          [encoder setBytes:&od length:sizeof(od) atIndex:3];
+          [encoder setBytes:&parameters length:sizeof(parameters) atIndex:4];
+          break;
+      }
+      // Direct tracked bindings cover inter-pass hazards; orderMathAccess covers this pass.
+      [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
+    } @catch (NSException *exception) {
+      return failMathEncoding(stream, invocation, exception.reason);
+    }
+    return finishMathEncoding(stream);
   }
-  [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
-  [encoder endEncoding];
+}
+struct MatrixLayout {
+  NSUInteger rows, columns, rowBytes;
+  bool transpose;
+};
 
+static bool matrixLayout(AMTensorDescriptor descriptor, MatrixLayout &layout) {
+  if (descriptor.rank != 2 || descriptor.shape[0] <= 0 || descriptor.shape[1] <= 0)
+    return false;
+  const int64_t rows = descriptor.shape[0], columns = descriptor.shape[1];
+  int64_t rowStride;
+  if ((columns == 1 || descriptor.strides[1] == 1) &&
+      (rows == 1 || descriptor.strides[0] >= columns)) {
+    rowStride = rows == 1 ? columns : descriptor.strides[0];
+    layout = {(NSUInteger)rows, (NSUInteger)columns, 0, false};
+  } else if ((rows == 1 || descriptor.strides[0] == 1) &&
+             (columns == 1 || descriptor.strides[1] >= rows)) {
+    rowStride = columns == 1 ? rows : descriptor.strides[1];
+    layout = {(NSUInteger)columns, (NSUInteger)rows, 0, true};
+  } else {
+    return false;
+  }
+  const __uint128_t bytes = (__uint128_t)rowStride * sizeof(float);
+  if (bytes > NSUIntegerMax) return false;
+  layout.rowBytes = (NSUInteger)bytes;
+  return true;
+}
+
+static MPSMatrix *matrixView(AMStream *stream, AMBuffer *owner,
+                             const AMTensorDescriptor &descriptor,
+                             const MatrixLayout &layout) {
+  MPSMatrixDescriptor *shape = nil;
+  for (const auto &entry : stream->matrixDescriptors) {
+    if (entry.rows == layout.rows && entry.columns == layout.columns &&
+        entry.rowBytes == layout.rowBytes && entry.descriptor) {
+      shape = entry.descriptor;
+      break;
+    }
+  }
+  if (!shape) {
+    shape = [MPSMatrixDescriptor matrixDescriptorWithRows:layout.rows
+        columns:layout.columns rowBytes:layout.rowBytes dataType:MPSDataTypeFloat32];
+    auto &entry = stream->matrixDescriptors[stream->matrixDescriptorCursor];
+    entry.rows = layout.rows;
+    entry.columns = layout.columns;
+    entry.rowBytes = layout.rowBytes;
+    entry.descriptor = shape;
+    stream->matrixDescriptorCursor = (stream->matrixDescriptorCursor + 1) % 3;
+  }
+  return [[MPSMatrix alloc] initWithBuffer:owner.buffer
+      offset:(NSUInteger)descriptor.offset * sizeof(float) descriptor:shape];
+}
+
+static MPSVector *vectorView(AMBuffer *owner, const AMTensorDescriptor &descriptor,
+                             NSUInteger length) {
+  MPSVectorDescriptor *shape = [MPSVectorDescriptor
+      vectorDescriptorWithLength:length dataType:MPSDataTypeFloat32];
+  return [[MPSVector alloc] initWithBuffer:owner.buffer
+      offset:(NSUInteger)descriptor.offset * sizeof(float) descriptor:shape];
+}
+
+static bool mpsMatmulSupported(AMTensorDescriptor ad, AMTensorDescriptor bd,
+                               AMTensorDescriptor od) {
+  if (ad.rank != 2 || bd.rank != 2 || od.rank != 2 || ad.shape[1] == 0)
+    return false;
+  const int64_t rows = ad.shape[0], columns = bd.shape[1];
+  MatrixLayout left, right, output;
+  if (rows == 1) return false;
+  if (columns == 1)
+    return matrixLayout(ad, left) && bd.strides[0] == 1 && od.strides[0] == 1;
+  // Small matrix products do not amortize MPS descriptor and wrapper setup.
+  if ((uint64_t)rows <= (1ull << 22) / (uint64_t)columns / (uint64_t)ad.shape[1])
+    return false;
+  return matrixLayout(ad, left) && matrixLayout(bd, right) &&
+      matrixLayout(od, output) && !output.transpose;
+}
+
+static AMStatus runMpsMatmul(AMCompute *context, AMBuffer *a, AMBuffer *b,
+                             AMBuffer *output, AMTensorDescriptor ad,
+                             AMTensorDescriptor bd, AMTensorDescriptor od) {
+  AMStream *stream = nil;
+  AMStatus status = selectedStream(output.buffer.device, context.state, &stream);
+  if (status.code) return status;
+  const NSUInteger rows = ad.shape[0], inner = ad.shape[1], columns = bd.shape[1];
   const uint64_t invocation = nextInvocation.fetch_add(1);
   AMEvidence evidence = {invocation, output.buffer.device.registryID,
-                         0, 0, 0, 0, 2, 100 + operation};
-  NSMutableArray *leases = [NSMutableArray new];
-  if (a) [leases addObject:a];
-  if (b && b != a) [leases addObject:b];
-  if (output != a && output != b) [leases addObject:output];
-  [leases addObject:pipeline];
-  status = submitCommand(stream, command, leases, output, invocation, evidence, 0, nullptr);
-  if (status.code) abandonBufferProducer(output, invocation);
-  (void)outputCount;
+                         0, 0, 0, 0, 2, 120};
+  // MPS wrappers keep GPU objects; the shared lease union keeps canonical owners.
+  AMBuffer *__unsafe_unretained buffers[3];
+  NSUInteger bufferCount = 0;
+  buffers[bufferCount++] = a;
+  if (b != a) buffers[bufferCount++] = b;
+  if (output != a && output != b) buffers[bufferCount++] = output;
+  // Kernels are stream-local; serialize their cache and encode-time state.
+  @synchronized(stream.encodingLock) {
+    id<MTLCommandBuffer> command = mathCommandBuffer(stream);
+    if (!command) return failure(5, "cannot create MPS matrix command");
+    @try {
+      if (columns == 1) {
+        MatrixLayout layout;
+        matrixLayout(ad, layout);
+        NSString *key = [NSString stringWithFormat:@"mv:%lu:%lu:%d",
+            (unsigned long)rows, (unsigned long)inner, (int)layout.transpose];
+        MPSMatrixVectorMultiplication *kernel =
+            (MPSMatrixVectorMultiplication *)stream.matrixKernels[key];
+        if (!kernel) {
+          kernel = [[MPSMatrixVectorMultiplication alloc]
+              initWithDevice:stream.device transpose:layout.transpose rows:rows columns:inner
+              alpha:1.0 beta:0.0];
+          if (!kernel) return failMathEncoding(stream, invocation, @"cannot create MPS matrix/vector kernel", 7);
+          stream.matrixKernels[key] = kernel;
+        }
+        MPSMatrix *matrixValue = matrixView(stream, a, ad, layout);
+        MPSVector *vectorValue = vectorView(b, bd, inner);
+        MPSVector *resultValue = vectorView(output, od, rows);
+        NSArray *leases = @[kernel, matrixValue, vectorValue, resultValue];
+        status = admitMathCommand(stream, command, leases, output, evidence,
+            nil, buffers, bufferCount);
+        if (status.code) return status;
+        flushPackedMath(stream, stream.batchEncoder);
+        [stream.batchEncoder endEncoding];
+        stream.batchEncoder = nil;
+        [kernel encodeToCommandBuffer:command inputMatrix:matrixValue
+            inputVector:vectorValue resultVector:resultValue];
+      } else {
+        MatrixLayout left, right, result;
+        matrixLayout(ad, left);
+        matrixLayout(bd, right);
+        matrixLayout(od, result);
+        NSString *key = [NSString stringWithFormat:@"mm:%lu:%lu:%lu:%d:%d",
+            (unsigned long)rows, (unsigned long)columns, (unsigned long)inner,
+            (int)left.transpose, (int)right.transpose];
+        MPSMatrixMultiplication *kernel =
+            (MPSMatrixMultiplication *)stream.matrixKernels[key];
+        if (!kernel) {
+          kernel = [[MPSMatrixMultiplication alloc]
+              initWithDevice:stream.device transposeLeft:left.transpose
+              transposeRight:right.transpose resultRows:rows resultColumns:columns
+              interiorColumns:inner alpha:1.0 beta:0.0];
+          if (!kernel) return failMathEncoding(stream, invocation, @"cannot create MPS matrix kernel", 7);
+          stream.matrixKernels[key] = kernel;
+        }
+        MPSMatrix *leftValue = matrixView(stream, a, ad, left);
+        MPSMatrix *rightValue = matrixView(stream, b, bd, right);
+        MPSMatrix *resultValue = matrixView(stream, output, od, result);
+        NSArray *leases = @[kernel, leftValue, rightValue, resultValue];
+        status = admitMathCommand(stream, command, leases, output, evidence,
+            nil, buffers, bufferCount);
+        if (status.code) return status;
+        flushPackedMath(stream, stream.batchEncoder);
+        [stream.batchEncoder endEncoding];
+        stream.batchEncoder = nil;
+        [kernel encodeToCommandBuffer:command leftMatrix:leftValue
+            rightMatrix:rightValue resultMatrix:resultValue];
+      }
+    } @catch (NSException *exception) {
+      return failMathEncoding(stream, invocation, exception.reason);
+    }
+    status = finishMathEncoding(stream);
+  }
   return status;
 }
+
 typedef struct {
   uint32_t counter[4];
   uint64_t seed;
@@ -1709,7 +2590,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
 
     const int operation = parameters.operation;
     const bool elementwise = (operation >= 1 && operation <= 19) || operation == 23;
-    if (!elementwise && operation != 20 && operation != 21 && operation != 22)
+    if (!elementwise && operation != 20 && operation != 21 && operation != 22 && operation != 24)
       return failure(2, "unsupported Metal math operation");
 
     uint64_t aCount = 0, bCount = 0;
@@ -1731,6 +2612,10 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     MTLSize groups = MTLSizeMake(0, 1, 1);
     MTLSize threads = MTLSizeMake(1, 1, 1);
     uint64_t dispatchCount = outputCount;
+    bool packedUnary = false;
+    bool packedUnaryTasks = false;
+    bool packedDot = false;
+    bool packedVectorMatrix = false;
 
     if (elementwise) {
       if (operation == 13 || operation == 15 || operation == 17 || operation == 19 || operation == 23) {
@@ -1761,34 +2646,100 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
         return failure(2, "elementwise output exceeds Metal grid limits");
       if (!outputCount) return ok();
       kernelName = @"math_elementwise";
+      if (packedMathInput(od)) {
+        if ((!a || (sameShape(ad, od) && packedMathInput(ad))) &&
+            (!b || (sameShape(bd, od) && packedMathInput(bd)))) {
+          kernelName = @"math_elementwise_packed";
+          if (operation >= 10 && operation <= 12 && ad.offset % 4 == 0 && od.offset % 4 == 0) {
+            packedUnary = true;
+            dispatchCount = (outputCount + 3) / 4;
+            packedUnaryTasks = output.state.supportsIndirectMath;
+            if (packedUnaryTasks)
+              kernelName = operation == 10 ? @"math_exp_tasks" :
+                  operation == 11 ? @"math_ln_tasks" : @"math_sqrt_tasks";
+            else
+              kernelName = operation == 10 ? @"math_exp_packed" :
+                  operation == 11 ? @"math_ln_packed" : @"math_sqrt_packed";
+          }
+        } else if ((!a || innerSpanMathInput(ad, od)) &&
+                   (!b || innerSpanMathInput(bd, od))) {
+          kernelName = @"math_elementwise_inner_span";
+        }
+      }
       threads = MTLSizeMake(MIN((NSUInteger)256, (NSUInteger)outputCount), 1, 1);
       groups = MTLSizeMake((outputCount + threads.width - 1) / threads.width, 1, 1);
     } else if (operation == 20) {
-      if (parameters.scalar_input || !b || ad.rank != 2 || bd.rank != 2 || od.rank != 2)
-        return failure(2, "matmul requires rank-two tensors");
-      if (ad.shape[1] != bd.shape[0] || od.shape[0] != ad.shape[0] ||
-          od.shape[1] != bd.shape[1])
+      if (parameters.scalar_input || !b || ad.rank < 2 ||
+          ad.rank != od.rank || bd.rank != od.rank)
+        return failure(2, "matmul requires batch-aligned matrix descriptors");
+      const int rowAxis = od.rank - 2, columnAxis = od.rank - 1;
+      if (ad.shape[columnAxis] != bd.shape[rowAxis] ||
+          od.shape[rowAxis] != ad.shape[rowAxis] ||
+          od.shape[columnAxis] != bd.shape[columnAxis])
         return failure(2, "matmul dimensions are incompatible");
+      for (int axis = 0; axis < rowAxis; ++axis) {
+        if (ad.shape[axis] != od.shape[axis]) {
+          if (ad.shape[axis] != 1 || ad.strides[axis] != 0)
+            return failure(2, "matmul input A has incompatible batch dimensions");
+          ad.shape[axis] = od.shape[axis];
+        }
+        if (bd.shape[axis] != od.shape[axis]) {
+          if (bd.shape[axis] != 1 || bd.strides[axis] != 0)
+            return failure(2, "matmul input B has incompatible batch dimensions");
+          bd.shape[axis] = od.shape[axis];
+        }
+      }
       if (outputCount > UINT32_MAX)
         return failure(2, "matmul output exceeds Metal grid limits");
       if (!outputCount) return ok();
-      kernelName = @"math_matmul";
-      threads = MTLSizeMake(16, 16, 1);
-      groups = MTLSizeMake((uint64_t(bd.shape[1]) + 15) / 16,
-                           (uint64_t(ad.shape[0]) + 15) / 16, 1);
-      if (groups.width > UINT32_MAX || groups.height > UINT32_MAX)
+      const uint64_t rows = od.shape[rowAxis], columns = od.shape[columnAxis];
+      const uint64_t batches = outputCount / rows / columns;
+      if (rows == 1 && columns == 1) {
+        kernelName = od.rank == 2 ? @"math_dot_unbatched" : @"math_dot";
+        packedDot = od.rank == 2 && ad.shape[1] > 0 && ad.shape[1] <= UINT32_MAX &&
+            ad.strides[1] == 1 && bd.strides[0] == 1 &&
+            ad.offset % 4 == 0 && bd.offset % 4 == 0;
+        if (packedDot) kernelName = @"math_dot_packed";
+        threads = MTLSizeMake(256, 1, 1);
+        groups = MTLSizeMake(batches, 1, 1);
+      } else if (rows == 1) {
+        packedVectorMatrix = od.rank == 2 && bCount <= UINT32_MAX &&
+            packedMathInput(ad) && packedMathInput(bd) && packedMathInput(od) &&
+            bd.shape[1] % 4 == 0 && bd.offset % 4 == 0 && od.offset % 4 == 0;
+        kernelName = od.rank == 2 ? @"math_vector_matrix_unbatched" : @"math_vector_matrix";
+        packedVectorMatrix = packedVectorMatrix &&
+            output.state.supportsIndirectMath;
+        if (packedVectorMatrix) kernelName = @"math_vector_matrix_packed";
+        threads = MTLSizeMake(packedVectorMatrix ? 32 : 256, 1, 1);
+        groups = MTLSizeMake((columns + 31) / 32, 1, batches);
+      } else {
+        kernelName = @"math_matmul_batched";
+        threads = MTLSizeMake(8, 8, 1);
+        groups = MTLSizeMake((columns + 15) / 16, (rows + 15) / 16, batches);
+      }
+      if (groups.width > UINT32_MAX || groups.height > UINT32_MAX ||
+          groups.depth > UINT32_MAX)
         return failure(2, "matmul grid exceeds Metal limits");
     } else if (operation == 21) {
       if (b)
         return failure(2, "full sum accepts one tensor input");
-      const uint64_t partialCount = MAX((uint64_t)1, (aCount + 255) / 256);
+      const bool small = aCount <= 65536;
+      const uint64_t partialCount = small ? 1 : (aCount + 255) / 256;
       if (outputCount != partialCount || partialCount > UINT32_MAX ||
           (parameters.scalar_input && partialCount != 1))
         return failure(2, "full-sum output must contain one value per reduction group");
-      kernelName = @"math_reduce";
+      kernelName = small ? @"math_reduce_small" : @"math_reduce";
+      parameters.axis = small && packedMathInput(ad);
       threads = MTLSizeMake(256, 1, 1);
       groups = MTLSizeMake(partialCount, 1, 1);
-      dispatchCount = partialCount;
+    } else if (operation == 24) {
+      if (!b || parameters.scalar_input || !sameShape(ad, bd) ||
+          aCount != bCount || od.rank != 0 || outputCount != 1)
+        return failure(2, "fused mean MSE requires matching broadcast views and scalar output");
+      kernelName = @"math_mse_reduce";
+      parameters.axis = int(packedMathInput(ad)) | (int(packedMathInput(bd)) << 1);
+      threads = MTLSizeMake(256, 1, 1);
+      groups = MTLSizeMake(1, 1, 1);
     } else {
       if (b || parameters.scalar_input || parameters.axis < 0 ||
           parameters.axis >= ad.rank || od.rank != ad.rank)
@@ -1810,6 +2761,8 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     AMCompute *context = compute(output.buffer.device, directory, &error);
     if (!context)
       return failure(9, error ? error.localizedDescription.UTF8String : "Metal queue or library unavailable");
+    if (operation == 20 && output != a && output != b && mpsMatmulSupported(ad, bd, od))
+      return runMpsMatmul(context, a, b, output, ad, bd, od);
     id<MTLComputePipelineState> pipeline = pipelineFor(context, kernelName, &error);
     if (!pipeline)
       return failure(error ? 7 : 8,
@@ -1817,19 +2770,29 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     if (operation >= 20 &&
         pipeline.maxTotalThreadsPerThreadgroup < threads.width * threads.height * threads.depth)
       return failure(7, "Metal math pipeline cannot run its required threadgroup");
+    if (operation == 20 && od.shape[od.rank - 2] == 1 && od.shape[od.rank - 1] > 1) {
+      const NSUInteger simdWidth = pipeline.threadExecutionWidth;
+      if (!simdWidth || 256 % simdWidth)
+        return failure(7, "row-vector pipeline has an unsupported SIMD width");
+      if (packedVectorMatrix) threads.width = simdWidth;
+      const uint64_t columnsPerGroup = 4 *
+          (packedVectorMatrix ? MIN((NSUInteger)4, simdWidth) : 256 / simdWidth);
+      groups.width = (od.shape[od.rank - 1] + columnsPerGroup - 1) / columnsPerGroup;
+    }
     if (elementwise) {
       const NSUInteger supported = pipeline.maxTotalThreadsPerThreadgroup;
-      const NSUInteger width = MIN((NSUInteger)outputCount, MIN((NSUInteger)256, supported));
+      const NSUInteger width = MIN((NSUInteger)dispatchCount, MIN((NSUInteger)256, supported));
       if (!width) return failure(7, "Metal elementwise pipeline has no supported threads");
       threads = MTLSizeMake(width, 1, 1);
-      groups = MTLSizeMake((outputCount + width - 1) / width, 1, 1);
+      groups = MTLSizeMake((dispatchCount + width - 1) / width, 1, 1);
       if (groups.width > UINT32_MAX || groups.width * width > UINT32_MAX)
         return failure(2, "elementwise grid exceeds Metal index limits");
     }
 
-    return runMathCommand(context, pipeline, kernelName, a, b, output,
-                          ad, bd, od, parameters, dispatchCount,
-                          groups, threads, operation);
+    return runMathCommand(context, pipeline, a, b, output,
+                          ad, bd, od, parameters, outputCount,
+                          groups, threads, operation, packedUnary, packedUnaryTasks,
+                          packedDot, packedVectorMatrix);
   }
 }
 AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,
@@ -1858,65 +2821,76 @@ AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,
 
     if (ud.rank != 0 || upstreamCount != 1)
       return failure(2, "Metal MSE upstream gradient must be a scalar");
-    if (!sameShape(pd, td) || !sameShape(pd, od) ||
-        predictionCount != targetCount || predictionCount != outputCount)
-      return failure(2, "Metal MSE prediction, target, and output shapes must match");
+    if (!sameShape(pd, td) || predictionCount != targetCount || od.rank > pd.rank)
+      return failure(2, "Metal MSE prediction and target shapes must match");
+    const int leading = pd.rank - od.rank;
+    for (int axis = 0; axis < od.rank; ++axis)
+      if (od.shape[axis] != 1 && od.shape[axis] != pd.shape[leading + axis])
+        return failure(2, "Metal MSE output must reduce to an operand shape");
+    const bool reduced = !sameShape(pd, od);
     if (!sameDevice(upstream, output) || !sameDevice(prediction, output) ||
         !sameDevice(target, output))
       return failure(2, "Metal MSE buffers use different devices");
-    if (!predictionCount) return ok();
-    if (predictionCount > UINT32_MAX)
+    if (!outputCount) return ok();
+    if (outputCount > UINT32_MAX)
       return failure(2, "Metal MSE backward output exceeds grid limits");
 
     NSError *error = nil;
     AMCompute *context = compute(output.buffer.device, directory, &error);
     if (!context)
       return failure(9, error ? error.localizedDescription.UTF8String : "Metal queue or library unavailable");
-    NSString *name = @"math_mse_backward";
+    NSString *name = reduced ? @"math_mse_backward_reduce" : @"math_mse_backward";
     id<MTLComputePipelineState> pipeline = pipelineFor(context, name, &error);
     if (!pipeline)
       return failure(error ? 7 : 8,
                      error ? error.localizedDescription.UTF8String : "missing Metal MSE backward kernel");
-    const NSUInteger width = MIN((NSUInteger)256, pipeline.maxTotalThreadsPerThreadgroup);
-    if (!width) return failure(7, "Metal MSE backward pipeline has no supported threads");
-    const NSUInteger groupCount = (predictionCount + width - 1) / width;
-    if (groupCount > UINT32_MAX || groupCount * width > UINT32_MAX)
+    const NSUInteger width = reduced ? 256 : MIN((NSUInteger)256, pipeline.maxTotalThreadsPerThreadgroup);
+    if (!width || width > pipeline.maxTotalThreadsPerThreadgroup)
+      return failure(7, "Metal MSE backward pipeline cannot run its threadgroup");
+    const NSUInteger groupCount = reduced ? outputCount : (outputCount + width - 1) / width;
+    if (groupCount > UINT32_MAX || (!reduced && groupCount * width > UINT32_MAX))
       return failure(2, "Metal MSE backward grid exceeds index limits");
 
     AMStream *stream = nil;
     status = selectedStream(output.buffer.device, context.state, &stream);
     if (status.code) return status;
-    id<MTLCommandBuffer> command = [stream.queue commandBuffer];
-    if (!command) return failure(5, "cannot create Metal MSE backward command");
-    id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-    if (!encoder) return failure(5, "cannot create Metal MSE backward encoder");
-    command.label = name;
-    [encoder setComputePipelineState:pipeline];
-    [encoder setBuffer:upstream.buffer offset:0 atIndex:0];
-    [encoder setBuffer:prediction.buffer offset:0 atIndex:1];
-    [encoder setBuffer:target.buffer offset:0 atIndex:2];
-    [encoder setBuffer:output.buffer offset:0 atIndex:3];
-    [encoder setBytes:&ud length:sizeof(ud) atIndex:4];
-    [encoder setBytes:&pd length:sizeof(pd) atIndex:5];
-    [encoder setBytes:&td length:sizeof(td) atIndex:6];
-    [encoder setBytes:&od length:sizeof(od) atIndex:7];
-    [encoder dispatchThreadgroups:MTLSizeMake(groupCount, 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
-    [encoder endEncoding];
-
-    const uint64_t invocation = nextInvocation.fetch_add(1);
-    AMEvidence evidence = {invocation, output.buffer.device.registryID,
-                           0, 0, 0, 0, 2, 124};
-    NSMutableArray *leases = [NSMutableArray new];
-    [leases addObject:upstream];
-    [leases addObject:prediction];
-    if (target != prediction) [leases addObject:target];
-    if (output != upstream && output != prediction && output != target)
-      [leases addObject:output];
-    [leases addObject:pipeline];
-    status = submitCommand(stream, command, leases, output, invocation, evidence, 0, nullptr);
-    if (status.code) abandonBufferProducer(output, invocation);
-    return status;
+    @synchronized(stream.encodingLock) {
+      id<MTLCommandBuffer> command = mathCommandBuffer(stream);
+      if (!command) return failure(5, "cannot create Metal MSE backward command");
+      id<MTLComputeCommandEncoder> encoder = mathComputeEncoder(stream, command, output, false);
+      if (!encoder) return failure(5, "cannot create Metal MSE backward encoder");
+      const uint64_t invocation = nextInvocation.fetch_add(1);
+      AMEvidence evidence = {invocation, output.buffer.device.registryID,
+                             0, 0, 0, 0, 2, 124};
+      AMBuffer *__unsafe_unretained leases[4];
+      NSUInteger leaseCount = 0;
+      leases[leaseCount++] = upstream;
+      if (prediction != upstream) leases[leaseCount++] = prediction;
+      if (target != prediction && target != upstream) leases[leaseCount++] = target;
+      if (output != upstream && output != prediction && output != target)
+        leases[leaseCount++] = output;
+      status = admitMathCommand(stream, command, nil, output, evidence, pipeline,
+          leases, leaseCount);
+      if (status.code) return status;
+      @try {
+        flushPackedMath(stream, encoder);
+        orderMathAccess(stream, output, upstream, prediction, target);
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:upstream.buffer offset:0 atIndex:0];
+        [encoder setBuffer:prediction.buffer offset:0 atIndex:1];
+        [encoder setBuffer:target.buffer offset:0 atIndex:2];
+        [encoder setBuffer:output.buffer offset:0 atIndex:3];
+        [encoder setBytes:&ud length:sizeof(ud) atIndex:4];
+        [encoder setBytes:&pd length:sizeof(pd) atIndex:5];
+        [encoder setBytes:&td length:sizeof(td) atIndex:6];
+        [encoder setBytes:&od length:sizeof(od) atIndex:7];
+        [encoder dispatchThreadgroups:MTLSizeMake(groupCount, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+      } @catch (NSException *exception) {
+        return failMathEncoding(stream, invocation, exception.reason);
+      }
+      return finishMathEncoding(stream);
+    }
   }
 }
 
@@ -2095,6 +3069,8 @@ AMStatus am_memory_empty_cache(void *device) {
     AMStatus status = ok();
     AMDeviceState *state = memoryDeviceState(device, &status);
     if (!state) return status;
+    status = flushDeviceMathBatches(state.device);
+    if (status.code) return status;
     @synchronized(state) {
       while (evictOneCachedOwnerLocked(state)) {}
     }
@@ -2127,6 +3103,8 @@ AMStatus am_capture_start(void *deviceHandle, const char *path, void **out) {
     id<MTLDevice> device = deviceHandle
         ? (__bridge id<MTLDevice>)deviceHandle : MTLCopyAllDevices().firstObject;
     if (!device) return failure(5, "Metal capture device unavailable");
+    AMStatus status = flushDeviceMathBatches(device);
+    if (status.code) return status;
     NSString *outputPath = [NSString stringWithUTF8String:path];
     if (!outputPath || !outputPath.isAbsolutePath)
       return failure(5, "Metal GPU trace output path must be absolute");

@@ -7,7 +7,8 @@ proc reduce(t: MetalTensor[float32]; normalize: bool): MetalTensor[float32] =
   validateMetalView(t)
   var input = t
   while true:
-    let groups = max(1, input.size div 256 + int(input.size mod 256 != 0))
+    let groups = if input.size <= 65536: 1 else:
+      input.size div 256 + int(input.size mod 256 != 0)
     var shape: Metadata
     if groups != 1:
       shape.len = 1

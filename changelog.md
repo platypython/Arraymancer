@@ -1,6 +1,30 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Use cooperative native Metal dot/reduction kernels, packed and inner-span math,
+  direct MPS dense matrix products and one-dispatch broadcast matrix batches.
+  Keep signed strides, offsets, empty contractions and GPU-resident fallbacks.
+  Avoid duplicate ownership collections around MPS products while retaining dropped
+  inputs through completion.
+  Reuse up to three stream-local MPS layout descriptors without caching tensor storage.
+  Cache device-state lookups and immutable GPU addresses; label each math batch once.
+  Coalesce independent packed row products and compatible unary calls; execute
+  unary packet writes in per-element order, including reused destinations.
+- Fuse native Metal mean-MSE reductions and accumulate backward contributions
+  directly into requested operand shapes instead of expanded-gradient temporaries.
+- Batch default-stream built-in Metal math within 32 dispatches, 4 MiB of queued
+  output capacity or a 100-microsecond submission deadline. Preserve eager explicit
+  streams, per-invocation evidence, GPU lifetimes and synchronization/interop flushes.
+  Share completion publication across each physical batch while preserving
+  per-invocation errors and lifetime accounting. Track batch writes in compact
+  identity lists instead of separate producer-count and output-membership tables.
+- Borrow and atomically publish the loaded Metal ABI table instead of copying it
+  or taking the loader mutex on every native call; failed loads remain retryable.
+- Allocate small Apple Silicon buffers from budget-bounded, tracked automatic
+  Metal heaps. Account for whole heap capacities and reclaim empty heaps without
+  recycling storage still used by pending GPU work.
+- Reserve one packed vector for tiny GPU allocations so empty typed bindings pass
+  Metal API validation without changing their logical tensor capacities.
 - Fuse CPU MSE reductions over broadcast spans and accumulate requested gradients
   directly in their original shapes, without expanded-gradient temporaries.
 - Add storage-reusing `applyUnary` for float32 exp/ln/sqrt; allocating tensor

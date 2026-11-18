@@ -113,10 +113,8 @@ when defined(metal) or defined(coreai):
     dispatchMetalMath(p, t, squaredDifference, 23)
     if reduction == mseSum: squaredDifference.sum else: squaredDifference
 
-  proc mseBackward(upstream, prediction, target: MetalTensor[float32],
-                   reduction: MseReduction): MetalTensor[float32] =
+  proc mseBackward(upstream, prediction, target: MetalTensor[float32]): MetalTensor[float32] =
     let (p, t) = broadcast2(prediction, target)
-    if reduction == mseMean: return mse_backward_metal(upstream, p, t)
     result = p -. t
     dispatchMetalMath(result, upstream.broadcast(p.shape), result, 3)
     dispatchMetalMath(result, default(MetalTensor[float32]), result, 3, 2'f32, true)
@@ -137,13 +135,21 @@ proc mse_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
     if self.cache.requires_grad: result[0] = gradients.prediction
     if targetNeedsGrad: result[1] = gradients.target
   else:
+    when defined(metal) or defined(coreai):
+      if self.reduction == mseMean:
+        let (p, t) = broadcast2(self.cache.value, self.target)
+        if self.cache.requires_grad:
+          result[0] = mse_backward_reduced_metal(payload.variable.grad, p, t, self.cache.value.shape)
+        if targetNeedsGrad:
+          result[1] = mse_backward_reduced_metal(payload.variable.grad, t, p, self.target.shape)
+        return
     if self.cache.requires_grad:
-      let gradient = mseBackward(payload.variable.grad, self.cache.value, self.target, self.reduction)
+      let gradient = mseBackward(payload.variable.grad, self.cache.value, self.target)
       result[0] = reduce_broadcast_dims(gradient, self.cache.value.shape)
       if targetNeedsGrad:
         result[1] = reduce_broadcast_dims(-gradient, self.target.shape)
     elif targetNeedsGrad:
-      let gradient = mseBackward(payload.variable.grad, self.target, self.cache.value, self.reduction)
+      let gradient = mseBackward(payload.variable.grad, self.target, self.cache.value)
       result[1] = reduce_broadcast_dims(gradient, self.target.shape)
 
 proc mseLoss[TT](input: Variable[TT], target: TT, targetVariable: Variable[TT],
