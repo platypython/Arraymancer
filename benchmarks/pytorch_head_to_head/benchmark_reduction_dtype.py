@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Check and time all 132 CPU reduction dtype actions against pinned PyTorch.
+"""Check and time all 220 CPU reduction and scan dtype actions against pinned PyTorch.
 
 Build the native runner from the repository root with:
   nim c -d:release --path:src --out:build/reduction_dtype_runner benchmarks/pytorch_head_to_head/reduction_dtype_runner.nim
 Then run the full benchmark (no filters; optional --output and --runner):
   python benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.py
-The 22 input/output dtype groups each contain mean, mean_rows, mean_columns,
-sum, sum_rows and sum_columns. Each paired round alternates backend order; all
-100 samples of 50 allocating calls are retained. The aggregate gate requires
-every median and p95 to win in all three paired rounds. Inputs stay resident
-and explicit output-dtype casting is part of each timed reduction call.
+The 22 input/output dtype groups each contain ten actions: mean, mean_rows,
+mean_columns, sum, sum_rows, sum_columns, cumsum_rows, cumsum_columns,
+cumprod_rows and cumprod_columns. Each paired round alternates backend order;
+all 100 samples of 50 allocating calls are retained. The 220 actions produce
+1,320 median/p95 comparisons across three paired rounds, and every comparison
+must win. Inputs stay resident and explicit output-dtype casting is part of
+each timed reduction or scan call.
 """
 from __future__ import annotations
 
@@ -36,7 +38,10 @@ INPUT_DTYPES = (
 )
 INTEGER_DTYPES = frozenset(INPUT_DTYPES[:9])
 OUTPUT_DTYPES = ("float32", "float64")
-CASES = ("mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns")
+CASES = (
+    "mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns",
+    "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
+)
 TORCH_DTYPES: dict[str, torch.dtype] = {
     "bool": torch.bool, "int8": torch.int8, "int16": torch.int16, "int32": torch.int32,
     "int64": torch.int64, "uint8": torch.uint8, "uint16": torch.uint16,
@@ -61,17 +66,23 @@ SOURCE_PATHS = (
 
 
 def operation(name: str, value: torch.Tensor, output_dtype: str) -> Callable[[], torch.Tensor]:
-    """Resolve an allocating reduction call; keep casting inside the action."""
+    """Resolve an allocating reduction or scan; keep casting inside the action."""
     dtype = TORCH_DTYPES[output_dtype]
     if name in ("mean", "sum"):
         reducer = value.mean if name == "mean" else value.sum
         return lambda: reducer(dtype=dtype)
+    if name in ("cumsum_rows", "cumprod_rows"):
+        scanner = value.cumsum if name == "cumsum_rows" else value.cumprod
+        return lambda: scanner(dim=-1, dtype=dtype)
+    if name in ("cumsum_columns", "cumprod_columns"):
+        scanner = value.cumsum if name == "cumsum_columns" else value.cumprod
+        return lambda: scanner(dim=-2, dtype=dtype)
     if name in ("mean_rows", "sum_rows"):
         axis = -1
     elif name in ("mean_columns", "sum_columns"):
         axis = -2
     else:
-        raise ValueError(f"Unknown reduction action: {name}")
+        raise ValueError(f"Unknown reduction dtype action: {name}")
     reducer = value.mean if name.startswith("mean") else value.sum
     return lambda: reducer(dim=axis, keepdim=True, dtype=dtype)
 
@@ -141,7 +152,9 @@ def run_group(
             expected_dtype = str(reference.dtype).removeprefix("torch.")
             if actual.get("dtype") != expected_dtype:
                 raise RuntimeError(f"{group}/{name}: dtype mismatch")
-            actual_values = torch.tensor(actual["values"], dtype=reference.dtype)
+            actual_values = torch.tensor(
+                [float(value) for value in actual["values"]], dtype=reference.dtype,
+            )
             if actual_values.numel() != reference.numel():
                 raise RuntimeError(f"{group}/{name}: value count mismatch")
             actual_values = actual_values.reshape(actual["shape"])
@@ -173,7 +186,7 @@ def run_group(
             }
         return report
 
-    native()  # Validate all three native actions before timing competition.
+    native()  # Validate every native action before timing competition.
     rounds: list[dict[str, Any]] = []
     for index in range(3):
         order = "torch-first" if index % 2 == 0 else "arraymancer-first"

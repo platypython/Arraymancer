@@ -242,6 +242,70 @@ proc realDtype(inputs: JsonNode, operation: string): JsonNode =
       of "float64": realDtypeCase[float64](spec, operation)
       else: raise newException(ValueError, "unsupported " & operation & " dtype input: " & spec["dtype"].getStr)
 
+proc realDtypeSpecials[T](source: var Tensor[T], specials: JsonNode) =
+  for special in specials:
+    let index = special["index"].getInt
+    let value = case special["value"].getStr
+                of "nan": NaN
+                of "+inf": Inf
+                else: NegInf
+    when T is float32:
+      source.unsafe_raw_offset[index] = value.float32
+    elif T is float64:
+      source.unsafe_raw_offset[index] = value
+    else:
+      raise newException(ValueError, "nonfinite real dtype scan source must be floating point")
+
+proc realDtypeScanAxis[T, U](source: Tensor[T], axis: int, dtype: typedesc[U],
+                            operation: string, reverse: bool): Tensor[U] =
+  case operation
+  of "cumsum": result = source.cumsum(axis = axis, dtype = dtype, reverse = reverse)
+  of "cumprod": result = source.cumprod(axis = axis, dtype = dtype, reverse = reverse)
+  else: raise newException(ValueError, "unsupported real dtype scan: " & operation)
+
+proc realDtypeScanDirections[T, U](source: Tensor[T], axis: int, dtype: typedesc[U],
+                                  operation: string): JsonNode =
+  result = newJObject()
+  result["forward"] = tensorObservation(realDtypeScanAxis(source, axis, dtype, operation, false))
+  result["reverse"] = tensorObservation(realDtypeScanAxis(source, axis, dtype, operation, true))
+
+proc realDtypeScansCase[T](spec: JsonNode, operation: string): JsonNode =
+  var source =
+    when T is float32: realDtypeFloat32Tensor(spec)
+    elif T is float64: getTensor(spec)
+    else: getIntegerTensor[T](spec)
+  if spec.hasKey("nonfinite"):
+    realDtypeSpecials(source, spec["nonfinite"])
+  source = realDtypeLayout(source, spec["layout"].getStr)
+  result = newJObject()
+  result["axes"] = newJObject()
+  for axisNode in spec["axes"]:
+    let axis = axisNode.getInt
+    let key = $axis
+    result["axes"][key] = newJObject()
+    result["axes"][key]["float32"] =
+      realDtypeScanDirections[T, float32](source, axis, float32, operation)
+    result["axes"][key]["float64"] =
+      realDtypeScanDirections[T, float64](source, axis, float64, operation)
+
+proc realDtypeScans(inputs: JsonNode, operation: string): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = case spec["dtype"].getStr
+      of "bool": realDtypeScansCase[bool](spec, operation)
+      of "int8": realDtypeScansCase[int8](spec, operation)
+      of "int16": realDtypeScansCase[int16](spec, operation)
+      of "int32": realDtypeScansCase[int32](spec, operation)
+      of "int64": realDtypeScansCase[int64](spec, operation)
+      of "uint8": realDtypeScansCase[uint8](spec, operation)
+      of "uint16": realDtypeScansCase[uint16](spec, operation)
+      of "uint32": realDtypeScansCase[uint32](spec, operation)
+      of "uint64": realDtypeScansCase[uint64](spec, operation)
+      of "float32": realDtypeScansCase[float32](spec, operation)
+      of "float64": realDtypeScansCase[float64](spec, operation)
+      else: raise newException(ValueError, "unsupported " & operation & " dtype input: " & spec["dtype"].getStr)
+
+
 
 proc float64Layout(source: Tensor[float64], layout: string): Tensor[float64] =
   case layout
@@ -365,6 +429,10 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = realDtype(inputs, "mean")
   of "tensor.sum_dtype":
     result = realDtype(inputs, "sum")
+  of "tensor.cumsum_dtype":
+    result = realDtypeScans(inputs, "cumsum")
+  of "tensor.cumprod_dtype":
+    result = realDtypeScans(inputs, "cumprod")
   of "tensor.transpose_alias":
     var base = getTensor(inputs["a"])
     var view = base.transpose

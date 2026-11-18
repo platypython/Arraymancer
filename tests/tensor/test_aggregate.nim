@@ -752,6 +752,96 @@ proc main() =
         [[0], [0], [0]], [[0], [0], [0]]
       ].toTensor
 
+      test "Explicit scan dtypes cast before wide ordered carries":
+        let narrow = [16777217'i32, -16777216'i32].toTensor
+        check narrow.cumsum(dtype = float32) == [16777216'f32, 0].toTensor
+        check narrow.cumsum(dtype = float64) == [16777217.0, 1].toTensor
+        check narrow.asType(float64).cumsum(dtype = float32) ==
+          [16777216'f32, 0].toTensor
+        check [16777216'f32, 1, -16777216].toTensor.cumsum(dtype = float64) ==
+          [16777216.0, 16777217, 1].toTensor
+        let upper = [high(uint64), high(uint64)].toTensor
+        check upper.cumsum(dtype = float64) ==
+          [float64(high(uint64)), 2.0 * float64(high(uint64))].toTensor
+        let overflow = [1e20, 1e20, 1e-20].toTensor.cumprod(dtype = float32)
+        check overflow[1].classify == fcInf
+        check overflow[2] == float32(1e20)
+        let underflow = [1e-30, 1e-30, 1e30].toTensor.cumprod(dtype = float32)
+        check underflow[1] == 0'f32
+        check underflow[2] == float32(1e-30)
+
+      test "Explicit scan dtypes preserve packed tails and signed or broadcast views":
+        template checkScan(T, U: typedesc) =
+          block:
+            var owner = newTensor[T](107)
+            for index in 0 ..< 105:
+              when T is bool: owner[index + 1] = index mod 3 != 0
+              elif T is SomeUnsignedInt: owner[index + 1] = T(index mod 7 + 1)
+              elif T is SomeFloat: owner[index + 1] = T(float64(index mod 7 - 3) + 0.125)
+              else: owner[index + 1] = T(index mod 7 - 3)
+            let input = owner[1..105].reshape(3, 5, 7)
+            for view in [input, input[_, _, 6..0|-1],
+                         input[0..0, _, _].broadcast(3, 5, 7)]:
+              for axis in 0 ..< 3:
+                for reverse in [false, true]:
+                  let summed = view.cumsum(axis - 3, dtype = U, reverse = reverse)
+                  let multiplied = view.cumprod(axis - 3, dtype = U, reverse = reverse)
+                  check summed.shape == [3, 5, 7]
+                  check multiplied.shape == [3, 5, 7]
+                  for i in 0 ..< 3:
+                    for j in 0 ..< 5:
+                      for k in 0 ..< 7:
+                        var coordinate = [i, j, k]
+                        let last = coordinate[axis]
+                        var expectedSum = 0.0
+                        var expectedProduct = 1.0
+                        let count = if reverse: view.shape[axis] - last else: last + 1
+                        for step in 0 ..< count:
+                          coordinate[axis] = if reverse: view.shape[axis] - 1 - step else: step
+                          when T is bool:
+                            let value = float64(U(ord(view[coordinate[0], coordinate[1], coordinate[2]])))
+                          else:
+                            let value = float64(U(view[coordinate[0], coordinate[1], coordinate[2]]))
+                          expectedSum += value
+                          expectedProduct *= value
+                        check summed[i, j, k] == U(expectedSum)
+                        check multiplied[i, j, k] == U(expectedProduct)
+        template checkType(T: typedesc) =
+          checkScan(T, float32)
+          checkScan(T, float64)
+        checkType(bool)
+        checkType(int8)
+        checkType(int16)
+        checkType(int32)
+        checkType(int64)
+        checkType(uint8)
+        checkType(uint16)
+        checkType(uint32)
+        checkType(uint64)
+        checkType(float32)
+        checkType(float64)
+
+      test "Explicit scan dtypes preserve scalar signs, empty axes and output independence":
+        let scalar = newTensorWith[float64]([], -0.0)
+        for axis in [0, -1]:
+          let summed = scalar.cumsum(axis, dtype = float32)
+          let multiplied = scalar.cumprod(axis, dtype = float32)
+          check summed.rank == 0
+          check multiplied.rank == 0
+          check summed.atContiguousIndex(0).classify == fcNegZero
+          check multiplied.atContiguousIndex(0).classify == fcNegZero
+        check [-0.0].toTensor.cumsum(dtype = float32)[0].classify == fcZero
+        check [-0.0].toTensor.cumprod(dtype = float32)[0].classify == fcNegZero
+        for axis in 0 ..< 3:
+          check newTensor[uint32](2, 0, 3).cumsum(axis, dtype = float64).shape == [2, 0, 3]
+          check newTensor[bool](2, 0, 3).cumprod(axis, dtype = float32).shape == [2, 0, 3]
+        expect ValueError: discard scalar.cumsum(1, dtype = float32)
+        expect ValueError: discard newTensor[int8](2, 0).cumprod(-3, dtype = float64)
+        let source = [1, 2, 3].toTensor
+        var output = source.cumsum(dtype = float64)
+        output[0] = 99
+        check source[0] == 1
+
       test "cumsum":
         let a = [[0, 4, 7],
                  [1, 9, 5],

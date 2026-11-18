@@ -26,5 +26,17 @@ integer and boolean sums promote to wrapping int64.
 Axis reductions keep the reduced dimension with length one. Empty sums produce
 zeros and empty floating means produce NaNs; other empty dimensions remain empty.
 
+``cumsum`` and ``cumprod`` also accept explicit floating dtypes for real CPU
+inputs. They retain the input shape, cast each value before accumulating, and
+round each prefix from an ordered float64 carry. An overflowed float32 output
+does not replace that carry. Negative axes, strided views and ``reverse = true``
+are supported; the output is independent of its input.
+
+.. code-block:: nim
+
+   let precise = [16777217'i32, -16777216'i32].toTensor
+   doAssert precise.cumsum(dtype = float32) == [16777216'f32, 0].toTensor
+   doAssert precise.cumsum(dtype = float64) == [16777217.0, 1].toTensor
+
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

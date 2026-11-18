@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add explicit float32/float64 output dtypes to CPU real-valued cumulative sums
+  and products. Cast signed/broadcast views on read, retain ordered float64
+  carries after rounded stores, and preserve scalar signs and empty shapes.
+  Share packed ARM64 scan kernels across source dtypes without conversion buffers.
 - Add explicit float32/float64 output dtypes to CPU real-valued sums, sharing
   cast-on-read reduction kernels with means. Preserve scalar/empty identities,
   numeric unsigned conversions and signed/broadcast input views.

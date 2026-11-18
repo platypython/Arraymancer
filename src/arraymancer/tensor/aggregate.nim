@@ -745,20 +745,20 @@ proc iqr*[T](arg: Tensor[T]): float =
   result = percentile(tS, 75, isSorted = true) -
            percentile(tS, 25, isSorted = true)
 
-proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
-                promoteIntegers: static[bool] = true;
-                reverse: bool = false): Tensor[sumProductElement(T, promoteIntegers)] =
-  ## Promote integers while reading; float32 carries stay wide after rounded stores.
+proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
+                   dtype: typedesc[U]; promoteIntegers: static[bool] = true;
+                   reverse: bool = false): Tensor[U] =
+  ## Cast on read; floating carries stay wide after rounded output stores.
   mixin _
-  type U = sumProductElement(T, promoteIntegers)
   template scanValue(value: untyped): untyped =
-    when not promoteIntegers: value
+    when U is SomeFloat: convertedReductionValue(value, U)
+    elif not promoteIntegers: value
     elif T is SomeInteger or T is bool: promotedInteger(value)
     else: value
-  when T is float32 or T is float64:
+  when U is SomeFloat:
     const identity = when multiply: 1.0 else: 0.0
   template accumulate(acc, value: untyped) =
-    when promoteIntegers and (T is SomeInteger or T is bool):
+    when promoteIntegers and (T is SomeInteger or T is bool) and U isnot SomeFloat:
       when multiply: acc = acc *% value
       else: acc = acc +% value
     else:
@@ -800,16 +800,16 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
     else:
       output[int(index)] = value
 
-  when T is float32 or T is float64:
+  when U is SomeFloat:
     if arg.is_C_contiguous:
-      when defined(macosx) and defined(arm64) and T is float32:
+      when defined(macosx) and defined(arm64) and U is float32:
         if reverse:
           scanPackedFloat32(addr output[0], unsafeAddr inputData[arg.offset],
                             outer, axisLength, inner, multiply, true)
         else:
           scanPackedFloat32(addr output[0], unsafeAddr inputData[arg.offset],
                             outer, axisLength, inner, multiply, false)
-      elif defined(macosx) and defined(arm64) and T is float64:
+      elif defined(macosx) and defined(arm64) and U is float64:
         if reverse:
           scanPackedFloat64(addr output[0], unsafeAddr inputData[arg.offset],
                             outer, axisLength, inner, multiply, true)
@@ -825,8 +825,8 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
           for step in 0'u ..< axisLength:
             let coordinate = scanCoordinate(step)
             let flat = outputBase + coordinate * inner
-            accumulate(accumulated, float64(inputData[inputOffset + flat]))
-            output[flat] = T(accumulated)
+            accumulate(accumulated, float64(scanValue(inputData[inputOffset + flat])))
+            output[flat] = U(accumulated)
       return
   elif T is SomeInteger or T is bool:
     if arg.is_C_contiguous:
@@ -863,13 +863,13 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
   var group = 0'u
   while group < groupCount:
     let outputBase = (group div inner) * axisLength * inner + group mod inner
-    when T is float32 or T is float64:
+    when U is SomeFloat:
       var accumulated = identity
       for step in 0'u ..< axisLength:
         let coordinate = scanCoordinate(step)
         accumulate(accumulated,
-                   float64(inputData[inputBase + int(coordinate) * arg.strides[scanAxis]]))
-        writeOutput(outputBase + coordinate * inner, T(accumulated))
+                   float64(scanValue(inputData[inputBase + int(coordinate) * arg.strides[scanAxis]])))
+        writeOutput(outputBase + coordinate * inner, U(accumulated))
     else:
       var accumulated: U
       var hasValue = false
@@ -906,7 +906,7 @@ proc cumsum*[T](arg: Tensor[T], axis: int = 0;
   ## Float32 prefixes accumulate in float64 before rounding each output.
   ## Integers and booleans promote to int64 with modulo-2^64 arithmetic;
   ## other element types retain their type and ordinary ``+`` operation.
-  scanCPU(arg, axis, false, reverse = reverse)
+  scanCPU(arg, axis, false, sumProductElement(T), reverse = reverse)
 
 proc cumprod*[T](arg: Tensor[T], axis: int = 0;
                  reverse: bool = false): Tensor[sumProductElement(T)] =
@@ -920,7 +920,23 @@ proc cumprod*[T](arg: Tensor[T], axis: int = 0;
   ## output does not replace the wider carry. Integers and booleans promote
   ## to int64 with modulo-2^64 arithmetic; other types retain their type
   ## and ordinary ``*`` operation.
-  scanCPU(arg, axis, true, reverse = reverse)
+  scanCPU(arg, axis, true, sumProductElement(T), reverse = reverse)
+
+proc cumsum*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T], axis: int = 0;
+    dtype: typedesc[U]; reverse: bool = false): Tensor[U] =
+  ## Inclusive sums after casting each real input to the floating ``dtype``.
+  ## Float64 carries survive rounded stores; unsigned values convert numerically.
+  ## Only the independent output is allocated. Views, scalar/negative axes,
+  ## empty shapes and ``reverse`` follow the default-dtype cumulative sum.
+  scanCPU(arg, axis, false, U, reverse = reverse)
+
+proc cumprod*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T], axis: int = 0;
+    dtype: typedesc[U]; reverse: bool = false): Tensor[U] =
+  ## Inclusive products after casting each real input to the floating ``dtype``.
+  ## Float64 carries survive rounded output overflow and underflow.
+  ## Unsigned values convert numerically. Only the independent output is allocated.
+  ## Views, scalar/negative axes, empty shapes and ``reverse`` follow ``cumprod``.
+  scanCPU(arg, axis, true, U, reverse = reverse)
 
 proc diff_discrete*[T](arg: Tensor[T], n=1, axis: int = -1): Tensor[T] =
   ## Calculate the n-th discrete difference along the given axis.
@@ -1028,7 +1044,7 @@ proc unwrap_period*[T: SomeNumber](t: Tensor[T], discont: T = -1, axis = -1, per
   ph_correct[abs(td) <. discont] = 0
   result = t.clone()
   # Phase correction retains unwrap's input dtype without a conversion buffer.
-  let ph_correct_cumsum = scanCPU(ph_correct, axis, false, false)
+  let ph_correct_cumsum = scanCPU(ph_correct, axis, false, T, false)
   if t.rank == 1:
     result[1.._] = t[1.._] +. ph_correct_cumsum
   else:

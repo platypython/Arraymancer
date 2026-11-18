@@ -1,9 +1,12 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
-## Measures allocating CPU reductions with explicit float32/float64 output dtypes.
+## Measures allocating CPU reductions and cumulative scans with explicit float32/float64 output dtypes.
 import std/[algorithm, json, math, monotimes, os, times]
 import arraymancer
 
-const cases = ["mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns"]
+const cases = [
+  "mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns",
+  "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
+]
 
 proc nativeValue[T](word: int64): T =
   ## Match Torch's signed-word cast, including unsigned wraparound.
@@ -42,6 +45,10 @@ proc execute[InputT, OutputT](name: string; input: Tensor[InputT]): Tensor[Outpu
   of "sum": newTensorWith[OutputT]([], input.sum(dtype = OutputT))
   of "sum_rows": input.sum(-1, dtype = OutputT)
   of "sum_columns": input.sum(-2, dtype = OutputT)
+  of "cumsum_rows": input.cumsum(-1, dtype = OutputT)
+  of "cumsum_columns": input.cumsum(-2, dtype = OutputT)
+  of "cumprod_rows": input.cumprod(-1, dtype = OutputT)
+  of "cumprod_columns": input.cumprod(-2, dtype = OutputT)
   else: raise newException(ValueError, "Unknown reduction dtype action: " & name)
 
 proc dtypeName[T](): string =
@@ -57,6 +64,13 @@ proc dtypeName[T](): string =
   elif T is float32: "float32"
   elif T is float64: "float64"
   else: {.error: "Unsupported reduction dtype".}
+proc jsonFloat(value: float64): JsonNode =
+  ## JSON has no non-finite numeric literals; use explicit tokens for exact values.
+  if value.isNaN: newJString("NaN")
+  elif value == Inf: newJString("+Inf")
+  elif value == NegInf: newJString("-Inf")
+  else: %value
+
 proc observe[T](input: Tensor[T]; inputDtype: string): JsonNode =
   let dtype = dtypeName[T]()
   var shape = newJArray()
@@ -64,7 +78,7 @@ proc observe[T](input: Tensor[T]; inputDtype: string): JsonNode =
     shape.add %dimension
   var values = newJArray()
   for value in input:
-    values.add %float64(value)
+    values.add jsonFloat(float64(value))
   %*{"input_dtype": inputDtype, "dtype": dtype, "shape": shape, "values": values}
 
 proc consume[T](input: Tensor[T]) =

@@ -49,6 +49,8 @@ when defined(macosx):
       raw: array[2, float32]
     type Float64x2 {.importc: "float64x2_t", bycopy, header: "<arm_neon.h>".} = object
       raw: array[2, float64]
+    proc vld1_f32(input: ptr float32): Float32x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
     proc vdup_n_f32(value: float32): Float32x2
       {.importc, nodecl, header: "<arm_neon.h>".}
     proc vset_lane_f32(value: float32; vector: Float32x2; lane: cint): Float32x2
@@ -192,14 +194,17 @@ when defined(macosx):
           when average: value /= float32(axisLength)
           destination[outputBase + tail] = value
 
-    proc scanPackedFloat32*(output, input: ptr float32;
-                           outer, axisLength, inner: uint;
+    proc scanPackedFloat32*[T](output: ptr float32; input: ptr T;
+                              outer, axisLength, inner: uint;
                            multiply, reverse: static[bool]) =
       ## Scan disjoint packed spans, preserving sequential float64 accumulation.
       ## SIMD lanes are separate scans, never reassociated prefixes of one scan.
       withCompilerOptimHints()
       let destination {.restrict.} = cast[ptr UncheckedArray[float32]](output)
-      let source = cast[ptr UncheckedArray[float32]](input)
+      let source = cast[ptr UncheckedArray[T]](input)
+      template inputValue(index: uint): float32 =
+        when T is bool: float32(ord(source[index]))
+        else: float32(source[index])
       const identity = when multiply: 1.0 else: 0.0
       template combine(a, b: Float64x2): Float64x2 =
         when multiply: vmulq_f64(a, b)
@@ -218,10 +223,10 @@ when defined(macosx):
           var high = low
           for step in 0'u ..< axisLength:
             let index = coordinate(step)
-            let a = vset_lane_f32(source[base1 + index],
-                                 vdup_n_f32(source[base0 + index]), 1)
-            let b = vset_lane_f32(source[base3 + index],
-                                 vdup_n_f32(source[base2 + index]), 1)
+            let a = vset_lane_f32(inputValue(base1 + index),
+                                 vdup_n_f32(inputValue(base0 + index)), 1)
+            let b = vset_lane_f32(inputValue(base3 + index),
+                                 vdup_n_f32(inputValue(base2 + index)), 1)
             low = combine(low, vcvt_f64_f32(a))
             high = combine(high, vcvt_f64_f32(b))
             let packedLow = vcvt_f32_f64(low)
@@ -236,8 +241,8 @@ when defined(macosx):
           var accumulated = identity
           for step in 0'u ..< axisLength:
             let index = base + coordinate(step)
-            when multiply: accumulated *= float64(source[index])
-            else: accumulated += float64(source[index])
+            when multiply: accumulated *= float64(inputValue(index))
+            else: accumulated += float64(inputValue(index))
             destination[index] = float32(accumulated)
         return
       for group in 0'u ..< outer:
@@ -248,9 +253,21 @@ when defined(macosx):
           var high = low
           for step in 0'u ..< axisLength:
             let index = base + coordinate(step) * inner + column
-            let values = vld1q_f32(unsafeAddr source[index])
-            low = combine(low, vcvt_f64_f32(vget_low_f32(values)))
-            high = combine(high, vcvt_f64_f32(vget_high_f32(values)))
+            when T is float32:
+              let values = vld1q_f32(unsafeAddr source[index])
+              let a = vget_low_f32(values)
+              let b = vget_high_f32(values)
+            elif T is int32 or T is uint32 or T is float64:
+              let values = loadConvertedFloat32x4(source, index)
+              let a = vget_low_f32(values)
+              let b = vget_high_f32(values)
+            else:
+              let a = vset_lane_f32(inputValue(index + 1),
+                                   vdup_n_f32(inputValue(index)), 1)
+              let b = vset_lane_f32(inputValue(index + 3),
+                                   vdup_n_f32(inputValue(index + 2)), 1)
+            low = combine(low, vcvt_f64_f32(a))
+            high = combine(high, vcvt_f64_f32(b))
             vst1q_f32(addr destination[index],
                      vcombine_f32(vcvt_f32_f64(low), vcvt_f32_f64(high)))
           column += 4
@@ -258,17 +275,20 @@ when defined(macosx):
           var accumulated = identity
           for step in 0'u ..< axisLength:
             let index = base + coordinate(step) * inner + tail
-            when multiply: accumulated *= float64(source[index])
-            else: accumulated += float64(source[index])
+            when multiply: accumulated *= float64(inputValue(index))
+            else: accumulated += float64(inputValue(index))
             destination[index] = float32(accumulated)
 
-    proc scanPackedFloat64*(output, input: ptr float64;
-                           outer, axisLength, inner: uint;
+    proc scanPackedFloat64*[T](output: ptr float64; input: ptr T;
+                              outer, axisLength, inner: uint;
                            multiply, reverse: static[bool]) =
       ## Vectorize independent scans while retaining each scan's ordered carry.
       withCompilerOptimHints()
       let destination {.restrict.} = cast[ptr UncheckedArray[float64]](output)
-      let source = cast[ptr UncheckedArray[float64]](input)
+      let source = cast[ptr UncheckedArray[T]](input)
+      template inputValue(index: uint): float64 =
+        when T is bool: float64(ord(source[index]))
+        else: float64(source[index])
       const identity = when multiply: 1.0 else: 0.0
       template combine(a, b: Float64x2): Float64x2 =
         when multiply: vmulq_f64(a, b)
@@ -286,8 +306,8 @@ when defined(macosx):
             var accumulated = vdupq_n_f64(identity)
             for step in 0'u ..< axisLength:
               let index = coordinate(step)
-              var values = vdupq_n_f64(source[base0 + index])
-              values = vsetq_lane_f64(source[base1 + index], values, 1)
+              var values = vdupq_n_f64(inputValue(base0 + index))
+              values = vsetq_lane_f64(inputValue(base1 + index), values, 1)
               accumulated = combine(accumulated, values)
               destination[base0 + index] = vgetq_lane_f64(accumulated, 0)
               destination[base1 + index] = vgetq_lane_f64(accumulated, 1)
@@ -297,8 +317,8 @@ when defined(macosx):
           var accumulated = identity
           for step in 0'u ..< axisLength:
             let index = base + coordinate(step)
-            when multiply: accumulated *= source[index]
-            else: accumulated += source[index]
+            when multiply: accumulated *= inputValue(index)
+            else: accumulated += inputValue(index)
             destination[index] = accumulated
         return
 
@@ -310,16 +330,22 @@ when defined(macosx):
             var accumulated = vdupq_n_f64(identity)
             for step in 0'u ..< axisLength:
               let index = base + coordinate(step) * inner + column
-              accumulated = combine(accumulated,
-                                    vld1q_f64(unsafeAddr source[index]))
+              when T is float64:
+                let values = vld1q_f64(unsafeAddr source[index])
+              elif T is float32:
+                let values = vcvt_f64_f32(vld1_f32(unsafeAddr source[index]))
+              else:
+                var values = vdupq_n_f64(inputValue(index))
+                values = vsetq_lane_f64(inputValue(index + 1), values, 1)
+              accumulated = combine(accumulated, values)
               vst1q_f64(addr destination[index], accumulated)
             column += 2
         for tail in column ..< inner:
           var accumulated = identity
           for step in 0'u ..< axisLength:
             let index = base + coordinate(step) * inner + tail
-            when multiply: accumulated *= source[index]
-            else: accumulated += source[index]
+            when multiply: accumulated *= inputValue(index)
+            else: accumulated += inputValue(index)
             destination[index] = accumulated
 
     proc cumprodGradientPackedColumnsFloat32*(
@@ -477,6 +503,42 @@ when defined(macosx):
         template combine(a, b: Float64x2): Float64x2 =
           when multiply: vmulq_f64(a, b)
           else: vaddq_f64(a, b)
+        when not multiply:
+          # Adjacent output pairs share each row visit without regrouping terms.
+          while column + 4 <= inner:
+            var a0 = vdupq_n_f64(identity)
+            var b0 = a0
+            var c0 = a0
+            var d0 = a0
+            var a1 = a0
+            var b1 = a0
+            var c1 = a0
+            var d1 = a0
+            var row = 0'u
+            while row + 4 <= axisLength:
+              let base = inputBase + row * inner + column
+              a0 = vaddq_f64(a0, vld1q_f64(unsafeAddr source[base]))
+              a1 = vaddq_f64(a1, vld1q_f64(unsafeAddr source[base + 2]))
+              b0 = vaddq_f64(b0, vld1q_f64(unsafeAddr source[base + inner]))
+              b1 = vaddq_f64(b1, vld1q_f64(unsafeAddr source[base + inner + 2]))
+              c0 = vaddq_f64(c0, vld1q_f64(unsafeAddr source[base + 2 * inner]))
+              c1 = vaddq_f64(c1, vld1q_f64(unsafeAddr source[base + 2 * inner + 2]))
+              d0 = vaddq_f64(d0, vld1q_f64(unsafeAddr source[base + 3 * inner]))
+              d1 = vaddq_f64(d1, vld1q_f64(unsafeAddr source[base + 3 * inner + 2]))
+              row += 4
+            var value0 = vaddq_f64(vaddq_f64(a0, b0), vaddq_f64(c0, d0))
+            var value1 = vaddq_f64(vaddq_f64(a1, b1), vaddq_f64(c1, d1))
+            for tail in row ..< axisLength:
+              let base = inputBase + tail * inner + column
+              value0 = vaddq_f64(value0, vld1q_f64(unsafeAddr source[base]))
+              value1 = vaddq_f64(value1, vld1q_f64(unsafeAddr source[base + 2]))
+            when average:
+              let divisor = vdupq_n_f64(float64(axisLength))
+              value0 = vdivq_f64(value0, divisor)
+              value1 = vdivq_f64(value1, divisor)
+            vst1q_f64(addr destination[outputBase + column], value0)
+            vst1q_f64(addr destination[outputBase + column + 2], value1)
+            column += 4
         while column + 2 <= inner:
           var a = vdupq_n_f64(identity)
           var b = a

@@ -22,6 +22,9 @@ proc withoutFirst(node: JsonNode): JsonNode =
   result = newJArray()
   for i in 1 ..< node.len: result.add(node[i])
 
+
+proc isNegativeZero(value: JsonNode): bool =
+  value.kind == JFloat and (cast[uint64](value.getFloat) shr 63) == 1'u64
 suite "Pinned PyTorch conformance foundation":
   let reference = loadReference(parityRoot & "reference.json")
   let inventory = parseFile(parityRoot & "inventory.json")
@@ -144,6 +147,112 @@ suite "Pinned PyTorch conformance foundation":
     malformed = duplicate(fixtures)
     malformed["cases"][sumCaseIndex]["expected"]["int8"]["all"]["float32"]["dtype"] = %"float64"
     expect ValueError: validateFixtureData(malformed, reference)
+
+
+  test "Explicit cumulative dtype scans cover output dtypes, direction and edge values":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var cumsumCase = newJNull()
+    var cumprodCase = newJNull()
+    for caseData in fixtures["cases"]:
+      case caseData["id"].getStr
+      of "tensor.cumsum_dtype": cumsumCase = caseData
+      of "tensor.cumprod_dtype": cumprodCase = caseData
+      else: discard
+    doAssert cumsumCase.kind == JObject and cumprodCase.kind == JObject
+    for scanCase in [cumsumCase, cumprodCase]:
+      for name in ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+          "uint64", "float32", "float64", "float32_wide_scan", "float64_overflow",
+          "float64_underflow", "nonfinite", "scalar_negative_zero", "vector_negative_zero"]:
+        check scanCase["inputs"].hasKey(name)
+
+    let cumsumExpected = cumsumCase["expected"]
+    check cumsumExpected["float64_precision"]["axes"]["0"]["float32"]["forward"]["values"][0].getFloat ==
+      16777216.0
+    check cumsumExpected["float32_wide_scan"]["axes"]["0"]["float64"]["forward"]["values"][1].getFloat ==
+      16777217.0
+    check cumsumExpected["float32_wide_scan"]["axes"]["0"]["float64"]["forward"]["values"][2].getFloat ==
+      1.0
+    check cumsumExpected["nonfinite"]["axes"]["0"]["float64"]["forward"]["values"][1].getStr ==
+      "+inf"
+    check cumsumExpected["nonfinite"]["axes"]["0"]["float64"]["forward"]["values"][2].getStr ==
+      "nan"
+
+    let cumsumActual = runCase(cumsumCase)
+    check cumsumActual["float32_wide_scan"]["axes"]["0"]["float64"]["forward"]["values"][1].getFloat ==
+      16777217.0
+    check cumsumActual["float32_wide_scan"]["axes"]["0"]["float64"]["forward"]["values"][2].getFloat ==
+      1.0
+    check cumsumActual["float64_precision"]["axes"]["0"]["float32"]["forward"]["values"][0].getFloat ==
+      16777216.0
+    check cumsumActual["float64_precision"]["axes"]["0"]["float32"]["forward"]["values"][1].getFloat ==
+      0.0
+
+
+    let cumprodExpected = cumprodCase["expected"]
+    check cumprodExpected["float64_overflow"]["axes"]["0"]["float32"]["forward"]["values"][1].getStr ==
+      "+inf"
+    check cumprodExpected["float64_overflow"]["axes"]["0"]["float32"]["forward"]["values"][2].getFloat >
+      9.9e19
+    check cumprodExpected["float64_overflow"]["axes"]["0"]["float32"]["forward"]["values"][2].getFloat <
+      1.1e20
+    check cumprodExpected["float64_underflow"]["axes"]["0"]["float32"]["forward"]["values"][1].getFloat ==
+      0.0
+    check runCase(cumprodCase)["float64_underflow"]["axes"]["0"]["float32"]["forward"]["values"][2].getFloat >
+      0.0
+    check cumprodExpected["float64_underflow"]["axes"]["0"]["float32"]["forward"]["values"][2].getFloat >
+      0.0
+
+    for scanCase in [cumsumCase, cumprodCase]:
+      let actual = runCase(scanCase)
+      let operation = if scanCase["id"].getStr == "tensor.cumsum_dtype": "cumsum" else: "cumprod"
+      for dtype in ["float32", "float64"]:
+        for axis in ["0", "-1"]:
+          let expectedScalar = scanCase["expected"]["scalar_negative_zero"]["axes"][axis][dtype]
+          let actualScalar = actual["scalar_negative_zero"]["axes"][axis][dtype]
+          check isNegativeZero(expectedScalar["forward"]["values"][0])
+          check isNegativeZero(expectedScalar["reverse"]["values"][0])
+          check isNegativeZero(actualScalar["forward"]["values"][0])
+          check isNegativeZero(actualScalar["reverse"]["values"][0])
+          for direction in ["forward", "reverse"]:
+            let expectedVector =
+              scanCase["expected"]["vector_negative_zero"]["axes"][axis][dtype][direction]["values"][0]
+            let actualVector = actual["vector_negative_zero"]["axes"][axis][dtype][direction]["values"][0]
+            check expectedVector.getFloat == 0.0
+            check actualVector.getFloat == 0.0
+            if operation == "cumsum":
+              check not isNegativeZero(expectedVector)
+              check not isNegativeZero(actualVector)
+            else:
+              check isNegativeZero(expectedVector)
+              check isNegativeZero(actualVector)
+
+  test "Reject malformed explicit cumulative dtype scan fixtures":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    for operation in ["tensor.cumsum_dtype", "tensor.cumprod_dtype"]:
+      var scanCaseIndex = -1
+      for index in 0 ..< fixtures["cases"].len:
+        if fixtures["cases"][index]["id"].getStr == operation:
+          scanCaseIndex = index
+      doAssert scanCaseIndex >= 0
+
+      var malformed = duplicate(fixtures)
+      malformed["cases"][scanCaseIndex]["expected"]["int8"]["axes"]["0"]["float32"]["reverse"] =
+        newJNull()
+      expect ValueError: validateFixtureData(malformed, reference)
+
+      malformed = duplicate(fixtures)
+      malformed["cases"][scanCaseIndex]["expected"]["int8"]["axes"]["0"]["float32"]["forward"]["shape"] =
+        %*[3]
+      expect ValueError: validateFixtureData(malformed, reference)
+
+      malformed = duplicate(fixtures)
+      malformed["cases"][scanCaseIndex]["expected"]["int8"]["axes"]["0"]["float32"]["forward"]["dtype"] =
+        %"float64"
+      expect ValueError: validateFixtureData(malformed, reference)
+
+      malformed = duplicate(fixtures)
+      malformed["cases"][scanCaseIndex]["inputs"]["nonfinite"]["nonfinite"][0]["value"] = %"nan"
+      expect ValueError: validateFixtureData(malformed, reference)
 
 
   test "Float64 reductions cover CPU layouts, precision, and seeded VJPs":

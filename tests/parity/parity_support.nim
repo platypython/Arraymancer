@@ -59,7 +59,7 @@ const
     "autograd.unary_math", "autograd.activation_math", "tensor.reduction_edges",
     "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient",
     "tensor.integer_scans", "tensor.integer_reductions", "tensor.float64_reductions",
-    "tensor.mean_dtype", "tensor.sum_dtype"]
+    "tensor.mean_dtype", "tensor.sum_dtype", "tensor.cumsum_dtype", "tensor.cumprod_dtype"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
@@ -67,7 +67,7 @@ const
     "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
     "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
     "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch", "api:autograd",
-    "api:torch", "api:torch"]
+    "api:torch", "api:torch", "api:torch", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -642,57 +642,82 @@ proc realDtypeOutputShape(shape: seq[int], axis: int): seq[int] =
   if normalized < 0: normalized += shape.len
   result[normalized] = 1
 
-proc expectRealDtypeInputs(inputs: JsonNode) =
-  let names = ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+const
+  RealDtypeInputNames = ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
     "uint64", "float32", "float64", "float64_precision", "uint64_upper", "packed_odd",
     "transpose", "offset", "reverse", "broadcast", "scalar", "empty"]
+  RealDtypeScanExtraNames = ["float32_wide_scan", "float64_overflow", "float64_underflow",
+    "nonfinite", "scalar_negative_zero", "vector_negative_zero"]
+
+proc expectRealDtypeInput(spec: JsonNode, name: string) =
+  require(spec.kind == JObject and spec.len == (if name == "nonfinite": 6 else: 5),
+    "real dtype input fields are incomplete for " & name)
   let integerDtypes = ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
-  require(inputs.kind == JObject and inputs.len == names.len,
+  let expectedDtype = case name
+    of "float32", "float32_wide_scan": "float32"
+    of "float64", "float64_precision", "float64_overflow", "float64_underflow",
+        "nonfinite", "scalar_negative_zero", "vector_negative_zero": "float64"
+    of "uint64_upper", "empty": "uint64"
+    of "packed_odd": "int16"
+    of "transpose": "uint16"
+    of "offset": "uint32"
+    of "reverse", "scalar": "int64"
+    of "broadcast": "uint8"
+    else: name
+  let dtype = text(field(spec, "dtype"), "real dtype input dtype")
+  require(dtype == expectedDtype, "real dtype mismatch for " & name)
+  let expectedShape = case name
+    of "offset": @[3, 4]
+    of "reverse": @[5]
+    of "float64_precision", "uint64_upper": @[2]
+    of "packed_odd": @[3, 5]
+    of "broadcast": @[1, 3]
+    of "scalar", "scalar_negative_zero": @[]
+    of "empty": @[2, 0, 3]
+    of "float32_wide_scan", "float64_overflow", "float64_underflow": @[3]
+    of "nonfinite": @[4]
+    of "vector_negative_zero": @[1]
+    else: @[2, 3]
+  require(field(spec, "shape") == jsonShape(expectedShape),
+    "real dtype input shape mismatch for " & name)
+  let expectedLayout = if name == "float64": "transpose"
+    elif name in ["transpose", "offset", "reverse", "broadcast"]: name
+    else: "identity"
+  require(text(field(spec, "layout"), "real dtype input layout") == expectedLayout,
+    "real dtype input layout mismatch for " & name)
+  let expectedAxes = case name
+    of "empty": @[0, 1, 2, -1]
+    of "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+        "uint64", "float32", "float64", "packed_odd", "broadcast": @[0, 1, -1]
+    else: @[0, -1]
+  var axes = newJArray()
+  for axis in expectedAxes: axes.add newJInt(axis)
+  require(field(spec, "axes") == axes, "real dtype axis coverage mismatch for " & name)
+  if dtype in integerDtypes:
+    expectIntegerWordsInput(spec, "real dtype " & name, false)
+  else:
+    expectInputTensor(spec)
+  if name == "nonfinite":
+    let specials = field(spec, "nonfinite")
+    require(specials.kind == JArray and specials.len == 2 and
+      specials[0] == %*{"index": 1, "value": "+inf"} and
+      specials[1] == %*{"index": 2, "value": "-inf"},
+      "nonfinite real dtype scan specials do not match the required source values")
+  else:
+    require(not spec.hasKey("nonfinite"), "unexpected nonfinite real dtype input " & name)
+
+proc expectRealDtypeInputs(inputs: JsonNode, includeScanExtras = false) =
+  let expectedCount = RealDtypeInputNames.len +
+    (if includeScanExtras: RealDtypeScanExtraNames.len else: 0)
+  require(inputs.kind == JObject and inputs.len == expectedCount,
     "real dtype inputs do not match required cases")
-  for name in names:
+  for name in RealDtypeInputNames:
     require(inputs.hasKey(name), "missing real dtype input " & name)
-    let spec = inputs[name]
-    require(spec.kind == JObject and spec.len == 5, "real dtype input fields are incomplete for " & name)
-    let expectedDtype = case name
-      of "float32": "float32"
-      of "float64", "float64_precision": "float64"
-      of "uint64_upper", "empty": "uint64"
-      of "packed_odd": "int16"
-      of "transpose": "uint16"
-      of "offset": "uint32"
-      of "reverse", "scalar": "int64"
-      of "broadcast": "uint8"
-      else: name
-    let dtype = text(field(spec, "dtype"), "real dtype input dtype")
-    require(dtype == expectedDtype, "real dtype mismatch for " & name)
-    let expectedShape = case name
-      of "offset": @[3, 4]
-      of "reverse": @[5]
-      of "float64_precision", "uint64_upper": @[2]
-      of "packed_odd": @[3, 5]
-      of "broadcast": @[1, 3]
-      of "scalar": @[]
-      of "empty": @[2, 0, 3]
-      else: @[2, 3]
-    require(field(spec, "shape") == jsonShape(expectedShape),
-      "real dtype input shape mismatch for " & name)
-    let expectedLayout = if name == "float64": "transpose"
-      elif name in ["transpose", "offset", "reverse", "broadcast"]: name
-      else: "identity"
-    require(text(field(spec, "layout"), "real dtype input layout") == expectedLayout,
-      "real dtype input layout mismatch for " & name)
-    let expectedAxes = case name
-      of "empty": @[0, 1, 2, -1]
-      of "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
-          "uint64", "float32", "float64", "packed_odd", "broadcast": @[0, 1, -1]
-      else: @[0, -1]
-    var axes = newJArray()
-    for axis in expectedAxes: axes.add newJInt(axis)
-    require(field(spec, "axes") == axes, "real dtype axis coverage mismatch for " & name)
-    if dtype in integerDtypes:
-      expectIntegerWordsInput(spec, "real dtype " & name, false)
-    else:
-      expectInputTensor(spec)
+    expectRealDtypeInput(inputs[name], name)
+  if includeScanExtras:
+    for name in RealDtypeScanExtraNames:
+      require(inputs.hasKey(name), "missing real dtype scan input " & name)
+      expectRealDtypeInput(inputs[name], name)
 
 proc expectMeanDtypeError(node: JsonNode, label: string) =
   require(node.kind == JObject and node.len == 1 and
@@ -745,6 +770,33 @@ proc expectRealDtypeExpected(expected, inputs: JsonNode, includeMeanRejections: 
         expectMeanDtypeError(field(defaultAxes, axis), "mean dtype " & name & "." & axis)
     else:
       require(not observations.hasKey("default"), "real dtype observations must not contain default rejection data")
+
+proc expectRealDtypeScanExpected(expected, inputs: JsonNode) =
+  require(expected.kind == JObject and expected.len == inputs.len,
+    "real dtype scan observations do not match inputs")
+  for name, spec in inputs:
+    let observations = field(expected, name)
+    require(observations.kind == JObject and observations.len == 1,
+      "real dtype scan observation groups are incomplete for " & name)
+    let axes = field(observations, "axes")
+    require(axes.kind == JObject and axes.len == spec["axes"].len,
+      "real dtype scan axis observations are incomplete for " & name)
+    let logicalShape = float64LogicalShape(spec, spec["layout"].getStr)
+    for axisNode in spec["axes"]:
+      let axis = axisNode.getInt
+      let byDtype = field(axes, $axis)
+      require(byDtype.kind == JObject and byDtype.len == 2,
+        "real dtype scan outputs are incomplete for " & name & "." & $axis)
+      for outputDtype in ["float32", "float64"]:
+        let directions = field(byDtype, outputDtype)
+        require(directions.kind == JObject and directions.len == 2,
+          "real dtype scan directions are incomplete for " & name & "." & $axis & "." & outputDtype)
+        for direction in ["forward", "reverse"]:
+          let observation = field(directions, direction)
+          expectTensor(observation, false, outputDtype)
+          require(field(observation, "shape") == jsonShape(logicalShape),
+            "real dtype scan output shape must match input for " & name & "." & $axis & "." & direction)
+
 
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
@@ -841,6 +893,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "real dtype fixtures require 1e-6 tolerances")
       expectRealDtypeInputs(inputs)
+    of "tensor.cumsum_dtype", "tensor.cumprod_dtype":
+      require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
+        "real dtype scan fixtures require 1e-6 tolerances")
+      expectRealDtypeInputs(inputs, includeScanExtras = true)
     of "tensor.float64_reductions":
       require(c["atol"].getFloat == 1e-12 and c["rtol"].getFloat == 1e-12,
         "float64 reduction fixtures require 1e-12 tolerances")
@@ -925,6 +981,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectFloat64Reductions(expected, inputs)
     of "tensor.mean_dtype", "tensor.sum_dtype":
       expectRealDtypeExpected(expected, inputs, id == "tensor.mean_dtype")
+    of "tensor.cumsum_dtype", "tensor.cumprod_dtype":
+      expectRealDtypeScanExpected(expected, inputs)
     else: discard
   require(ids.len == RequiredCaseIds.len, "missing required fixture case")
 

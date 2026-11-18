@@ -1125,6 +1125,38 @@ _REAL_DTYPE_SPECS: dict[str, dict[str, Any]] = {
         "layout": "identity", "axes": [0, 1, 2, -1],
     },
 }
+_REAL_SCAN_DTYPE_SPECS: dict[str, dict[str, Any]] = {
+    "float32_wide_scan": {
+        "dtype": "float32", "shape": [3], "values": [16777216, 1, -16777216],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "float64_overflow": {
+        "dtype": "float64", "shape": [3], "values": [1e20, 1e20, 1e-20],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "float64_underflow": {
+        "dtype": "float64", "shape": [3], "values": [1e-30, 1e-30, 1e20],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "nonfinite": {
+        "dtype": "float64", "shape": [4], "values": [1, 2, 3, 4],
+        "layout": "identity", "axes": [0, -1],
+        "nonfinite": [
+            {"index": 1, "value": "+inf"},
+            {"index": 2, "value": "-inf"},
+        ],
+    },
+    "scalar_negative_zero": {
+        "dtype": "float64", "shape": [], "values": [-0.0],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "vector_negative_zero": {
+        "dtype": "float64", "shape": [1], "values": [-0.0],
+        "layout": "identity", "axes": [0, -1],
+    },
+}
+
+
 
 
 def _real_dtype_source(torch: Any, spec: dict[str, Any]) -> Any:
@@ -1136,7 +1168,49 @@ def _real_dtype_source(torch: Any, spec: dict[str, Any]) -> Any:
         )
     else:
         source = torch.tensor(spec["values"], dtype=dtype, device="cpu").reshape(spec["shape"])
+    for special in spec.get("nonfinite", []):
+        value = {"nan": float("nan"), "+inf": float("inf"), "-inf": float("-inf")}[special["value"]]
+        source.reshape(-1)[special["index"]] = value
     return _real_dtype_layout(source, spec["layout"])
+
+def _real_dtype_scans(torch: Any, operation: str) -> dict[str, Any]:
+    torch_dtypes = {name: getattr(torch, name) for name in ("float32", "float64")}
+    inputs: dict[str, Any] = {}
+    expected: dict[str, Any] = {}
+    specs = {**_REAL_DTYPE_SPECS, **_REAL_SCAN_DTYPE_SPECS}
+    for name, spec in specs.items():
+        source = _real_dtype_source(torch, spec)
+        inputs[name] = {**spec}
+        axes: dict[str, Any] = {}
+        for axis in spec["axes"]:
+            by_dtype: dict[str, Any] = {}
+            for output_dtype, torch_dtype in torch_dtypes.items():
+                cast_source = source.to(dtype=torch_dtype)
+                directions: dict[str, Any] = {}
+                for reverse in (False, True):
+                    if reverse and source.ndim:
+                        scan_source = torch.flip(cast_source, dims=[axis])
+                        output = getattr(scan_source, operation)(dim=axis, dtype=torch_dtype)
+                        output = torch.flip(output, dims=[axis])
+                    else:
+                        output = getattr(source, operation)(dim=axis, dtype=torch_dtype)
+                    directions["reverse" if reverse else "forward"] = _observe(output)
+                by_dtype[output_dtype] = directions
+            axes[str(axis)] = by_dtype
+        expected[name] = {"axes": axes}
+    return _case(f"tensor.{operation}_dtype", "api:torch", inputs, expected, tolerance=1e-6)
+
+
+def cumsum_dtype(torch: Any) -> dict[str, Any]:
+    """Observe explicit CPU cumulative-sum output dtypes and scan directions."""
+    return _real_dtype_scans(torch, "cumsum")
+
+
+def cumprod_dtype(torch: Any) -> dict[str, Any]:
+    """Observe explicit CPU cumulative-product output dtypes and scan directions."""
+    return _real_dtype_scans(torch, "cumprod")
+
+
 
 
 def _real_dtype_reductions(torch: Any, operation: str) -> dict[str, Any]:
@@ -1193,7 +1267,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
     unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
     cumsum_gradient, cumprod_gradient,
-    integer_scans, integer_reductions, mean_dtype, sum_dtype,
+    integer_scans, integer_reductions, mean_dtype, sum_dtype, cumsum_dtype, cumprod_dtype,
 )
 
 
