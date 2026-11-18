@@ -763,6 +763,138 @@ proc complexScans(inputs: JsonNode): JsonNode =
       of "complex128": complexScanCase[Complex[float64]](spec)
       else: raise newException(ValueError, "unsupported complex scan dtype")
 
+proc complexScanDtypeAxis[T, U](source: Tensor[T], axis: int, dtype: typedesc[U],
+                                operation: string, reverse: bool): Tensor[U] =
+  case operation
+  of "cumsum": result = source.cumsum(axis = axis, dtype = dtype, reverse = reverse)
+  of "cumprod": result = source.cumprod(axis = axis, dtype = dtype, reverse = reverse)
+  else: raise newException(ValueError, "unsupported complex scan dtype operation: " & operation)
+
+proc complexScanDtypeObservation[T](t: Tensor[T]): JsonNode =
+  when T is Complex[float32] or T is Complex[float64]:
+    result = complexTensorObservation(t)
+  elif T is float32 or T is float64:
+    result = tensorObservation(t)
+    var negative = newJArray()
+    for index, value in enumerate(t):
+      if negativeZero(value): negative.add newJInt(index)
+    result["negative_zero"] = negative
+  else:
+    result = tensorObservation(t)
+
+proc complexScanDtypeDirection[T, U](source: Tensor[T], axis: int,
+                                     dtype: typedesc[U], operation: string,
+                                     reverse, reject: bool, label: string): JsonNode =
+  if reject:
+    try:
+      discard complexScanDtypeAxis(source, axis, dtype, operation, reverse)
+    except ValueError as error:
+      if error.msg.toLowerAscii.contains("cpu cumulative scans do not support this output dtype"):
+        return %*{"error": "unsupported_output_dtype"}
+      raise
+    raise newException(ValueError, label & " unexpectedly accepted unsupported output dtype")
+  result = complexScanDtypeObservation(
+    complexScanDtypeAxis(source, axis, dtype, operation, reverse))
+
+proc complexScanDtypeInvalidAxis[T, U](source: Tensor[T], axis: int,
+                                       dtype: typedesc[U], operation,
+                                       label: string): JsonNode =
+  try:
+    discard complexScanDtypeAxis(source, axis, dtype, operation, false)
+  except ValueError as error:
+    let message = error.msg.toLowerAscii
+    if not (message.contains("axis") or message.contains("dimension") or
+            message.contains("index") or message.contains("range")):
+      raise
+    return %*{"error": "invalid_axis"}
+  raise newException(ValueError, label & " unexpectedly accepted an invalid scan axis")
+
+proc complexScanDtypeTarget[T, U](source: Tensor[T], spec: JsonNode,
+                                  dtype: typedesc[U], dtypeName: string): JsonNode =
+  let reject = dtypeName in ["bool", "uint16", "uint32", "uint64"] and
+    source.size > 0 and source.shape.len > 0
+  result = newJObject()
+  for operation in ["cumsum", "cumprod"]:
+    var axes = newJObject()
+    for axisNode in spec["axes"]:
+      let axis = axisNode.getInt
+      var directions = newJObject()
+      for reverse in [false, true]:
+        let direction = if reverse: "reverse" else: "forward"
+        directions[direction] = complexScanDtypeDirection(
+          source, axis, dtype, operation, reverse, reject,
+          dtypeName & "." & operation & "." & $axis & "." & direction)
+      axes[$axis] = directions
+    var invalidAxes = newJObject()
+    for axisNode in spec["invalid_axes"]:
+      let axis = axisNode.getInt
+      invalidAxes[$axis] = complexScanDtypeInvalidAxis(
+        source, axis, dtype, operation,
+        dtypeName & "." & operation & ".invalid_axis." & $axis)
+    result[operation] = %*{"axes": axes, "invalid_axes": invalidAxes}
+
+proc complexScanDtypeForOutput[T](source: Tensor[T], spec: JsonNode,
+                                  dtypeName: string): JsonNode =
+  case dtypeName
+  of "bool": complexScanDtypeTarget[T, bool](source, spec, bool, dtypeName)
+  of "uint8": complexScanDtypeTarget[T, uint8](source, spec, uint8, dtypeName)
+  of "int8": complexScanDtypeTarget[T, int8](source, spec, int8, dtypeName)
+  of "int16": complexScanDtypeTarget[T, int16](source, spec, int16, dtypeName)
+  of "int32": complexScanDtypeTarget[T, int32](source, spec, int32, dtypeName)
+  of "int64": complexScanDtypeTarget[T, int64](source, spec, int64, dtypeName)
+  of "uint16": complexScanDtypeTarget[T, uint16](source, spec, uint16, dtypeName)
+  of "uint32": complexScanDtypeTarget[T, uint32](source, spec, uint32, dtypeName)
+  of "uint64": complexScanDtypeTarget[T, uint64](source, spec, uint64, dtypeName)
+  of "float32": complexScanDtypeTarget[T, float32](source, spec, float32, dtypeName)
+  of "float64": complexScanDtypeTarget[T, float64](source, spec, float64, dtypeName)
+  of "complex64": complexScanDtypeTarget[T, Complex[float32]](
+    source, spec, Complex[float32], dtypeName)
+  of "complex128": complexScanDtypeTarget[T, Complex[float64]](
+    source, spec, Complex[float64], dtypeName)
+  else: raise newException(ValueError, "unsupported complex scan output dtype: " & dtypeName)
+
+proc complexScanDtypeCase[T](spec: JsonNode): JsonNode =
+  var source =
+    when T is Complex[float32] or T is Complex[float64]: getComplexTensor[T](spec)
+    elif T is float32: realDtypeFloat32Tensor(spec)
+    elif T is float64: getTensor(spec)
+    else: getIntegerTensor[T](spec)
+  if spec.hasKey("nonfinite"):
+    when T is Complex[float32] or T is Complex[float64]:
+      complexScanSpecials(source, spec["nonfinite"])
+    elif T is float32 or T is float64:
+      realDtypeSpecials(source, spec["nonfinite"])
+    else:
+      raise newException(ValueError, "nonfinite scan dtype source must be floating point")
+  source = realDtypeLayout(source, spec["layout"].getStr)
+  result = newJObject()
+  for dtypeNode in spec["output_dtypes"]:
+    let dtypeName = dtypeNode.getStr
+    result[dtypeName] = complexScanDtypeForOutput(source, spec, dtypeName)
+
+proc complexScanDtypeBySource(spec: JsonNode): JsonNode =
+  case spec["dtype"].getStr
+  of "bool": complexScanDtypeCase[bool](spec)
+  of "int8": complexScanDtypeCase[int8](spec)
+  of "int16": complexScanDtypeCase[int16](spec)
+  of "int32": complexScanDtypeCase[int32](spec)
+  of "int64": complexScanDtypeCase[int64](spec)
+  of "uint8": complexScanDtypeCase[uint8](spec)
+  of "uint16": complexScanDtypeCase[uint16](spec)
+  of "uint32": complexScanDtypeCase[uint32](spec)
+  of "uint64": complexScanDtypeCase[uint64](spec)
+  of "float32": complexScanDtypeCase[float32](spec)
+  of "float64": complexScanDtypeCase[float64](spec)
+  of "complex64": complexScanDtypeCase[Complex[float32]](spec)
+  of "complex128": complexScanDtypeCase[Complex[float64]](spec)
+  else: raise newException(ValueError, "unsupported complex scan input dtype")
+
+proc complexScanDtype(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = complexScanDtypeBySource(spec)
+
+
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
@@ -788,6 +920,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = realDtypeScans(inputs, "cumprod")
   of "tensor.complex_scans":
     result = complexScans(inputs)
+  of "tensor.complex_scan_dtype":
+    result = complexScanDtype(inputs)
   of "tensor.transpose_alias":
     var base = getTensor(inputs["a"])
     var view = base.transpose

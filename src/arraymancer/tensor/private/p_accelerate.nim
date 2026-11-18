@@ -15,26 +15,35 @@
 ## Provides packed CPU float64 reductions and private macOS float32 bulk operations.
 import std/[math, complex]
 import ../../laser/compiler_optim_hints
+from ./p_complex import convertedComplexReductionValue
+
+template realReductionValue(value: untyped): untyped =
+  when typeof(value) is Complex: value.re
+  else: value
 
 template convertedReductionValue*(value: untyped; U: typedesc): untyped =
   ## Integer narrowing keeps low bits; defined floating casts truncate first.
-  when U is bool:
-    when typeof(value) is bool: value
+  when U is Complex:
+    convertedComplexReductionValue(value, typeof(default(U).re))
+  elif U is bool:
+    when typeof(value) is Complex: value.re != 0 or value.im != 0
+    elif typeof(value) is bool: value
     else: value != typeof(value)(0)
   elif typeof(value) is bool: U(ord(value))
   elif U is SomeInteger:
-    when typeof(value) is SomeFloat:
-      when U is SomeUnsignedInt and sizeof(U) == 8: U(value)
-      else: cast[U](int64(value))
+    when typeof(realReductionValue(value)) is SomeFloat:
+      when U is SomeUnsignedInt and sizeof(U) == 8: U(realReductionValue(value))
+      else: cast[U](int64(realReductionValue(value)))
     elif typeof(value) is SomeUnsignedInt: cast[U](uint64(value))
     else: cast[U](int64(value))
-  else: U(value)
+  else: U(realReductionValue(value))
 
 template convertedIntegerWord*(value: untyped; Word: typedesc): untyped =
   ## Signed conversion precedes the unsigned carry, so negative floats keep bits.
-  when typeof(value) is SomeFloat:
-    when typeof(value) is float32 and sizeof(Word) <= 4: cast[Word](int32(value))
-    else: cast[Word](int64(value))
+  when typeof(realReductionValue(value)) is SomeFloat:
+    when typeof(realReductionValue(value)) is float32 and sizeof(Word) <= 4:
+      cast[Word](int32(realReductionValue(value)))
+    else: cast[Word](int64(realReductionValue(value)))
   else: convertedReductionValue(value, Word)
 
 proc reduceConvertedIntegerSumSpan*[T, U](input: ptr UncheckedArray[T], base, count: uint;
@@ -83,12 +92,12 @@ template accumulateComplexScan*(acc, value: untyped; multiply: static[bool]) =
     acc.re += float64(value.re)
     acc.im += float64(value.im)
 
-proc scanPackedComplex*[T: SomeFloat](output, input: ptr Complex[T];
+proc scanPackedComplex*[T; F: SomeFloat](output: ptr Complex[F]; input: ptr T;
     outer, axisLength, inner: uint; multiply, reverse: static[bool]) =
   ## Interleave independent scans while keeping each ordered complex128 carry.
   withCompilerOptimHints()
-  let destination {.restrict.} = cast[ptr UncheckedArray[Complex[T]]](output)
-  let source = cast[ptr UncheckedArray[Complex[T]]](input)
+  let destination {.restrict.} = cast[ptr UncheckedArray[Complex[F]]](output)
+  let source = cast[ptr UncheckedArray[T]](input)
   template coordinate(step: uint): uint =
     when reverse: axisLength - 1'u - step
     else: step
@@ -105,8 +114,9 @@ proc scanPackedComplex*[T: SomeFloat](output, input: ptr Complex[T];
       let offset = coordinate(step) * inner
       for lane in 0 ..< 4:
         let index = bases[lane] + offset
-        accumulateComplexScan(carries[lane], source[index], multiply)
-        destination[index] = Complex[T](re: T(carries[lane].re), im: T(carries[lane].im))
+        let value = convertedComplexReductionValue(source[index], F)
+        accumulateComplexScan(carries[lane], value, multiply)
+        destination[index] = Complex[F](re: F(carries[lane].re), im: F(carries[lane].im))
     group += 4'u
   for tail in group ..< groups:
     let base = (tail div inner) * axisLength * inner + tail mod inner
@@ -114,8 +124,9 @@ proc scanPackedComplex*[T: SomeFloat](output, input: ptr Complex[T];
     when multiply: carry.re = 1.0
     for step in 0'u ..< axisLength:
       let index = base + coordinate(step) * inner
-      accumulateComplexScan(carry, source[index], multiply)
-      destination[index] = Complex[T](re: T(carry.re), im: T(carry.im))
+      let value = convertedComplexReductionValue(source[index], F)
+      accumulateComplexScan(carry, value, multiply)
+      destination[index] = Complex[F](re: F(carry.re), im: F(carry.im))
 
 when defined(macosx):
   {.passL: "-framework Accelerate".}
@@ -483,6 +494,7 @@ when defined(macosx):
       let source = cast[ptr UncheckedArray[T]](input)
       template inputValue(index: uint): float32 =
         when T is bool: float32(ord(source[index]))
+        elif T is Complex: float32(source[index].re)
         else: float32(source[index])
       const identity = when multiply: 1.0 else: 0.0
       template combine(a, b: Float64x2): Float64x2 =
@@ -567,6 +579,7 @@ when defined(macosx):
       let source = cast[ptr UncheckedArray[T]](input)
       template inputValue(index: uint): float64 =
         when T is bool: float64(ord(source[index]))
+        elif T is Complex: float64(source[index].re)
         else: float64(source[index])
       const identity = when multiply: 1.0 else: 0.0
       template combine(a, b: Float64x2): Float64x2 =

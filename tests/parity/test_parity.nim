@@ -757,3 +757,63 @@ suite "Pinned PyTorch conformance foundation":
     let nonfiniteSpecials = malformed["cases"][scanCaseIndex]["inputs"]["nonfinite"]["nonfinite"]
     nonfiniteSpecials[0]["component"] = %"imag"
     expect ValueError: validateFixtureData(malformed, reference)
+
+  test "Explicit complex scan dtypes preserve casts, scalar exceptions and signed zeros":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var scanCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.complex_scan_dtype":
+        scanCase = caseData
+    doAssert scanCase.kind == JObject
+    let actual = runCase(scanCase)
+    let expected = scanCase["expected"]
+    check compareObservations(expected, actual,
+      scanCase["atol"].getFloat, scanCase["rtol"].getFloat).len == 0
+    check actual["precision"]["complex64"]["cumsum"]["axes"]["0"]["forward"]["values"][1]["real"].getFloat == 0.0
+    check actual["precision"]["complex128"]["cumsum"]["axes"]["0"]["forward"]["values"][1]["real"].getFloat == 1.0
+    check actual["uint64_precision"]["complex64"]["cumsum"]["axes"]["0"]["forward"]["values"][0] ==
+      expected["uint64_precision"]["complex64"]["cumsum"]["axes"]["0"]["forward"]["values"][0]
+    for operation in ["cumsum", "cumprod"]:
+      for direction in ["forward", "reverse"]:
+        let scalar = actual["scalar_imaginary"]["bool"][operation]["axes"]["0"][direction]
+        check scalar["shape"] == %*[]
+        check scalar["values"] == %*[true]
+        let negative = actual["scalar_negative_zero"]["float32"][operation]["axes"]["0"][direction]
+        check negative["negative_zero"] == %*[0]
+        check isNegativeZero(negative["values"][0])
+        for dtype in ["bool", "uint16", "uint32", "uint64"]:
+          check actual["complex64"][dtype][operation]["axes"]["0"][direction] ==
+            %*{"error": "unsupported_output_dtype"}
+          let empty = actual["empty"][dtype][operation]["axes"]["1"][direction]
+          check empty["shape"] == %*[2, 0, 3]
+          check empty["values"].len == 0
+
+  test "Reject malformed complex scan dtype values and rejection claims":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "tensor.complex_scan_dtype":
+        index = candidate
+    doAssert index >= 0
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["uint64_precision"]["words"].elems[0] = %1.5
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["complex64"]["output_dtypes"].elems[0] = %"float16"
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    let rejected = malformed["cases"][index]["expected"]["complex64"]["uint16"]["cumsum"]["axes"]["0"]["forward"]
+    rejected["error"] = %"invalid_axis"
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    let empty = malformed["cases"][index]["expected"]["empty"]["uint16"]["cumprod"]["axes"]["1"]
+    empty["forward"] = %*{"error": "unsupported_output_dtype"}
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    let real = malformed["cases"][index]["expected"]["scalar_negative_zero"]["float32"]["cumsum"]["axes"]["0"]["forward"]
+    real["negative_zero"] = newJArray()
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    let integer = malformed["cases"][index]["expected"]["complex_negative"]["int8"]["cumsum"]["axes"]["0"]["forward"]
+    integer["values"].elems[0] = newJInt(128)
+    expect ValueError: validateFixtureData(malformed, reference)

@@ -11,6 +11,10 @@ Build the default complex scan mode with:
   nim c -d:release -d:complexScans --path:src --out:build/reduction_dtype_runner benchmarks/pytorch_head_to_head/reduction_dtype_runner.nim
 Then run --complex-scans: two matching complex input/output groups, eight actions
 and 48 comparisons under the same timing protocol.
+Build and run explicit complex scan output-dtype coverage with:
+  nim c -d:release -d:complexScanDtypes --path:src --out:build/reduction_dtype_runner benchmarks/pytorch_head_to_head/reduction_dtype_runner.nim
+  python benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.py --complex-scan-dtypes
+This mode covers 40 groups, 160 scan actions and 960 median/p95 comparisons.
 The 22 floating input/output groups each contain thirteen actions, for 286 actions
 and 1,716 median/p95 comparisons across three paired rounds. Integer outputs have
 ten supported sum/product/scan actions; bool outputs have six sum/product actions,
@@ -93,19 +97,29 @@ SCRIPT_SOURCE = Path("benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.
 SOURCE_PATHS = (
     Path("src/arraymancer/tensor/aggregate.nim"),
     Path("src/arraymancer/tensor/private/p_accelerate.nim"),
+    Path("src/arraymancer/tensor/private/p_complex.nim"),
     Path("src/arraymancer/laser/compiler_optim_hints.nim"),
     RUNNER_SOURCE,
     SCRIPT_SOURCE,
 )
 
 
-def operation(name: str, value: torch.Tensor, output_dtype: str) -> Callable[[], torch.Tensor]:
+def operation(
+    name: str, value: torch.Tensor, output_dtype: str, *, explicit_scan_dtype: bool = False,
+) -> Callable[[], torch.Tensor]:
     """Resolve an allocating reduction or scan; keep casting inside the action."""
     if output_dtype in COMPLEX_DTYPES:
         axis = -1 if name.endswith("_rows") else -2
         scanner = value.cumsum if name.startswith("cumsum") else value.cumprod
+        if explicit_scan_dtype:
+            dtype = TORCH_DTYPES[output_dtype]
+            return lambda: scanner(dim=axis, dtype=dtype)
         return lambda: scanner(dim=axis)
     dtype = TORCH_DTYPES[output_dtype]
+    if explicit_scan_dtype and name.startswith(("cumsum", "cumprod")):
+        scanner = value.cumsum if name.startswith("cumsum") else value.cumprod
+        axis = -1 if name.endswith("_rows") else -2
+        return lambda: scanner(dim=axis, dtype=dtype)
     if name in ("mean", "sum", "prod"):
         if name == "mean":
             reducer = value.mean
@@ -167,8 +181,8 @@ def run_group(
     input_hashes: dict[str, str],
     failures: list[str],
 ) -> dict[str, Any]:
-    action_names = (COMPLEX_SCAN_CASES if output_dtype in COMPLEX_DTYPES
-                    else actions_for_output(output_dtype))
+    action_names = (COMPLEX_SCAN_CASES if args.complex_scan_dtypes or
+                    output_dtype in COMPLEX_DTYPES else actions_for_output(output_dtype))
     group = f"{input_dtype}_to_{output_dtype}"
     manifest: dict[str, Any] = {
         "dtype": input_dtype,
@@ -186,7 +200,10 @@ def run_group(
     input_hash = hashlib.sha256(input_path.read_bytes()).hexdigest()
     input_hashes[group] = input_hash
 
-    callables = {name: operation(name, source, output_dtype) for name in action_names}
+    callables = {
+        name: operation(name, source, output_dtype, explicit_scan_dtype=args.complex_scan_dtypes)
+        for name in action_names
+    }
     expected = {name: call() for name, call in callables.items()}
     native_command = [str(args.runner), str(input_path.resolve())]
     tolerance = 5e-6 if output_dtype == "float32" else 1e-12
@@ -322,16 +339,27 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("build/reduction_dtype_benchmark"))
     parser.add_argument(
         "--output-dtypes", nargs="+", choices=SELECTABLE_OUTPUT_DTYPES,
-        default=list(OUTPUT_DTYPES),
+        default=None,
         help="Output dtypes to benchmark (default: float32 float64)",
     )
     parser.add_argument(
         "--complex-scans", action="store_true",
         help="Benchmark complex64 and complex128 scans using default native scan overloads",
     )
+    parser.add_argument(
+        "--complex-scan-dtypes", action="store_true",
+        help="Benchmark explicit complex scan output dtypes across real and complex inputs",
+    )
     args = parser.parse_args()
-    if args.complex_scans and args.output_dtypes != list(OUTPUT_DTYPES):
+    explicit_output_dtypes = args.output_dtypes is not None
+    if args.complex_scans and explicit_output_dtypes and args.output_dtypes != list(OUTPUT_DTYPES):
         parser.error("--complex-scans cannot be combined with --output-dtypes")
+    if args.complex_scan_dtypes and args.complex_scans:
+        parser.error("--complex-scan-dtypes cannot be combined with --complex-scans")
+    if args.complex_scan_dtypes and explicit_output_dtypes:
+        parser.error("--complex-scan-dtypes cannot be combined with --output-dtypes")
+    if args.output_dtypes is None:
+        args.output_dtypes = list(OUTPUT_DTYPES)
     if len(set(args.output_dtypes)) != len(args.output_dtypes):
         parser.error("--output-dtypes must not contain duplicates")
     args.runner = (ROOT / args.runner).resolve() if not args.runner.is_absolute() else args.runner
@@ -361,19 +389,35 @@ def main() -> int:
     ]
     if args.complex_scans:
         compile_command.append("-d:complexScans")
+    elif args.complex_scan_dtypes:
+        compile_command.append("-d:complexScanDtypes")
     compile_command.append(str(RUNNER_SOURCE))
 
     failures: list[str] = []
     input_hashes: dict[str, str] = {}
     groups: list[dict[str, Any]] = []
-    input_dtypes = COMPLEX_DTYPES if args.complex_scans else INPUT_DTYPES
-    output_dtypes = COMPLEX_DTYPES if args.complex_scans else args.output_dtypes
-    for input_dtype in input_dtypes:
-        source, payload = make_source(input_dtype)
-        for output_dtype in ([input_dtype] if args.complex_scans else output_dtypes):
-            groups.append(run_group(
-                args, input_dtype, output_dtype, source, payload, input_hashes, failures,
-            ))
+    if args.complex_scan_dtypes:
+        input_dtypes = INPUT_DTYPES + COMPLEX_DTYPES
+        output_dtypes = COMPLEX_DTYPES + OUTPUT_DTYPES + INTEGER_OUTPUT_DTYPES
+        for input_dtype in input_dtypes:
+            source, payload = make_source(input_dtype)
+            selected_outputs = (
+                COMPLEX_DTYPES + OUTPUT_DTYPES + INTEGER_OUTPUT_DTYPES
+                if input_dtype in COMPLEX_DTYPES else COMPLEX_DTYPES
+            )
+            for output_dtype in selected_outputs:
+                groups.append(run_group(
+                    args, input_dtype, output_dtype, source, payload, input_hashes, failures,
+                ))
+    else:
+        input_dtypes = COMPLEX_DTYPES if args.complex_scans else INPUT_DTYPES
+        output_dtypes = COMPLEX_DTYPES if args.complex_scans else args.output_dtypes
+        for input_dtype in input_dtypes:
+            source, payload = make_source(input_dtype)
+            for output_dtype in ([input_dtype] if args.complex_scans else output_dtypes):
+                groups.append(run_group(
+                    args, input_dtype, output_dtype, source, payload, input_hashes, failures,
+                ))
 
     changed_artifacts = [
         label for label, path in artifact_paths.items()
@@ -390,7 +434,8 @@ def main() -> int:
     action_count = sum(len(group["actions"]) for group in groups)
     comparison_count = action_count * 3 * 2
     actions_by_output_dtype = {
-        output_dtype: list(COMPLEX_SCAN_CASES if output_dtype in COMPLEX_DTYPES
+        output_dtype: list(COMPLEX_SCAN_CASES if args.complex_scan_dtypes or
+                           output_dtype in COMPLEX_DTYPES
                            else actions_for_output(output_dtype))
         for output_dtype in output_dtypes
     }
@@ -406,7 +451,7 @@ def main() -> int:
         "paired_rounds_per_group": 3,
         "comparisons": comparison_count,
     }
-    if args.complex_scans:
+    if args.complex_scans or args.complex_scan_dtypes:
         protocol["actions_per_group"] = list(COMPLEX_SCAN_CASES)
     elif all(dtype in OUTPUT_DTYPES for dtype in args.output_dtypes):
         protocol["actions_per_group"] = list(CASES)

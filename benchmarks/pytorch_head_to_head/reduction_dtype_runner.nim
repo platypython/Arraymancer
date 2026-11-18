@@ -18,7 +18,7 @@ const complexScanCases = [
 ]
 
 iterator actionNames[OutputT](): string =
-  when OutputT is Complex:
+  when defined(complexScanDtypes) or OutputT is Complex:
     for name in complexScanCases:
       yield name
   elif OutputT is bool:
@@ -30,6 +30,7 @@ iterator actionNames[OutputT](): string =
   else:
     for name in floatCases:
       yield name
+
 
 proc nativeValue[T](word: int64): T =
   ## Match Torch's signed-word cast, including unsigned wraparound.
@@ -71,7 +72,14 @@ proc loadInput[T](manifest: JsonNode): Tensor[T] =
           data[index] = T(values[index].getFloat)
 
 proc execute[InputT, OutputT](name: string; input: Tensor[InputT]): Tensor[OutputT] =
-  when InputT is Complex:
+  when defined(complexScanDtypes):
+    case name
+    of "cumsum_rows": input.cumsum(-1, dtype = OutputT)
+    of "cumsum_columns": input.cumsum(-2, dtype = OutputT)
+    of "cumprod_rows": input.cumprod(-1, dtype = OutputT)
+    of "cumprod_columns": input.cumprod(-2, dtype = OutputT)
+    else: raise newException(ValueError, "Unknown complex scan dtype action: " & name)
+  elif InputT is Complex:
     case name
     of "cumsum_rows": input.cumsum(-1)
     of "cumsum_columns": input.cumsum(-2)
@@ -184,6 +192,12 @@ proc runForInput[InputT](manifest: JsonNode): JsonNode =
   of "int64": run[InputT, int64](manifest)
   of "float32": run[InputT, float32](manifest)
   of "float64": run[InputT, float64](manifest)
+  of "complex64":
+    when defined(complexScanDtypes): run[InputT, Complex[float32]](manifest)
+    else: raise newException(ValueError, "Unsupported reduction output dtype")
+  of "complex128":
+    when defined(complexScanDtypes): run[InputT, Complex[float64]](manifest)
+    else: raise newException(ValueError, "Unsupported reduction output dtype")
   else: raise newException(ValueError, "Unsupported reduction output dtype")
 
 proc runForDtype(manifest: JsonNode): JsonNode =
@@ -199,6 +213,12 @@ proc runForDtype(manifest: JsonNode): JsonNode =
   of "uint64": runForInput[uint64](manifest)
   of "float32": runForInput[float32](manifest)
   of "float64": runForInput[float64](manifest)
+  of "complex64":
+    when defined(complexScanDtypes): runForInput[Complex[float32]](manifest)
+    else: raise newException(ValueError, "Unsupported reduction input dtype")
+  of "complex128":
+    when defined(complexScanDtypes): runForInput[Complex[float64]](manifest)
+    else: raise newException(ValueError, "Unsupported reduction input dtype")
   else: raise newException(ValueError, "Unsupported reduction input dtype")
 
 when isMainModule:

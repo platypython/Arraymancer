@@ -1333,7 +1333,8 @@ def _observe_integer_output(tensor: Any) -> dict[str, Any]:
 
 
 def _unsupported_integer_output(
-    call: Callable[[], Any], operation: str, dtype_name: str, should_reject: bool, label: str
+    call: Callable[[], Any], operation: str, dtype_name: str, should_reject: bool, label: str,
+    observer: Callable[[Any], dict[str, Any]] = _observe_integer_output,
 ) -> dict[str, Any]:
     if should_reject:
         try:
@@ -1350,7 +1351,7 @@ def _unsupported_integer_output(
                 raise
             return {"error": "unsupported_output_dtype"}
         raise ValueError(f"{label} unexpectedly accepted output dtype {dtype_name}")
-    return _observe_integer_output(call())
+    return observer(call())
 
 
 def _integer_mean_rejection(call: Callable[[], Any], label: str) -> dict[str, str]:
@@ -1706,6 +1707,200 @@ def complex_scans(torch: Any) -> dict[str, Any]:
     return _case("tensor.complex_scans", "api:torch", inputs, expected, tolerance=1e-6)
 
 
+def _complex_scan_dtype_spec(
+    dtype: str, shape: list[int], values: list[list[int | float]], axes: list[int],
+    output_dtypes: tuple[str, ...], layout: str = "identity",
+    nonfinite: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    spec = _complex_scan_spec(dtype, shape, values, axes, layout, nonfinite)
+    spec["output_dtypes"] = list(output_dtypes)
+    return spec
+
+
+def _real_scan_dtype_spec(
+    dtype: str, shape: list[int], axes: list[int], output_dtypes: tuple[str, ...],
+    *, values: list[int | float] | None = None, words: list[int] | None = None,
+) -> dict[str, Any]:
+    dimensions = max(1, len(shape))
+    spec: dict[str, Any] = {
+        "dtype": dtype,
+        "shape": shape,
+        "layout": "identity",
+        "axes": axes,
+        "invalid_axes": [dimensions, -dimensions - 1],
+        "output_dtypes": list(output_dtypes),
+    }
+    if values is not None:
+        spec["values"] = values
+    elif words is not None:
+        spec["words"] = words
+    else:
+        raise ValueError(f"{dtype} scan dtype source needs values or words")
+    return spec
+
+
+def _complex_scan_dtype_observation(tensor: Any) -> dict[str, Any]:
+    dtype_name = str(tensor.dtype).removeprefix("torch.")
+    if dtype_name in ("complex64", "complex128"):
+        return _observe_complex(tensor)
+    if dtype_name in ("float32", "float64"):
+        observation = _observe(tensor)
+        values = tensor.detach().reshape(-1).tolist()
+        observation["negative_zero"] = [
+            index for index, value in enumerate(values)
+            if value == 0.0 and math.copysign(1.0, value) < 0.0
+        ]
+        return observation
+    return _observe_integer_output(tensor)
+
+
+def _complex_scan_dtype_call(
+    torch: Any, source: Any, operation: str, axis: int, dtype: Any, reverse: bool
+) -> Any:
+    scan_source = torch.flip(source, dims=[axis]) if reverse and source.ndim else source
+    output = getattr(scan_source, operation)(dim=axis, dtype=dtype)
+    return torch.flip(output, dims=[axis]) if reverse and source.ndim else output
+
+
+def _complex_scan_dtype_case(torch: Any, spec: dict[str, Any], label: str) -> dict[str, Any]:
+    source = (
+        _complex_scan_source(torch, spec)
+        if spec["dtype"] in ("complex64", "complex128")
+        else _real_dtype_source(torch, spec)
+    )
+    expected: dict[str, Any] = {}
+    rejects_nonempty_scan = source.numel() > 0 and source.ndim > 0
+    for output_name in spec["output_dtypes"]:
+        output_dtype = getattr(torch, output_name)
+        reject = output_name in ("bool", "uint16", "uint32", "uint64") and rejects_nonempty_scan
+        by_operation: dict[str, Any] = {}
+        for operation in ("cumsum", "cumprod"):
+            axes: dict[str, Any] = {}
+            for axis in spec["axes"]:
+                directions: dict[str, Any] = {}
+                for reverse in (False, True):
+                    direction = "reverse" if reverse else "forward"
+                    directions[direction] = _unsupported_integer_output(
+                        lambda axis=axis, reverse=reverse, operation=operation:
+                            _complex_scan_dtype_call(
+                                torch, source, operation, axis, output_dtype, reverse
+                            ),
+                        operation,
+                        output_name,
+                        reject,
+                        f"{label}.{output_name}.{operation}.{axis}.{direction}",
+                        observer=_complex_scan_dtype_observation,
+                    )
+                axes[str(axis)] = directions
+            invalid_axes = {
+                str(axis): _complex_invalid_scan_axis(
+                    lambda axis=axis, operation=operation: _complex_scan_dtype_call(
+                        torch, source, operation, axis, output_dtype, False
+                    ),
+                    f"{label}.{output_name}.{operation}.invalid_axis.{axis}",
+                )
+                for axis in spec["invalid_axes"]
+            }
+            by_operation[operation] = {"axes": axes, "invalid_axes": invalid_axes}
+        expected[output_name] = by_operation
+    return expected
+
+
+def complex_scan_dtype(torch: Any) -> dict[str, Any]:
+    """Observe explicit CPU complex scan output dtypes across source and layout classes."""
+    all_outputs = (*_INTEGER_OUTPUT_DTYPE_NAMES, "float32", "float64", "complex64", "complex128")
+    complex_outputs = ("complex64", "complex128")
+    axes_2d = [0, 1, -1]
+    specs: dict[str, dict[str, Any]] = {}
+    integer_words = [-2, -1, 0, 1, 2, 3]
+    real_values = [1.9, 2.9, 0.0, 3.1, 4.9, 1.1]
+    for dtype_name in _INTEGER_DTYPE_NAMES:
+        specs[dtype_name] = _real_scan_dtype_spec(
+            dtype_name, [2, 3], axes_2d, complex_outputs, words=integer_words
+        )
+    for dtype_name in ("float32", "float64"):
+        specs[dtype_name] = _real_scan_dtype_spec(
+            dtype_name, [2, 3], axes_2d, complex_outputs, values=real_values
+        )
+
+    base_complex_values = [
+        [1.9, 0.25], [2.9, -0.5], [0.0, 1.25],
+        [3.1, -1.0], [4.9, 2.0], [1.1, -2.5],
+    ]
+    for dtype_name in ("complex64", "complex128"):
+        specs[dtype_name] = _complex_scan_dtype_spec(
+            dtype_name, [2, 3], base_complex_values, axes_2d, all_outputs
+        )
+
+    specs["transpose"] = _complex_scan_dtype_spec(
+        "complex64", [2, 3],
+        [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0], [5.0, 0.0], [1.0, 0.0]],
+        axes_2d, all_outputs, "transpose",
+    )
+    specs["offset"] = _complex_scan_dtype_spec(
+        "complex128", [3, 4],
+        [[1.0, 0.0], [2.0, 0.0], [1.0, 0.0], [2.0, 0.0]] * 3,
+        axes_2d, all_outputs, "offset",
+    )
+    specs["reverse"] = _complex_scan_dtype_spec(
+        "complex64", [5],
+        [[1.0, 0.0], [2.0, 0.0], [1.0, 0.0], [2.0, 0.0], [1.0, 0.0]],
+        [0, -1], all_outputs, "reverse",
+    )
+    specs["broadcast"] = _complex_scan_dtype_spec(
+        "complex128", [1, 3], [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]],
+        axes_2d, all_outputs, "broadcast",
+    )
+
+    specs["scalar"] = _complex_scan_dtype_spec(
+        "complex128", [], [[1.9, 2.0]], [0, -1], all_outputs,
+    )
+    specs["scalar_imaginary"] = _complex_scan_dtype_spec(
+        "complex128", [], [[0.0, 4.0]], [0, -1], all_outputs,
+    )
+    specs["scalar_negative_zero"] = _complex_scan_dtype_spec(
+        "complex64", [], [[-0.0, -0.0]], [0, -1], all_outputs,
+    )
+    specs["empty"] = _complex_scan_dtype_spec(
+        "complex128", [2, 0, 3], [], [0, 1, 2, -1], all_outputs,
+    )
+
+    specs["precision"] = _complex_scan_dtype_spec(
+        "complex128", [2], [[16777217.0, 16777217.0], [-16777216.0, -16777216.0]],
+        [0, -1], ("complex64", "complex128", "float32", "float64", "int32", "int64"),
+    )
+    specs["overflow_recovery"] = _complex_scan_dtype_spec(
+        "complex128", [3], [[1e20, 0.0], [1e20, 0.0], [1e-20, 0.0]],
+        [0, -1], ("complex64", "complex128", "float32", "float64"),
+    )
+    specs["underflow_recovery"] = _complex_scan_dtype_spec(
+        "complex128", [3], [[1e-30, 0.0], [1e-30, 0.0], [1e30, 0.0]],
+        [0, -1], ("complex64", "complex128", "float32", "float64"),
+    )
+    specs["nonfinite"] = _complex_scan_dtype_spec(
+        "complex128", [3], [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]],
+        [0, -1], ("complex64", "complex128", "float32", "float64"),
+        nonfinite=[
+            {"index": 0, "component": "real", "value": "+inf"},
+            {"index": 1, "component": "imag", "value": "+inf"},
+            {"index": 2, "component": "real", "value": "nan"},
+        ],
+    )
+    specs["complex_negative"] = _complex_scan_dtype_spec(
+        "complex128", [3], [[-127.9, 0.5], [-128.9, -1.25], [-0.9, 2.0]],
+        [0, -1],
+        ("complex64", "complex128", "float32", "float64", "int8", "int16", "int32", "int64"),
+    )
+    specs["uint64_precision"] = _real_scan_dtype_spec(
+        "uint64", [3], [0, -1], complex_outputs,
+        words=[-(1 << 63) + 0x8000000001, 0, 1],
+    )
+
+    inputs = {name: spec for name, spec in specs.items()}
+    expected = {name: _complex_scan_dtype_case(torch, spec, name) for name, spec in specs.items()}
+    return _case("tensor.complex_scan_dtype", "api:torch", inputs, expected, tolerance=1e-6)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -1716,7 +1911,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
     cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
-    integer_output_dtype, complex_scans,
+    integer_output_dtype, complex_scans, complex_scan_dtype,
 )
 
 

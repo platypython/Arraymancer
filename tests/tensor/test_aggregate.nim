@@ -1093,6 +1093,69 @@ proc main() =
         expect ValueError:
           discard scalar.cumsum(1)
 
+      test "Complex scan dtypes cast components before wide arithmetic":
+        let precise = [complex(16777217.0, 16777217.0),
+                       complex(-16777216.0, -16777216.0)].toTensor
+        check precise.cumsum(dtype = Complex[float32])[1] == complex32(0, 0)
+        check precise.cumsum(dtype = Complex[float64])[1] == complex(1.0, 1.0)
+        let upper = [0x8000008000000001'u64, 0, 1].toTensor
+        let upperPrefixes = upper.cumsum(dtype = Complex[float32])
+        check cast[uint32](upperPrefixes[0].re) == 0x5f000001'u32
+        check upperPrefixes[0].im == 0'f32
+        check [true, false, true].toTensor.cumsum(dtype = Complex[float64]) ==
+          [complex(1.0), complex(1.0), complex(2.0)].toTensor
+        let fractional = [complex(127.9, 5.0), complex(-128.9, -3.0),
+                          complex(3.9, 9.0)].toTensor
+        check fractional.cumsum(dtype = int8) == [127'i8, -1, 2].toTensor
+        check fractional.cumprod(dtype = int8) == [127'i8, -128, -128].toTensor
+        let unsigned = [complex(255.9, 2.0), complex(1.9, -3.0),
+                        complex(2.9, 4.0)].toTensor
+        check unsigned.cumsum(dtype = uint8) == [255'u8, 0, 2].toTensor
+        check unsigned.cumprod(dtype = uint8) == [255'u8, 255, 254].toTensor
+        let narrowed = precise.cumsum(dtype = float32)
+        check narrowed == [16777216'f32, 0].toTensor
+        let columns = [complex(1.9, 2.0), complex(-2.9, 3.0), complex(3.9, -2.0),
+                       complex(4.9, 9.0), complex(5.9, 7.0), complex(-6.9, 4.0)].toTensor.reshape(2, 3)
+        check columns.cumsum(0, dtype = int64) == [[1'i64, -2, 3], [5, 3, -3]].toTensor
+        check columns.cumprod(0, dtype = int64) == [[1'i64, -2, 3], [4, -10, -18]].toTensor
+        check columns.cumsum(0, reverse = true, dtype = int64) ==
+          [[5'i64, 3, -3], [4, 5, -6]].toTensor
+
+      test "Complex scan casts retain scalar truth, signs and dtype exceptions":
+        let imaginary = newTensorWith[Complex[float64]]([], complex(0.0, 4.0))
+        check imaginary.cumsum(dtype = bool).atContiguousIndex(0)
+        check imaginary.cumprod(dtype = uint64).atContiguousIndex(0) == 0'u64
+        let negativeZero = cast[float64](0x8000000000000000'u64)
+        let scalar = newTensorWith[Complex[float64]]([], complex(negativeZero, negativeZero))
+        let scalarComplex = scalar.cumsum(dtype = Complex[float32]).atContiguousIndex(0)
+        check scalarComplex.re.classify == fcNegZero
+        check scalarComplex.im.classify == fcNegZero
+        check scalar.cumprod(dtype = float32).atContiguousIndex(0).classify == fcNegZero
+        let empty = newTensor[Complex[float64]](2, 0, 3)
+        check empty.cumsum(1, dtype = bool).shape == [2, 0, 3]
+        check empty.cumprod(-1, dtype = uint32).shape == [2, 0, 3]
+        expect ValueError: discard [complex(1.0, 2.0)].toTensor.cumsum(dtype = bool)
+        expect ValueError: discard [complex(1.0, 2.0)].toTensor.cumprod(dtype = uint16)
+        expect ValueError: discard scalar.cumsum(1, dtype = Complex[float32])
+        expect ValueError: discard empty.cumprod(3, dtype = float64)
+
+      test "Complex scan dtype casts read signed views and keep output independent":
+        let owner = [complex(99.0, 1.0), complex(1.0, 1.0), complex(2.0, 2.0),
+                     complex(3.0, 3.0), complex(99.0, 1.0)].toTensor
+        let reversed = owner[3..1|-1]
+        check reversed.cumsum(dtype = Complex[float32]) ==
+          [complex32(3, 3), complex32(5, 5), complex32(6, 6)].toTensor
+        check reversed.cumprod(dtype = Complex[float32]) ==
+          [complex32(3, 3), complex32(0, 12), complex32(-12, 12)].toTensor
+        check reversed.cumsum(dtype = float64) == [3.0, 5, 6].toTensor
+        check reversed.cumprod(dtype = int16) == [3'i16, 6, 6].toTensor
+        let broadcast = reversed.reshape(3, 1).broadcast(3, 5)
+        var columns = broadcast.cumsum(0, dtype = Complex[float32])
+        for column in 0 ..< 5:
+          check columns[2, column] == complex32(6, 6)
+        columns[2, 0] = complex32(100, 100)
+        check owner[1] == complex(1.0, 1.0)
+
       test "complex64 scans keep both components wide after rounded stores":
         let cancellation = [complex32(16777216, 16777216), complex32(1, 1),
                             complex32(-16777216, -16777216)].toTensor

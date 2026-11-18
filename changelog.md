@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add explicit complex CPU cumulative scan dtypes for real, boolean and complex
+  inputs, casting on read without conversion buffers. Support complex-to-real
+  and integer casts, boolean scalar truth and thread-safe once-per-process
+  discarded-imaginary warnings while preserving scalar/empty dtype exceptions.
 - Fix CPU complex cumulative sums and products to keep ordered complex128
   carries without conversion buffers. Preserve identity arithmetic for signed
   zeros and nonfinite components, scalar copies and signed/broadcast views.

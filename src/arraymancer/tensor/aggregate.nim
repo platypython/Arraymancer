@@ -27,6 +27,7 @@ import  ./data_structure,
 import std / [math, macros]
 import complex except Complex64, Complex32
 import ../laser/compiler_optim_hints
+from ./private/p_complex import warnComplexToRealCast
 
 # ### Standard aggregate functions
 # TODO consider using stats from Nim standard lib: https://nim-lang.org/docs/stats.html#standardDeviation,RunningStat
@@ -92,8 +93,9 @@ template combineIntegerOutput(acc, value: untyped; U: typedesc;
     else: word += convertedIntegerWord(value, uint32)
     acc = cast[U](word)
   else:
-    var word = promotedInteger(acc)
-    combineInteger(word, value, multiply)
+    var word = convertedIntegerWord(acc, uint64)
+    when multiply: word *= convertedIntegerWord(value, uint64)
+    else: word += convertedIntegerWord(value, uint64)
     acc = cast[U](word)
 
 proc reducePackedIntegerOutput[T, U](input: ptr UncheckedArray[T], base, count: uint;
@@ -916,9 +918,11 @@ proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
   withCompilerOptimHints()
   mixin _
   template scanValue(value: untyped): untyped =
-    when U is SomeFloat: convertedReductionValue(value, U)
+    when U is SomeFloat or U is Complex: convertedReductionValue(value, U)
     elif not promoteIntegers: value
-    elif U is SomeInteger: promotedInteger(value)
+    elif U is SomeInteger:
+      when T is Complex: promotedInteger(value.re)
+      else: promotedInteger(value)
     else: value
   when U is SomeFloat:
     const identity = when multiply: 1.0 else: 0.0
@@ -931,6 +935,7 @@ proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
       else: acc = acc + value
   let rank = arg.rank
   let scanAxis = cumulativeAxis(rank, axis)
+  warnComplexToRealCast(T, U, arg.size)
 
   result = newTensorUninit[U](arg.shape)
   if arg.size == 0:
@@ -1073,7 +1078,8 @@ proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
       when multiply: accumulated.re = 1.0
       for step in 0'u ..< axisLength:
         let coordinate = scanCoordinate(step)
-        let value = inputData[inputBase + int(coordinate) * arg.strides[scanAxis]]
+        let value = convertedReductionValue(
+          inputData[inputBase + int(coordinate) * arg.strides[scanAxis]], U)
         accumulateComplexScan(accumulated, value, multiply)
         type Component = typeof(default(U).re)
         writeOutput(outputBase + coordinate * inner,
@@ -1156,6 +1162,7 @@ proc scanIntegerCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool];
   ## Unsupported scan kernels still permit scalar copies and empty outputs.
   when U is bool or (U is SomeUnsignedInt and sizeof(U) > 1):
     discard cumulativeAxis(arg.rank, axis)
+    warnComplexToRealCast(T, U, arg.size)
     if arg.rank > 0 and arg.size > 0:
       raise newException(ValueError, "CPU cumulative scans do not support this output dtype")
     result = newTensorUninit[U](arg.shape)
@@ -1178,6 +1185,46 @@ proc cumprod*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T], axi
   ## Bool and wider unsigned outputs support only scalars and empty tensors;
   ## uint8 and signed outputs support views, negative axes and reverse scans.
   ## Floating casts must fit dtype. Only the independent output is allocated.
+  scanIntegerCPU(arg, axis, true, U, reverse)
+
+proc cumsum*[T: SomeNumber or bool or Complex; F: SomeFloat](arg: Tensor[T],
+    axis: int = 0; dtype: typedesc[Complex[F]]; reverse: bool = false): Tensor[Complex[F]] =
+  ## Cast both components to dtype before ordered complex128 accumulation.
+  ## Real inputs gain a positive-zero imaginary component. Only the independent
+  ## output is allocated; views, scalar/negative axes and reverse are supported.
+  scanCPU(arg, axis, false, Complex[F], reverse = reverse)
+
+proc cumprod*[T: SomeNumber or bool or Complex; F: SomeFloat](arg: Tensor[T],
+    axis: int = 0; dtype: typedesc[Complex[F]]; reverse: bool = false): Tensor[Complex[F]] =
+  ## Cast to the complex dtype before multiplying in an ordered complex128 carry.
+  ## Rounded prefix overflow/underflow never replaces the carry. Scalar scans
+  ## cast and copy; vector scans multiply by the identity at the first element.
+  scanCPU(arg, axis, true, Complex[F], reverse = reverse)
+
+proc cumsum*[F: SomeFloat; U: SomeFloat](arg: Tensor[Complex[F]],
+    axis: int = 0; dtype: typedesc[U]; reverse: bool = false): Tensor[U] =
+  ## Discard imaginary components and cast before ordered float64 accumulation.
+  ## Nonempty complex-to-real casts warn once per process; empties do not warn.
+  scanCPU(arg, axis, false, U, reverse = reverse)
+
+proc cumprod*[F: SomeFloat; U: SomeFloat](arg: Tensor[Complex[F]],
+    axis: int = 0; dtype: typedesc[U]; reverse: bool = false): Tensor[U] =
+  ## Discard imaginary components, cast, then multiply with a float64 carry.
+  ## Nonempty complex-to-real casts warn once; only the output is allocated.
+  scanCPU(arg, axis, true, U, reverse = reverse)
+
+proc cumsum*[F: SomeFloat; U: SomeInteger or bool](arg: Tensor[Complex[F]],
+    axis: int = 0; dtype: typedesc[U]; reverse: bool = false): Tensor[U] =
+  ## Truncate real components before modulo-width integer accumulation.
+  ## Boolean scalar copies test both components. Bool and wider unsigned
+  ## outputs accept only scalars and empties. Truncated real values must fit.
+  scanIntegerCPU(arg, axis, false, U, reverse)
+
+proc cumprod*[F: SomeFloat; U: SomeInteger or bool](arg: Tensor[Complex[F]],
+    axis: int = 0; dtype: typedesc[U]; reverse: bool = false): Tensor[U] =
+  ## Multiply truncated real components modulo the integer output width.
+  ## Complex-to-numeric casts warn once, except bool keeps both components.
+  ## Bool and wider unsigned outputs accept only scalars and empty tensors.
   scanIntegerCPU(arg, axis, true, U, reverse)
 
 proc diff_discrete*[T](arg: Tensor[T], n=1, axis: int = -1): Tensor[T] =
