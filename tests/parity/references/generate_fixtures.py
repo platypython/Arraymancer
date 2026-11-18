@@ -446,7 +446,7 @@ def reduction_edges(torch: Any) -> dict[str, Any]:
         expected[name] = observed
     return _case("tensor.reduction_edges", "api:torch", inputs, expected)
 
-def _float64_layout(source: Any, layout: str) -> Any:
+def _real_dtype_layout(source: Any, layout: str) -> Any:
     if layout == "transpose":
         return source.transpose(0, 1)
     if layout == "offset":
@@ -480,7 +480,7 @@ def float64_reductions(torch: Any) -> dict[str, Any]:
     reductions_input: dict[str, Any] = {}
     reductions_expected: dict[str, Any] = {}
     for name, (shape, values, layout, axes) in reduction_specs.items():
-        source = _float64_layout(_tensor(values, shape, torch), layout)
+        source = _real_dtype_layout(_tensor(values, shape, torch), layout)
         reductions_input[name] = {
             "shape": shape, "values": values, "layout": layout, "axes": axes,
         }
@@ -510,7 +510,7 @@ def float64_reductions(torch: Any) -> dict[str, Any]:
     scans_input: dict[str, Any] = {}
     scans_expected: dict[str, Any] = {}
     for name, (shape, values, layout, axes) in scan_specs.items():
-        source = _float64_layout(_tensor(values, shape, torch), layout)
+        source = _real_dtype_layout(_tensor(values, shape, torch), layout)
         scans_input[name] = {
             "shape": shape, "values": values, "layout": layout, "axes": axes,
         }
@@ -581,7 +581,7 @@ def float64_reductions(torch: Any) -> dict[str, Any]:
         source = _tensor(spec["values"], spec["shape"], torch)
         for special in spec["nonfinite"]:
             source.reshape(-1)[special["index"]] = float(special["value"].replace("+", ""))
-        source = _float64_layout(source, spec["layout"])
+        source = _real_dtype_layout(source, spec["layout"])
         operation_inputs: list[dict[str, Any]] = []
         reduction_vjp_observations: list[dict[str, Any]] = []
         for operation in spec["operations"]:
@@ -631,7 +631,7 @@ def float64_reductions(torch: Any) -> dict[str, Any]:
     scan_vjps_input: dict[str, Any] = {}
     scan_vjps_expected: dict[str, Any] = {}
     for name, spec in scan_vjp_specs.items():
-        source = _float64_layout(_tensor(spec["values"], spec["shape"], torch), spec["layout"])
+        source = _real_dtype_layout(_tensor(spec["values"], spec["shape"], torch), spec["layout"])
         operation_inputs: list[dict[str, Any]] = []
         scan_vjp_observations: list[dict[str, Any]] = []
         for operation in spec["operations"]:
@@ -1038,133 +1038,131 @@ def _default_mean_dtype_rejection(source: Any, axis: int | None, label: str) -> 
     raise ValueError(f"{label} unexpectedly accepted a default integer mean")
 
 
-def mean_dtype(torch: Any) -> dict[str, Any]:
-    """Observe explicit CPU mean casts, views, and default integer rejection."""
-    integer_dtypes = ("bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64")
-    specs: dict[str, dict[str, Any]] = {
-        "bool": {
-            "dtype": "bool", "shape": [2, 3], "words": [0, 1, 0, 2, -1, 0],
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "int8": {
-            "dtype": "int8", "shape": [2, 3], "words": [-128, 127, -1, 1, 2, 3],
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "int16": {
-            "dtype": "int16", "shape": [2, 3], "words": [-32768, 32767, -1, 1, 2, 3],
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "int32": {
-            "dtype": "int32", "shape": [2, 3], "words": [-2147483648, 2147483647, -1, 1, 2, 3],
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "int64": {
-            "dtype": "int64", "shape": [2, 3], "words": [-3, 4, 2, -5, 0, 1],
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "uint8": {
-            "dtype": "uint8", "shape": [2, 3], "words": [0, 255, 1, 2, 128, 3],
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "uint16": {
-            "dtype": "uint16", "shape": [2, 3], "words": [0, 65535, 1, 2, 32768, 3],
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "uint32": {
-            "dtype": "uint32", "shape": [2, 3],
-            "words": [0, 4294967295, 1, 2, 2147483648, 3],
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "uint64": {
-            "dtype": "uint64", "shape": [2, 3],
-            "words": [0, 9223372036854775807, -9223372036854775808, -1, -2, 1],
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "float32": {
-            "dtype": "float32", "shape": [2, 3],
-            "values": [0.1, -0.2, 0.3, -0.4, 0.5, -0.6],
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "float64": {
-            "dtype": "float64", "shape": [2, 3],
-            "values": [0.1, -1.5, 2.0, 3.25, 4.5, -0.5],
-            "layout": "transpose", "axes": [0, 1, -1],
-        },
-        "float64_precision": {
-            "dtype": "float64", "shape": [2], "values": [16777217, -16777216],
-            "layout": "identity", "axes": [0, -1],
-        },
-        "uint64_upper": {
-            "dtype": "uint64", "shape": [2], "words": [-1, -1],
-            "layout": "identity", "axes": [0, -1],
-        },
-        "packed_odd": {
-            "dtype": "int16", "shape": [3, 5], "words": list(range(-7, 8)),
-            "layout": "identity", "axes": [0, 1, -1],
-        },
-        "transpose": {
-            "dtype": "uint16", "shape": [2, 3], "words": [0, 65535, 1, 2, 32768, 3],
-            "layout": "transpose", "axes": [0, -1],
-        },
-        "offset": {
-            "dtype": "uint32", "shape": [3, 4], "words": list(range(12)),
-            "layout": "offset", "axes": [0, -1],
-        },
-        "reverse": {
-            "dtype": "int64", "shape": [5], "words": [3, -2, 0, 4, -1],
-            "layout": "reverse", "axes": [0, -1],
-        },
-        "broadcast": {
-            "dtype": "uint8", "shape": [1, 3], "words": [2, 3, 0],
-            "layout": "broadcast", "axes": [0, 1, -1],
-        },
-        "scalar": {
-            "dtype": "int64", "shape": [], "words": [-1],
-            "layout": "identity", "axes": [0, -1],
-        },
-        "empty": {
-            "dtype": "uint64", "shape": [2, 0, 3], "words": [],
-            "layout": "identity", "axes": [0, 1, 2, -1],
-        },
-    }
-    torch_dtypes = {name: getattr(torch, name) for name in (*integer_dtypes, "float32", "float64")}
+_INTEGER_DTYPE_NAMES = ("bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64")
+_REAL_DTYPE_SPECS: dict[str, dict[str, Any]] = {
+    "bool": {
+        "dtype": "bool", "shape": [2, 3], "words": [0, 1, 0, 2, -1, 0],
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "int8": {
+        "dtype": "int8", "shape": [2, 3], "words": [-128, 127, -1, 1, 2, 3],
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "int16": {
+        "dtype": "int16", "shape": [2, 3], "words": [-32768, 32767, -1, 1, 2, 3],
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "int32": {
+        "dtype": "int32", "shape": [2, 3], "words": [-2147483648, 2147483647, -1, 1, 2, 3],
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "int64": {
+        "dtype": "int64", "shape": [2, 3], "words": [-3, 4, 2, -5, 0, 1],
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "uint8": {
+        "dtype": "uint8", "shape": [2, 3], "words": [0, 255, 1, 2, 128, 3],
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "uint16": {
+        "dtype": "uint16", "shape": [2, 3], "words": [0, 65535, 1, 2, 32768, 3],
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "uint32": {
+        "dtype": "uint32", "shape": [2, 3],
+        "words": [0, 4294967295, 1, 2, 2147483648, 3],
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "uint64": {
+        "dtype": "uint64", "shape": [2, 3],
+        "words": [0, 9223372036854775807, -9223372036854775808, -1, -2, 1],
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "float32": {
+        "dtype": "float32", "shape": [2, 3],
+        "values": [0.1, -0.2, 0.3, -0.4, 0.5, -0.6],
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "float64": {
+        "dtype": "float64", "shape": [2, 3],
+        "values": [0.1, -1.5, 2.0, 3.25, 4.5, -0.5],
+        "layout": "transpose", "axes": [0, 1, -1],
+    },
+    "float64_precision": {
+        "dtype": "float64", "shape": [2], "values": [16777217, -16777216],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "uint64_upper": {
+        "dtype": "uint64", "shape": [2], "words": [-1, -1],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "packed_odd": {
+        "dtype": "int16", "shape": [3, 5], "words": list(range(-7, 8)),
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "transpose": {
+        "dtype": "uint16", "shape": [2, 3], "words": [0, 65535, 1, 2, 32768, 3],
+        "layout": "transpose", "axes": [0, -1],
+    },
+    "offset": {
+        "dtype": "uint32", "shape": [3, 4], "words": list(range(12)),
+        "layout": "offset", "axes": [0, -1],
+    },
+    "reverse": {
+        "dtype": "int64", "shape": [5], "words": [3, -2, 0, 4, -1],
+        "layout": "reverse", "axes": [0, -1],
+    },
+    "broadcast": {
+        "dtype": "uint8", "shape": [1, 3], "words": [2, 3, 0],
+        "layout": "broadcast", "axes": [0, 1, -1],
+    },
+    "scalar": {
+        "dtype": "int64", "shape": [], "words": [-1],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "empty": {
+        "dtype": "uint64", "shape": [2, 0, 3], "words": [],
+        "layout": "identity", "axes": [0, 1, 2, -1],
+    },
+}
+
+
+def _real_dtype_source(torch: Any, spec: dict[str, Any]) -> Any:
+    dtype_name = spec["dtype"]
+    dtype = getattr(torch, dtype_name)
+    if dtype_name in _INTEGER_DTYPE_NAMES:
+        source = torch.tensor(spec["words"], dtype=torch.int64, device="cpu").to(dtype=dtype).reshape(
+            spec["shape"]
+        )
+    else:
+        source = torch.tensor(spec["values"], dtype=dtype, device="cpu").reshape(spec["shape"])
+    return _real_dtype_layout(source, spec["layout"])
+
+
+def _real_dtype_reductions(torch: Any, operation: str) -> dict[str, Any]:
+    torch_dtypes = {name: getattr(torch, name) for name in (*_INTEGER_DTYPE_NAMES, "float32", "float64")}
     inputs: dict[str, Any] = {}
     expected: dict[str, Any] = {}
-    for name, spec in specs.items():
+    for name, spec in _REAL_DTYPE_SPECS.items():
         dtype_name = spec["dtype"]
-        if dtype_name in integer_dtypes:
-            source = torch.tensor(spec["words"], dtype=torch.int64, device="cpu").to(
-                dtype=torch_dtypes[dtype_name]
-            ).reshape(spec["shape"])
-        else:
-            source = torch.tensor(spec["values"], dtype=torch_dtypes[dtype_name], device="cpu").reshape(
-                spec["shape"]
-            )
-        layout = spec["layout"]
-        if layout == "transpose":
-            source = source.transpose(0, 1)
-        elif layout == "offset":
-            source = source.transpose(0, 1)[:, 1:]
-        elif layout == "reverse":
-            source = source.flip([0])
-        elif layout == "broadcast":
-            source = source.expand(4, 3)
+        source = _real_dtype_source(torch, spec)
         inputs[name] = {**spec}
 
+        reducer = getattr(source, operation)
         whole: dict[str, Any] = {}
         for output_dtype in ("float32", "float64"):
-            output = source.mean(dtype=torch_dtypes[output_dtype])
+            output = reducer(dtype=torch_dtypes[output_dtype])
             whole[output_dtype] = _observe(output)
         by_axis: dict[str, Any] = {}
         for axis in spec["axes"]:
             by_dtype: dict[str, Any] = {}
             for output_dtype in ("float32", "float64"):
-                output = source.mean(dim=axis, keepdim=True, dtype=torch_dtypes[output_dtype])
+                output = reducer(dim=axis, keepdim=True, dtype=torch_dtypes[output_dtype])
                 by_dtype[output_dtype] = _observe(output)
             by_axis[str(axis)] = by_dtype
         observations: dict[str, Any] = {"all": whole, "axes": by_axis}
 
-        if dtype_name in integer_dtypes:
+        if operation == "mean" and dtype_name in _INTEGER_DTYPE_NAMES:
             defaults: dict[str, Any] = {
                 "all": _default_mean_dtype_rejection(source, None, name),
                 "axes": {},
@@ -1173,7 +1171,17 @@ def mean_dtype(torch: Any) -> dict[str, Any]:
                 defaults["axes"][str(axis)] = _default_mean_dtype_rejection(source, axis, name)
             observations["default"] = defaults
         expected[name] = observations
-    return _case("tensor.mean_dtype", "api:torch", inputs, expected, tolerance=1e-6)
+    return _case(f"tensor.{operation}_dtype", "api:torch", inputs, expected, tolerance=1e-6)
+
+
+def mean_dtype(torch: Any) -> dict[str, Any]:
+    """Observe explicit CPU mean casts, views, and default integer rejection."""
+    return _real_dtype_reductions(torch, "mean")
+
+
+def sum_dtype(torch: Any) -> dict[str, Any]:
+    """Observe explicit CPU sum casts and views."""
+    return _real_dtype_reductions(torch, "sum")
 
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
@@ -1185,7 +1193,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
     unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
     cumsum_gradient, cumprod_gradient,
-    integer_scans, integer_reductions, mean_dtype,
+    integer_scans, integer_reductions, mean_dtype, sum_dtype,
 )
 
 

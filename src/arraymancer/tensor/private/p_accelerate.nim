@@ -88,6 +88,110 @@ when defined(macosx):
     proc vmaxvq_u32(value: UInt32x4): uint32
       {.importc, nodecl, header: "<arm_neon.h>".}
 
+    type
+      Int8x8 {.importc: "int8x8_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[8, int8]
+      Int16x4 {.importc: "int16x4_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[4, int16]
+      Int16x8 {.importc: "int16x8_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[8, int16]
+      Int32x4 {.importc: "int32x4_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[4, int32]
+    proc vld1_s8(input: ptr int8): Int8x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vdupq_n_s16(value: int16): Int16x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vaddq_s16(a, b: Int16x8): Int16x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmovl_s8(value: Int8x8): Int16x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vget_low_s16(value: Int16x8): Int16x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vget_high_s16(value: Int16x8): Int16x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmovl_s16(value: Int16x4): Int32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vld1q_s32(input: ptr int32): Int32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vld1q_u32(input: ptr uint32): UInt32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcvtq_f32_s32(value: Int32x4): Float32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcvtq_f32_u32(value: UInt32x4): Float32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vaddvq_f32(value: Float32x4): float32
+      {.importc, nodecl, header: "<arm_neon.h>".}
+
+    proc loadConvertedFloat32x4[T](input: ptr UncheckedArray[T], index: uint): Float32x4 {.inline.} =
+      ## Unaligned native loads preserve each cast before the floating sum.
+      when T is int32:
+        vcvtq_f32_s32(vld1q_s32(unsafeAddr input[index]))
+      elif T is uint32:
+        vcvtq_f32_u32(vld1q_u32(unsafeAddr input[index]))
+      elif T is float64:
+        vcombine_f32(vcvt_f32_f64(vld1q_f64(unsafeAddr input[index])),
+                     vcvt_f32_f64(vld1q_f64(unsafeAddr input[index + 2])))
+      else:
+        {.error: "Unsupported packed float32 conversion".}
+
+    proc sumConvertedFloat32Block*[T](input: ptr UncheckedArray[T],
+                                       base, count: uint): float32 {.inline.} =
+      ## Convert before the SIMD sum; callers bound each block to 1024 values.
+      var a = vdupq_n_f32(0)
+      var b = a
+      var c = a
+      var d = a
+      let bulk = count and not 15'u
+      var index = 0'u
+      while index < bulk:
+        a = vaddq_f32(a, loadConvertedFloat32x4(input, base + index))
+        b = vaddq_f32(b, loadConvertedFloat32x4(input, base + index + 4))
+        c = vaddq_f32(c, loadConvertedFloat32x4(input, base + index + 8))
+        d = vaddq_f32(d, loadConvertedFloat32x4(input, base + index + 12))
+        index += 16
+      var packed = vaddq_f32(vaddq_f32(a, b), vaddq_f32(c, d))
+      while index + 4 <= count:
+        packed = vaddq_f32(packed, loadConvertedFloat32x4(input, base + index))
+        index += 4
+      result = vaddvq_f32(packed)
+      while index < count:
+        result += float32(input[base + index])
+        inc index
+
+    proc reduceConvertedFloat32Columns*[T](output: ptr float32,
+        input: ptr UncheckedArray[T], outer, axisLength, inner: uint;
+        average: static[bool]) =
+      ## Byte inputs and their 128-term sums are exact in both int16 and float32.
+      withCompilerOptimHints()
+      let destination {.restrict.} = cast[ptr UncheckedArray[float32]](output)
+      when average:
+        let divisor = vdupq_n_f32(float32(axisLength))
+      let columns = inner and not 7'u
+      for batch in 0'u ..< outer:
+        let base = batch * axisLength * inner
+        let outputBase = batch * inner
+        var column = 0'u
+        while column < columns:
+          var value = vdupq_n_s16(0)
+          for row in 0'u ..< axisLength:
+            let source = cast[ptr int8](unsafeAddr input[base + row * inner + column])
+            value = vaddq_s16(value, vmovl_s8(vld1_s8(source)))
+          var low = vcvtq_f32_s32(vmovl_s16(vget_low_s16(value)))
+          var high = vcvtq_f32_s32(vmovl_s16(vget_high_s16(value)))
+          when average:
+            low = vdivq_f32(low, divisor)
+            high = vdivq_f32(high, divisor)
+          vst1q_f32(addr destination[outputBase + column], low)
+          vst1q_f32(addr destination[outputBase + column + 4], high)
+          column += 8
+        for tail in column ..< inner:
+          var value = 0'f32
+          for row in 0'u ..< axisLength:
+            when T is bool: value += float32(ord(input[base + row * inner + tail]))
+            else: value += float32(input[base + row * inner + tail])
+          when average: value /= float32(axisLength)
+          destination[outputBase + tail] = value
+
     proc scanPackedFloat32*(output, input: ptr float32;
                            outer, axisLength, inner: uint;
                            multiply, reverse: static[bool]) =

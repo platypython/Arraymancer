@@ -125,6 +125,27 @@ suite "Pinned PyTorch conformance foundation":
     expect ValueError: validateFixtureData(malformed, reference)
 
 
+  test "Reject explicit sum fixtures with invalid scalar, axis or dtype contracts":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var sumCaseIndex = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "tensor.sum_dtype":
+        sumCaseIndex = index
+    doAssert sumCaseIndex >= 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][sumCaseIndex]["expected"]["int8"]["all"]["float32"]["shape"] = %*[1]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][sumCaseIndex]["expected"]["int8"]["axes"]["0"]["float32"]["shape"] = %*[3]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][sumCaseIndex]["expected"]["int8"]["all"]["float32"]["dtype"] = %"float64"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+
   test "Float64 reductions cover CPU layouts, precision, and seeded VJPs":
     let fixtures = loadFixtures(parityRoot & "fixtures.json")
     var float64CaseIndex = -1

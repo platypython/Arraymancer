@@ -1,9 +1,9 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
-## Measures allocating CPU means with explicit float32/float64 output dtypes.
+## Measures allocating CPU reductions with explicit float32/float64 output dtypes.
 import std/[algorithm, json, math, monotimes, os, times]
 import arraymancer
 
-const cases = ["mean", "mean_rows", "mean_columns"]
+const cases = ["mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns"]
 
 proc nativeValue[T](word: int64): T =
   ## Match Torch's signed-word cast, including unsigned wraparound.
@@ -39,7 +39,10 @@ proc execute[InputT, OutputT](name: string; input: Tensor[InputT]): Tensor[Outpu
   of "mean": newTensorWith[OutputT]([], input.mean(dtype = OutputT))
   of "mean_rows": input.mean(-1, dtype = OutputT)
   of "mean_columns": input.mean(-2, dtype = OutputT)
-  else: raise newException(ValueError, "Unknown mean dtype action: " & name)
+  of "sum": newTensorWith[OutputT]([], input.sum(dtype = OutputT))
+  of "sum_rows": input.sum(-1, dtype = OutputT)
+  of "sum_columns": input.sum(-2, dtype = OutputT)
+  else: raise newException(ValueError, "Unknown reduction dtype action: " & name)
 
 proc dtypeName[T](): string =
   when T is bool: "bool"
@@ -53,7 +56,7 @@ proc dtypeName[T](): string =
   elif T is uint64: "uint64"
   elif T is float32: "float32"
   elif T is float64: "float64"
-  else: {.error: "Unsupported mean dtype".}
+  else: {.error: "Unsupported reduction dtype".}
 proc observe[T](input: Tensor[T]; inputDtype: string): JsonNode =
   let dtype = dtypeName[T]()
   var shape = newJArray()
@@ -107,7 +110,7 @@ proc runForInput[InputT](manifest: JsonNode): JsonNode =
   case manifest["output_dtype"].getStr
   of "float32": run[InputT, float32](manifest)
   of "float64": run[InputT, float64](manifest)
-  else: raise newException(ValueError, "Unsupported mean output dtype")
+  else: raise newException(ValueError, "Unsupported reduction output dtype")
 
 proc runForDtype(manifest: JsonNode): JsonNode =
   case manifest["dtype"].getStr
@@ -122,13 +125,13 @@ proc runForDtype(manifest: JsonNode): JsonNode =
   of "uint64": runForInput[uint64](manifest)
   of "float32": runForInput[float32](manifest)
   of "float64": runForInput[float64](manifest)
-  else: raise newException(ValueError, "Unsupported mean input dtype")
+  else: raise newException(ValueError, "Unsupported reduction input dtype")
 
 when isMainModule:
   if paramCount() != 1:
-    echo "Usage: mean_dtype_runner INPUT.json"
+    echo "Usage: reduction_dtype_runner INPUT.json"
     quit(if paramCount() == 0: 0 else: 2)
   let manifest = parseFile(paramStr(1))
   if manifest["rows"].getInt != 128 or manifest["columns"].getInt != 128:
-    raise newException(ValueError, "Mean dtype benchmark input must be 128x128")
+    raise newException(ValueError, "Reduction dtype benchmark input must be 128x128")
   echo runForDtype(manifest)

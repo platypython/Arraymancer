@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add explicit float32/float64 output dtypes to CPU real-valued sums, sharing
+  cast-on-read reduction kernels with means. Preserve scalar/empty identities,
+  numeric unsigned conversions and signed/broadcast input views.
+  Vectorize bounded ARM64 input casts and exact byte-column carries.
 - Add explicit float32/float64 output dtypes to CPU real-valued means,
   casting views on read without a converted input tensor. Integer/bool means
   now require a floating dtype instead of using legacy integer division.

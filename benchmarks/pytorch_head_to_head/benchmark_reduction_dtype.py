@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Check and time all 66 CPU mean dtype actions against pinned PyTorch.
+"""Check and time all 132 CPU reduction dtype actions against pinned PyTorch.
 
 Build the native runner from the repository root with:
-  nim c -d:release --path:src --out:build/mean_dtype_runner benchmarks/pytorch_head_to_head/mean_dtype_runner.nim
+  nim c -d:release --path:src --out:build/reduction_dtype_runner benchmarks/pytorch_head_to_head/reduction_dtype_runner.nim
 Then run the full benchmark (no filters; optional --output and --runner):
-  python benchmarks/pytorch_head_to_head/benchmark_mean_dtype.py
-The 22 input/output dtype groups each contain mean, mean_rows and mean_columns.
-Each paired round alternates backend order; all 100 samples of 50 allocating calls
-are retained. The aggregate gate requires every median and p95 to win in all
-three paired rounds. Inputs stay resident and explicit output-dtype casting is
-part of each timed mean call.
+  python benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.py
+The 22 input/output dtype groups each contain mean, mean_rows, mean_columns,
+sum, sum_rows and sum_columns. Each paired round alternates backend order; all
+100 samples of 50 allocating calls are retained. The aggregate gate requires
+every median and p95 to win in all three paired rounds. Inputs stay resident
+and explicit output-dtype casting is part of each timed reduction call.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ INPUT_DTYPES = (
 )
 INTEGER_DTYPES = frozenset(INPUT_DTYPES[:9])
 OUTPUT_DTYPES = ("float32", "float64")
-CASES = ("mean", "mean_rows", "mean_columns")
+CASES = ("mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns")
 TORCH_DTYPES: dict[str, torch.dtype] = {
     "bool": torch.bool, "int8": torch.int8, "int16": torch.int16, "int32": torch.int32,
     "int64": torch.int64, "uint8": torch.uint8, "uint16": torch.uint16,
@@ -49,8 +49,8 @@ PYTHON_VERSION = (3, 13, 18)
 ROWS, COLUMNS = 128, 128
 WARMUP, REPEATS, ITERATIONS = 50, 100, 50
 ROOT = Path(__file__).resolve().parents[2]
-RUNNER_SOURCE = Path("benchmarks/pytorch_head_to_head/mean_dtype_runner.nim")
-SCRIPT_SOURCE = Path("benchmarks/pytorch_head_to_head/benchmark_mean_dtype.py")
+RUNNER_SOURCE = Path("benchmarks/pytorch_head_to_head/reduction_dtype_runner.nim")
+SCRIPT_SOURCE = Path("benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.py")
 SOURCE_PATHS = (
     Path("src/arraymancer/tensor/aggregate.nim"),
     Path("src/arraymancer/tensor/private/p_accelerate.nim"),
@@ -61,19 +61,25 @@ SOURCE_PATHS = (
 
 
 def operation(name: str, value: torch.Tensor, output_dtype: str) -> Callable[[], torch.Tensor]:
-    """Resolve an allocating mean call; keep requested casting inside the action."""
+    """Resolve an allocating reduction call; keep casting inside the action."""
     dtype = TORCH_DTYPES[output_dtype]
-    if name == "mean":
-        return lambda: value.mean(dtype=dtype)
-    axis = -1 if name == "mean_rows" else -2
-    return lambda: value.mean(dim=axis, keepdim=True, dtype=dtype)
+    if name in ("mean", "sum"):
+        reducer = value.mean if name == "mean" else value.sum
+        return lambda: reducer(dtype=dtype)
+    if name in ("mean_rows", "sum_rows"):
+        axis = -1
+    elif name in ("mean_columns", "sum_columns"):
+        axis = -2
+    else:
+        raise ValueError(f"Unknown reduction action: {name}")
+    reducer = value.mean if name.startswith("mean") else value.sum
+    return lambda: reducer(dim=axis, keepdim=True, dtype=dtype)
 
 
 def make_source(dtype: str) -> tuple[torch.Tensor, dict[str, Any]]:
     """Create one resident, already typed source and its native manifest values."""
     if dtype in INTEGER_DTYPES:
-        words = [-2 if index % 4 == 0 else -1 if index % 4 == 1 else
-                 1 if index % 4 == 2 else 2 for index in range(ROWS * COLUMNS)]
+        words = [index % 5 - 2 for index in range(ROWS * COLUMNS)]
         source = torch.tensor(words, dtype=torch.int64).reshape(ROWS, COLUMNS)
         return source.to(dtype=TORCH_DTYPES[dtype]), {"words": words}
 
@@ -202,8 +208,8 @@ def run_group(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runner", type=Path, default=Path("build/mean_dtype_runner"))
-    parser.add_argument("--output", type=Path, default=Path("build/mean_dtype_benchmark"))
+    parser.add_argument("--runner", type=Path, default=Path("build/reduction_dtype_runner"))
+    parser.add_argument("--output", type=Path, default=Path("build/reduction_dtype_benchmark"))
     args = parser.parse_args()
     args.runner = (ROOT / args.runner).resolve() if not args.runner.is_absolute() else args.runner
     args.output = (ROOT / args.output).resolve() if not args.output.is_absolute() else args.output

@@ -342,6 +342,118 @@ proc main() =
       check: t_c.sum(axis=0) == row_sum.asType(Complex[float64])
       check: t_c.sum(axis=1) == col_sum.asType(Complex[float64])
 
+    test "Explicit sum dtypes cast before arithmetic and retain unsigned values":
+      template checkIntegerSum(T: typedesc) =
+        block:
+          let input = [T(1), T(2), T(4), T(8), T(16)].toTensor
+          check input.sum(dtype = float32) == 31'f32
+          check input.sum(dtype = float64) == 31.0
+          check input.reshape(1, 5).sum(1, dtype = float32) == [[31'f32]].toTensor
+          check input.reshape(5, 1).sum(0, dtype = float64) == [[31.0]].toTensor
+      checkIntegerSum(int8)
+      checkIntegerSum(int16)
+      checkIntegerSum(int32)
+      checkIntegerSum(int64)
+      checkIntegerSum(uint8)
+      checkIntegerSum(uint16)
+      checkIntegerSum(uint32)
+      checkIntegerSum(uint64)
+      let flags = [true, false, true].toTensor
+      check flags.sum(dtype = float32) == 2'f32
+      check flags.reshape(3, 1).sum(0, dtype = float64) == [[2.0]].toTensor
+      let upper = [high(uint64), 2'u64, 3'u64].toTensor
+      check upper.sum == 4'i64
+      check upper.sum(dtype = float64) == float64(high(uint64))
+      check upper.reshape(3, 1).sum(0, dtype = float64) ==
+            [[float64(high(uint64))]].toTensor
+      let narrow = [16777217.0, -16777216.0].toTensor
+      check narrow.sum(dtype = float32) == 0'f32
+      check narrow.sum(dtype = float64) == 1.0
+      check narrow.reshape(1, 2).sum(1, dtype = float32) == [[0'f32]].toTensor
+      let narrowInteger = [16777217'i32, -16777216'i32].toTensor
+      check narrowInteger.sum(dtype = float32) == 0'f32
+      check narrowInteger.sum(dtype = float64) == 1.0
+      let wideIntegers = [high(int64), low(int64)].toTensor
+      check wideIntegers.sum(dtype = float64) == 0.0
+      let widen = [16777216'f32, 1'f32, -16777216'f32].toTensor
+      check widen.sum(dtype = float64) == 1.0
+
+    test "Explicit sum dtypes retain strided, scalar and empty identities":
+      let owner = [[1'i64, 2, 3], [4'i64, 5, 6]].toTensor
+      check owner.transpose.sum(dtype = float32) == 21'f32
+      check owner.transpose.sum(0, dtype = float64) == [[6.0, 15.0]].toTensor
+      check owner.transpose.sum(1, dtype = float32) ==
+            [[5'f32], [7'f32], [9'f32]].toTensor
+      let reversed = owner[^1..0|-1, _]
+      check reversed.sum(1, dtype = float64) == [[15.0], [6.0]].toTensor
+      let offset = owner[1..1, _]
+      check offset.sum(dtype = float64) == 15.0
+      check offset.sum(1, dtype = float32) == [[15'f32]].toTensor
+      let broadcast = owner[0..0, 0..0].broadcast(3, 5)
+      check broadcast.sum(dtype = float32) == 15'f32
+      check broadcast.sum(0, dtype = float64) == [[3.0, 3, 3, 3, 3]].toTensor
+      var output = offset.sum(0, dtype = float64)
+      output[0, 0] = 99.0
+      check owner == [[1'i64, 2, 3], [4'i64, 5, 6]].toTensor
+      check newTensor[int32](0).sum(dtype = float64) == 0.0
+      check newTensor[bool](2, 0).sum(1, dtype = float32) == [[0'f32], [0'f32]].toTensor
+      check newTensor[uint64](0, 2, 3).sum(1, dtype = float64).shape == [0, 1, 3]
+      let scalar = newTensorWith[bool]([], true)
+      check scalar.sum(dtype = float64) == 1.0
+      for axis in [0, -1]:
+        let value = scalar.sum(axis, dtype = float32)
+        check value.shape.len == 0
+        check value[] == 1'f32
+      for axis in [1, -2]:
+        expect IndexDefect: discard scalar.sum(axis, dtype = float32)
+      check classify([Inf, -Inf].toTensor.sum(dtype = float32)) == fcNan
+      check classify([NaN].toTensor.sum(dtype = float32)) == fcNan
+
+    test "Converted reductions preserve packed cast order and SIMD tails":
+      for length in [1, 3, 4, 7, 15, 16, 17, 33, 127, 129, 1023, 1025]:
+        var owner = newTensor[int32](length + 2)
+        var expected = 0'f32
+        for index in 0 ..< length:
+          owner[index + 1] = int32(index mod 13 - 6)
+          expected += float32(owner[index + 1])
+        let input = owner[1..length]
+        check input.sum(dtype = float32) == expected
+        check (input +. 6'i32).asType(uint32).sum(dtype = float32) ==
+          expected + float32(6 * length)
+        check input.asType(float64).sum(dtype = float32) == expected
+      var narrow = newTensor[int32](16)
+      narrow[0] = 16777217
+      narrow[1] = -16777216
+      check narrow.sum(dtype = float32) == 0'f32
+      check narrow.asType(float64).sum(dtype = float32) == 0'f32
+      var unsigned = newTensor[uint32](16)
+      unsigned[0] = 16777217
+      unsigned[1] = 1
+      check unsigned.sum(dtype = float32) == 16777216'f32
+
+    test "Converted byte columns handle offset, tail and bounded signed carries":
+      template checkColumns(T: typedesc) =
+        for rows in [1, 3, 9, 127, 128, 129]:
+          for columns in [3, 7, 8, 9, 17]:
+            var owner = newTensor[T](rows * columns + 2)
+            for index in 0 ..< rows * columns:
+              when T is bool: owner[index + 1] = index mod 3 != 0
+              else: owner[index + 1] = int8(index mod 256 - 128)
+            let input = owner[1..rows * columns].reshape(rows, columns)
+            let summed = input.sum(0, dtype = float32)
+            let averaged = input.mean(0, dtype = float32)
+            check summed.shape == [1, columns]
+            check averaged.shape == [1, columns]
+            for column in 0 ..< columns:
+              var expected = 0
+              for row in 0 ..< rows:
+                when T is bool: expected += ord(input[row, column])
+                else: expected += int(input[row, column])
+              check summed[0, column] == float32(expected)
+              check averaged[0, column] == float32(expected) / float32(rows)
+      checkColumns(bool)
+      checkColumns(int8)
+
     test "Mean":
       check: t.asType(float).mean == 5.5 # Note: may fail due to float rounding
       check: t_c.mean == complex(5.5) # Note: may fail due to float rounding
@@ -452,12 +564,15 @@ proc main() =
       checkMeanZero(float64, float32)
       checkMeanZero(float64, float64)
 
-    test "Converted float32 means bound long carries for packed and strided inputs":
+    test "Converted float32 reductions bound long carries for packed and strided inputs":
       var input = newTensor[uint16](128, 128)
       let pattern = [65534'u16, 65535'u16, 1'u16, 2'u16]
       for row in 0 ..< 128:
         for column in 0 ..< 128:
           input[row, column] = pattern[column mod 4]
+      check input.sum(dtype = float32) == 536870912'f32
+      check input.transpose.sum(dtype = float32) == 536870912'f32
+      check input[^1..0|-1, _].sum(dtype = float32) == 536870912'f32
       check input.mean(dtype = float32) == 32768'f32
       check input.transpose.mean(dtype = float32) == 32768'f32
       check input[^1..0|-1, _].mean(dtype = float32) == 32768'f32
@@ -467,6 +582,8 @@ proc main() =
       check broadcast.mean(0, dtype = float32) == newTensorWith[float32]([1, 128], 65535'f32)
       let longColumns = newTensorWith[uint16]([16384, 2], 65535'u16)
       check longColumns.mean(0, dtype = float32) == [[65535'f32, 65535'f32]].toTensor
+      check longColumns.sum(0, dtype = float32) ==
+            [[65535'f32 * 16384'f32, 65535'f32 * 16384'f32]].toTensor
 
     test "Product":
       let a = [[1,2,4],[8,16,32]].toTensor()
