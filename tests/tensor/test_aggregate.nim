@@ -55,6 +55,69 @@ proc checkPromotedIntegerScans[T]() =
   check emptySum.size == 0
   check emptyProduct.size == 0
 
+proc checkPromotedIntegerReductions[T]() =
+  ## Widen before arithmetic and read dense, signed and broadcast layouts alike.
+  let input =
+    when T is bool: [true, false, true, true, true].toTensor
+    else: [T(100), T(100), T(3), T(2), T(1)].toTensor
+  let expectedSum = when T is bool: 4'i64 else: 206'i64
+  let expectedProduct = when T is bool: 0'i64 else: 60000'i64
+  let total = input.sum
+  let product = input.product
+  check typeof(total) is int64
+  check typeof(product) is int64
+  check total == expectedSum
+  check product == expectedProduct
+  let axisSum: Tensor[int64] = input.sum(-1)
+  let axisProduct: Tensor[int64] = input.product(0)
+  check axisSum == [expectedSum].toTensor
+  check axisProduct == [expectedProduct].toTensor
+  let broadcasted = input.reshape(1, 5).broadcast(2, 5)
+  for rows in [broadcasted, broadcasted.clone]:
+    when T is bool:
+      check rows.sum(0) == [[2'i64, 0, 2, 2, 2]].toTensor
+      check rows.product(-2) == [[1'i64, 0, 1, 1, 1]].toTensor
+    else:
+      check rows.sum(0) == [[200'i64, 200, 6, 4, 2]].toTensor
+      check rows.product(-2) == [[10000'i64, 10000, 9, 4, 1]].toTensor
+    check rows.sum(-1) == [[expectedSum], [expectedSum]].toTensor
+    check rows.product(1) == [[expectedProduct], [expectedProduct]].toTensor
+    check rows.sum == expectedSum * 2
+    check rows.product == expectedProduct * expectedProduct
+    check rows.transpose.sum(0) == [[expectedSum, expectedSum]].toTensor
+    check rows.transpose.product(0) == [[expectedProduct, expectedProduct]].toTensor
+  let middleAxis = input.reshape(1, 5, 1).broadcast(2, 5, 3).clone
+  check middleAxis.sum(1) == newTensorWith[int64]([2, 1, 3], expectedSum)
+  check middleAxis.product(-2) == newTensorWith[int64]([2, 1, 3], expectedProduct)
+  var owner = newTensorWith[T](7, input[0])
+  for index in 0 ..< 5: owner[index + 1] = input[index]
+  check owner[1..5].sum == expectedSum
+  check owner[1..5].product == expectedProduct
+  check owner[5..1|-1].sum == expectedSum
+  check owner[5..1|-1].product == expectedProduct
+  let scalar = newTensorWith[T]([], input[0])
+  let first = when T is bool: 1'i64 else: 100'i64
+  check scalar.sum == first
+  check scalar.product == first
+  var scalarSum: Tensor[int64] = scalar.sum(-1)
+  let scalarProduct: Tensor[int64] = scalar.product(0)
+  check scalarSum.rank == 0
+  check scalarProduct.rank == 0
+  check scalarSum.atContiguousIndex(0) == first
+  check scalarProduct.atContiguousIndex(0) == first
+  scalarSum.unsafe_raw_offset[0] = -7
+  check scalar.atContiguousIndex(0) == input[0]
+  let empty = newTensor[T](2, 0, 3)
+  check empty.sum == 0'i64
+  check empty.product == 1'i64
+  check empty.sum(-2) == zeros[int64](2, 1, 3)
+  check empty.product(1) == ones[int64](2, 1, 3)
+  check newTensor[T](0, 2, 3).sum(1).shape == [0, 1, 3]
+  check newTensor[T](0, 2, 3).product(1).shape == [0, 1, 3]
+  expect IndexDefect: discard input.sum(1)
+  expect IndexDefect: discard input.product(-2)
+
+
 proc main() =
   suite "[Core] Testing aggregation functions":
     let t = [[0, 1, 2],
@@ -163,6 +226,33 @@ proc main() =
       check input.product.classify == fcNegZero
       check input.reshape(1, 33).product(1)[0, 0].classify == fcNegZero
 
+    test "integer and boolean reductions promote before accumulating":
+      checkPromotedIntegerReductions[bool]()
+      checkPromotedIntegerReductions[int8]()
+      checkPromotedIntegerReductions[int16]()
+      checkPromotedIntegerReductions[int32]()
+      checkPromotedIntegerReductions[int64]()
+      checkPromotedIntegerReductions[int]()
+      checkPromotedIntegerReductions[uint8]()
+      checkPromotedIntegerReductions[uint16]()
+      checkPromotedIntegerReductions[uint32]()
+      checkPromotedIntegerReductions[uint64]()
+      checkPromotedIntegerReductions[uint]()
+
+    test "integer reductions wrap and preserve uint64 bit patterns":
+      let signed = [high(int64), 2'i64, -3'i64, high(int64), -1'i64].toTensor
+      check signed.sum == -4'i64
+      check signed.product == 6'i64
+      check signed.reshape(1, 5).sum(1) == [[-4'i64]].toTensor
+      check signed.reshape(1, 5).product(-1) == [[6'i64]].toTensor
+      let unsigned = [high(uint64), 1'u64, high(uint64) - 1].toTensor
+      check unsigned.sum == -2'i64
+      check unsigned.product == 2'i64
+      check unsigned[2..0|-1].sum == -2'i64
+      check unsigned[2..0|-1].product == 2'i64
+      check unsigned.reshape(1, 3).sum(1) == [[-2'i64]].toTensor
+      check unsigned.reshape(1, 3).product(1) == [[2'i64]].toTensor
+
     test "Sum":
       check: t.sum == 66
       check: t_c.sum == complex(66'f64)
@@ -171,8 +261,8 @@ proc main() =
                     [12],
                     [21],
                     [30]].toTensor()
-      check: t.sum(axis=0) == row_sum
-      check: t.sum(axis=1) == col_sum
+      check: t.sum(axis=0) == row_sum.asType(int64)
+      check: t.sum(axis=1) == col_sum.asType(int64)
       check: t_c.sum(axis=0) == row_sum.asType(Complex[float64])
       check: t_c.sum(axis=1) == col_sum.asType(Complex[float64])
 
@@ -189,6 +279,12 @@ proc main() =
       check: t.asType(float).mean(axis=1) == col_mean
       check: t_c.mean(axis=0) == row_mean.asType(Complex[float64])
       check: t_c.mean(axis=1) == col_mean.asType(Complex[float64])
+      let integers = [[-5'i8, 1, 7], [2'i8, 4, 6]].toTensor
+      check integers.mean == 2'i8
+      let integerRows: Tensor[int8] = integers.mean(0)
+      let integerColumns: Tensor[int8] = integers.mean(1)
+      check integerRows == [[-1'i8, 2, 6]].toTensor
+      check integerColumns == [[1'i8], [4'i8]].toTensor
 
     test "Product":
       let a = [[1,2,4],[8,16,32]].toTensor()
@@ -196,8 +292,8 @@ proc main() =
       check: t.product() == 0
       check: a.product() == 32768
       check: a.asType(float).product() == 32768.0
-      check: a.product(0) == [[8,32,128]].toTensor()
-      check: a.product(1) == [[8],[4096]].toTensor()
+      check: a.product(0) == [[8'i64,32,128]].toTensor()
+      check: a.product(1) == [[8'i64],[4096]].toTensor()
       check: t_c.product() == complex(0.0)
       check: a_c.product() == complex(32768.0)
       check: a_c.product(0) == [[8,32,128]].toTensor().asType(Complex[float64])

@@ -30,6 +30,104 @@ import complex except Complex64, Complex32
 # ### Standard aggregate functions
 # TODO consider using stats from Nim standard lib: https://nim-lang.org/docs/stats.html#standardDeviation,RunningStat
 
+template sumProductElement(T: typedesc, promoteIntegers: static[bool] = true): typedesc =
+  when promoteIntegers and (T is SomeInteger or T is bool): int64
+  else: T
+
+template promotedInteger(value: untyped): int64 =
+  when typeof(value) is bool: int64(ord(value))
+  elif typeof(value) is SomeUnsignedInt: cast[int64](uint64(value))
+  else: int64(value)
+
+template combineInteger(acc, value: untyped, multiply: static[bool]) =
+  when multiply: acc = acc *% promotedInteger(value)
+  else: acc = acc +% promotedInteger(value)
+
+proc reducePackedIntegers[T](input: ptr UncheckedArray[T], base, count: uint;
+                             multiply: static[bool]): int64 =
+  ## Independent modulo-64 carries shorten the dependency chain without rounding.
+  ## Tensor shape bounds permit unsigned indices without checked hot-loop sums.
+  const identity = when multiply: 1'i64 else: 0'i64
+  var
+    a = identity
+    b = identity
+    c = identity
+    d = identity
+  let bulk = count and not 3'u
+  var index = 0'u
+  while index < bulk:
+    combineInteger(a, input[base + index], multiply)
+    combineInteger(b, input[base + index + 1], multiply)
+    combineInteger(c, input[base + index + 2], multiply)
+    combineInteger(d, input[base + index + 3], multiply)
+    index += 4
+  result = a
+  combineInteger(result, b, multiply)
+  combineInteger(result, c, multiply)
+  combineInteger(result, d, multiply)
+  while index < count:
+    combineInteger(result, input[base + index], multiply)
+    inc index
+
+proc reduceIntegers[T](arg: Tensor[T], multiply: static[bool]): int64 =
+  ## Convert on read, including unsigned upper-half bit patterns.
+  const identity = when multiply: 1'i64 else: 0'i64
+  result = identity
+  if arg.size == 0: return
+  if arg.is_C_contiguous:
+    let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+    return reducePackedIntegers(input, 0'u, arg.size.uint, multiply)
+  for value in arg:
+    combineInteger(result, value, multiply)
+
+proc reduceIntegerAxis[T](arg: Tensor[T], axis: int;
+                          multiply: static[bool]): Tensor[int64] =
+  ## Allocate only the final output; views keep their original storage.
+  const identity = when multiply: 1'i64 else: 0'i64
+  if arg.rank == 0:
+    if arg.size == 0: return newTensor[int64](0)
+    let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+    return newTensorWith[int64]([], promotedInteger(input[0]))
+  var shape = arg.shape
+  shape[axis] = 1
+  let axisLength = arg.shape[axis]
+  if axisLength == 0: return newTensorWith[int64](shape, identity)
+  result = newTensorUninit[int64](shape)
+  if result.size == 0: return
+  let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+  let output = cast[ptr UncheckedArray[int64]](result.get_offset_ptr)
+  if arg.is_C_contiguous:
+    var outer = 1'u
+    for dimension in 0 ..< axis: outer *= arg.shape[dimension].uint
+    var inner = 1'u
+    for dimension in axis + 1 ..< arg.rank: inner *= arg.shape[dimension].uint
+    let length = axisLength.uint
+    for batch in 0'u ..< outer:
+      let base = batch * length * inner
+      if inner == 1:
+        output[batch] = reducePackedIntegers(input, base, length, multiply)
+      else:
+        let destination = batch * inner
+        for column in 0'u ..< inner:
+          output[destination + column] = promotedInteger(input[base + column])
+        for position in 1'u ..< length:
+          let source = base + position * inner
+          for column in 0'u ..< inner:
+            let index = destination + column
+            combineInteger(output[index], input[source + column], multiply)
+    return
+  for index in 0 ..< result.size:
+    var remainder = index
+    var base = 0
+    for dimension in countdown(arg.rank - 1, 0):
+      if dimension != axis:
+        base += (remainder mod shape[dimension]) * arg.strides[dimension]
+        remainder = remainder div shape[dimension]
+    var value = identity
+    for position in 0 ..< axisLength:
+      combineInteger(value, input[base + position * arg.strides[axis]], multiply)
+    output[index] = value
+
 func reductionAxis(rank, axis: int): int =
   ## Scalars accept axis 0 and -1 without acquiring a dimension.
   let dimensions = max(1, rank)
@@ -72,55 +170,74 @@ proc sumAlongAxis[T](arg: Tensor[T], axis: int): Tensor[T] =
   arg.reduce_axis_inline(axis):
     x+=y
 
-proc sum*[T](arg: Tensor[T]): T =
-  ## Compute the sum of all elements
-  when defined(macosx) and T is float32:
-    if arg.size == 0: return 0'f32
-    if arg.is_C_contiguous:
-      vDSP_sve(arg.get_offset_ptr, 1.clong, addr result, arg.size.culong)
-      return
-  arg.reduce_inline():
-    x+=y
+proc sum*[T](arg: Tensor[T]): sumProductElement(T) =
+  ## Compute the sum of all elements.
+  ## Integers and booleans promote to int64 before modulo-2^64 arithmetic.
+  when T is SomeInteger or T is bool:
+    reduceIntegers(arg, false)
+  else:
+    when defined(macosx) and T is float32:
+      if arg.size == 0: return 0'f32
+      if arg.is_C_contiguous:
+        vDSP_sve(arg.get_offset_ptr, 1.clong, addr result, arg.size.culong)
+        return
+    arg.reduce_inline():
+      x+=y
 
-proc sum*[T](arg: Tensor[T], axis: int): Tensor[T] {.noinit.} =
+proc sum*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noinit.} =
   ## Sum along a positive or negative axis, retaining its dimension.
   ## Empty reductions produce zeros; scalar results are independent copies.
-  sumAlongAxis(arg, reductionAxis(arg.rank, axis))
+  ## Integers and booleans promote to int64 with modulo-2^64 arithmetic.
+  let axis = reductionAxis(arg.rank, axis)
+  when T is SomeInteger or T is bool:
+    reduceIntegerAxis(arg, axis, false)
+  else:
+    sumAlongAxis(arg, axis)
 
-proc product*[T](arg: Tensor[T]): T =
+proc product*[T](arg: Tensor[T]): sumProductElement(T) =
   ## Compute the product of all elements; an empty product is one.
+  ## Integers and booleans promote to int64 before modulo-2^64 arithmetic.
   ## Packed macOS float32 uses vector partial products; rounding and overflow
   ## depend on that grouping rather than a left-to-right multiplication order.
-  if arg.size == 0: return productIdentity[T]()
-  when defined(macosx) and T is float32:
-    if arg.is_C_contiguous:
-      reducePackedFloat32(addr result, arg.get_offset_ptr, 1, arg.size, 1, true, false)
-      return
-  arg.reduce_inline():
-    x*=y
+  when T is SomeInteger or T is bool:
+    reduceIntegers(arg, true)
+  else:
+    if arg.size == 0: return productIdentity[T]()
+    when defined(macosx) and T is float32:
+      if arg.is_C_contiguous:
+        reducePackedFloat32(addr result, arg.get_offset_ptr, 1, arg.size, 1, true, false)
+        return
+    arg.reduce_inline():
+      x*=y
 
-proc product*[T](arg: Tensor[T], axis: int): Tensor[T] {.noinit.}=
+proc product*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noinit.}=
   ## Product along a positive or negative axis, retaining its dimension.
   ## Empty reductions produce ones; scalar results are independent copies.
+  ## Integers and booleans promote to int64 with modulo-2^64 arithmetic.
   let axis = reductionAxis(arg.rank, axis)
-  if arg.rank == 0:
-    if arg.size == 0: return newTensor[T](0)
-    return arg.clone
-  if arg.size == 0:
-    var shape = arg.shape
-    shape[axis] = 1
-    return newTensorWith[T](shape, productIdentity[T]())
-  when defined(macosx) and T is float32:
-    if arg.is_C_contiguous:
-      return packedFloat32Axis(arg, axis, true, false)
-  arg.reduce_axis_inline(axis):
-    x.melwise_mul(y)
+  when T is SomeInteger or T is bool:
+    reduceIntegerAxis(arg, axis, true)
+  else:
+    if arg.rank == 0:
+      if arg.size == 0: return newTensor[T](0)
+      return arg.clone
+    if arg.size == 0:
+      var shape = arg.shape
+      shape[axis] = 1
+      return newTensorWith[T](shape, productIdentity[T]())
+    when defined(macosx) and T is float32:
+      if arg.is_C_contiguous:
+        return packedFloat32Axis(arg, axis, true, false)
+    arg.reduce_axis_inline(axis):
+      x.melwise_mul(y)
 
 proc mean*[T: SomeInteger](arg: Tensor[T]): T {.inline.}=
   ## Compute the mean of all elements
   ##
   ## Warning ⚠: Since input is integer, output will also be integer (using integer division)
-  arg.sum div arg.size.T
+  let total = arg.reduce_inline():
+    x+=y
+  total div arg.size.T
 
 proc mean*[T: SomeInteger](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}=
   ## Compute the mean along an axis
@@ -384,20 +501,14 @@ proc iqr*[T](arg: Tensor[T]): float =
   result = percentile(tS, 75, isSorted = true) -
            percentile(tS, 25, isSorted = true)
 
-template scanElement(T: typedesc, promoteIntegers: static[bool] = true): typedesc =
-  when promoteIntegers and (T is SomeInteger or T is bool): int64
-  else: T
-
 proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
-                promoteIntegers: static[bool] = true): Tensor[scanElement(T, promoteIntegers)] =
+                promoteIntegers: static[bool] = true): Tensor[sumProductElement(T, promoteIntegers)] =
   ## Promote integers while reading; float32 carries stay wide after rounded stores.
   mixin _
-  type U = scanElement(T, promoteIntegers)
+  type U = sumProductElement(T, promoteIntegers)
   template scanValue(value: untyped): untyped =
     when not promoteIntegers: value
-    elif T is bool: int64(ord(value))
-    elif T is SomeUnsignedInt: cast[int64](uint64(value))
-    elif T is SomeInteger: int64(value)
+    elif T is SomeInteger or T is bool: promotedInteger(value)
     else: value
   when T is float32 or T is float64:
     const identity = when multiply: 1.0 else: 0.0
@@ -521,7 +632,7 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
         inputBase -= (arg.shape[dim] - 1) * arg.strides[dim]
     inc group
 
-proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[scanElement(T)] =
+proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[sumProductElement(T)] =
   ## Return independent, same-shaped inclusive cumulative sums along ``axis``.
   ## Negative axes count from the end; scalars accept axes 0 and -1. Empty
   ## tensors retain their exact shape. Invalid axes raise ``ValueError``.
@@ -532,7 +643,7 @@ proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[scanElement(T)] =
   ## other element types retain their type and ordinary ``+`` operation.
   scanCPU(arg, axis, false)
 
-proc cumprod*[T](arg: Tensor[T], axis: int = 0): Tensor[scanElement(T)] =
+proc cumprod*[T](arg: Tensor[T], axis: int = 0): Tensor[sumProductElement(T)] =
   ## Return independent, same-shaped inclusive cumulative products along ``axis``.
   ## Negative axes count from the end; scalars accept axes 0 and -1. Empty
   ## tensors retain their exact shape. Invalid axes raise ``ValueError``.

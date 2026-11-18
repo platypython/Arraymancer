@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Promote CPU whole/axis integer and boolean sums/products to wrapping int64
+  without conversion tensors. Preserve floating/complex reductions, signed and
+  broadcast views, and the documented integer-mean dtype/division behavior.
 - Dispatch packed Metal row reductions in independent SIMD-sized threadgroups,
   retaining existing subgroup arithmetic and layout guards.
 - Promote CPU integer and boolean cumulative sums/products to int64 before

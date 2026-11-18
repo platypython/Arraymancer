@@ -692,6 +692,110 @@ def integer_scans(torch: Any) -> dict[str, Any]:
     return _case("tensor.integer_scans", "api:torch", inputs, expected, tolerance=0.0)
 
 
+def integer_reductions(torch: Any) -> dict[str, Any]:
+    """Observe default CPU integer sum/product promotion and exact int64 outputs."""
+    specs: dict[str, dict[str, Any]] = {
+        "bool": {
+            "dtype": "bool", "shape": [2, 3], "words": [0, 1, 0, 2, -1, 0],
+            "layout": "identity", "axes": [None, 0, 1, -1, -2],
+        },
+        "int8": {
+            "dtype": "int8", "shape": [2, 3], "words": [-128, 127, -1, 1, 2, 3],
+            "layout": "identity", "axes": [None, 0, 1, -1, -2],
+        },
+        "int16": {
+            "dtype": "int16", "shape": [2, 3], "words": [-32768, 32767, -1, 1, 2, 3],
+            "layout": "identity", "axes": [None, 0, 1, -1, -2],
+        },
+        "int32": {
+            "dtype": "int32", "shape": [2, 3], "words": [-2147483648, 2147483647, -1, 1, 2, 3],
+            "layout": "identity", "axes": [None, 0, 1, -1, -2],
+        },
+        "int64": {
+            "dtype": "int64", "shape": [2, 3], "words": [-3, 4, 2, -5, 0, 1],
+            "layout": "identity", "axes": [None, 0, 1, -1, -2],
+        },
+        "uint8": {
+            "dtype": "uint8", "shape": [2, 3], "words": [0, 255, 1, 2, 128, 3],
+            "layout": "identity", "axes": [None, 0, 1, -1, -2],
+        },
+        "uint16": {
+            "dtype": "uint16", "shape": [2, 3], "words": [0, 65535, 1, 2, 32768, 3],
+            "layout": "identity", "axes": [None, 0, 1, -1, -2],
+        },
+        "uint32": {
+            "dtype": "uint32", "shape": [2, 3],
+            "words": [0, 4294967295, 1, 2, 2147483648, 3],
+            "layout": "identity", "axes": [None, 0, 1, -1, -2],
+        },
+        "uint64": {
+            "dtype": "uint64", "shape": [2, 3],
+            "words": [0, 9223372036854775807, -9223372036854775808, -1, -2, 1],
+            "layout": "identity", "axes": [None, 0, 1, -1, -2],
+        },
+        "scalar": {
+            "dtype": "int64", "shape": [], "words": [-9223372036854775808],
+            "layout": "identity", "axes": [None, 0, -1],
+        },
+        "empty": {
+            "dtype": "uint64", "shape": [2, 0, 3], "words": [],
+            "layout": "identity", "axes": [None, 0, 1, 2, -1, -2, -3],
+        },
+        "overflow": {
+            "dtype": "int64", "shape": [5],
+            "words": [9223372036854775807, 2, -3, 9223372036854775807, -1],
+            "layout": "identity", "axes": [None, 0, -1],
+        },
+        "transpose": {
+            "dtype": "int64", "shape": [2, 3], "words": [2, -3, 5, 7, 0, -1],
+            "layout": "transpose", "axes": [None, 0, 1, -1, -2],
+        },
+        "offset": {
+            "dtype": "uint16", "shape": [3, 4], "words": list(range(12)),
+            "layout": "offset", "axes": [None, 0, 1, -1, -2],
+        },
+        "reverse": {
+            "dtype": "int64", "shape": [5], "words": [3, -2, 0, 4, -1],
+            "layout": "reverse", "axes": [None, 0, -1],
+        },
+        "broadcast": {
+            "dtype": "uint8", "shape": [1, 3], "words": [2, 3, 0],
+            "layout": "broadcast", "axes": [None, 0, 1, -1, -2],
+        },
+    }
+    torch_dtypes = {name: getattr(torch, name) for name in
+                    ("bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64")}
+    inputs: dict[str, Any] = {}
+    expected: dict[str, Any] = {}
+    for name, spec in specs.items():
+        source = torch.tensor(spec["words"], dtype=torch.int64, device="cpu").to(
+            dtype=torch_dtypes[spec["dtype"]]
+        ).reshape(spec["shape"])
+        layout = spec["layout"]
+        if layout == "transpose":
+            source = source.transpose(0, 1)
+        elif layout == "offset":
+            source = source.transpose(0, 1)[:, 1:]
+        elif layout == "reverse":
+            source = source.flip([0])
+        elif layout == "broadcast":
+            source = source.expand(4, 3)
+        inputs[name] = {**spec}
+        operations: dict[str, Any] = {}
+        for operation in ("sum", "prod"):
+            axes: dict[str, Any] = {}
+            for axis in spec["axes"]:
+                output = getattr(source, operation)() if axis is None else getattr(source, operation)(
+                    dim=axis, keepdim=True
+                )
+                if output.dtype != torch.int64:
+                    raise ValueError(f"{name}.{operation} returned {output.dtype}, expected int64")
+                axes["all" if axis is None else str(axis)] = _observe(output)
+            operations[operation] = axes
+        expected[name] = operations
+    return _case("tensor.integer_reductions", "api:torch", inputs, expected, tolerance=0.0)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -700,7 +804,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     axis_options, broadcast_multiply, broadcast_divide,
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
     unary_math, activation_math, reduction_edges, product_gradient, cumsum_gradient, cumprod_gradient,
-    integer_scans,
+    integer_scans, integer_reductions,
 )
 
 

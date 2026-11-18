@@ -58,14 +58,14 @@ const
     "autograd.matmul_ranks", "autograd.singleton_views", "tensor.elementwise_shapes",
     "autograd.unary_math", "autograd.activation_math", "tensor.reduction_edges",
     "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient",
-    "tensor.integer_scans"]
+    "tensor.integer_scans", "tensor.integer_reductions"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
     "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
-    "api:autograd", "api:autograd", "api:autograd", "api:torch"]
+    "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -292,41 +292,65 @@ proc expectInputTensor(node: JsonNode) =
   for value in node["values"]:
     require(value.kind in {JInt, JFloat} and classify(value.getFloat) notin {fcNan, fcInf, fcNegInf},
       "fixture inputs must contain finite numbers")
-proc expectIntegerScanInput(node: JsonNode) =
+proc expectIntegerWordsInput(node: JsonNode, label: string, allowWhole: bool) =
   let allowedDtypes = ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
-  require(text(field(node, "dtype"), "integer scan dtype") in allowedDtypes,
-    "unsupported integer scan input dtype")
+  require(text(field(node, "dtype"), label & " dtype") in allowedDtypes,
+    "unsupported " & label & " dtype")
   let shapeNode = field(node, "shape")
-  require(shapeNode.kind == JArray, "integer scan shape must be an array")
+  require(shapeNode.kind == JArray, label & " shape must be an array")
   var shape: seq[int]
   var n = 1
   for dim in shapeNode:
-    require(dim.kind == JInt and dim.getInt >= 0, "integer scan dimensions must be nonnegative integers")
+    require(dim.kind == JInt and dim.getInt >= 0, label & " dimensions must be nonnegative integers")
     let size = dim.getInt
     shape.add size
     if size == 0: n = 0
     elif n != 0:
-      require(n <= high(int) div size, "integer scan input shape overflows")
+      require(n <= high(int) div size, label & " input shape overflows")
       n *= size
   let words = field(node, "words")
-  require(words.kind == JArray and words.len == n, "integer scan words do not match shape")
+  require(words.kind == JArray and words.len == n, label & " words do not match shape")
   for word in words:
-    require(word.kind == JInt, "integer scan words must be signed int64 JSON integers")
-  let layout = text(field(node, "layout"), "integer scan layout")
+    require(word.kind == JInt, label & " words must be signed int64 JSON integers")
+  let layout = text(field(node, "layout"), label & " layout")
   case layout
   of "identity": discard
-  of "transpose": require(shape.len == 2, "transpose integer scan input must have rank 2")
-  of "offset": require(shape.len == 2 and shape[0] > 1, "offset integer scan input shape is invalid")
-  of "reverse": require(shape.len == 1, "reverse integer scan input must have rank 1")
-  of "broadcast": require(shape == @[1, 3], "broadcast integer scan input must have shape [1,3]")
-  else: invalid("unknown integer scan layout")
+  of "transpose": require(shape.len == 2, "transpose " & label & " input must have rank 2")
+  of "offset": require(shape.len == 2 and shape[0] > 1, "offset " & label & " input shape is invalid")
+  of "reverse": require(shape.len == 1, "reverse " & label & " input must have rank 1")
+  of "broadcast": require(shape == @[1, 3], "broadcast " & label & " input must have shape [1,3]")
+  else: invalid("unknown " & label & " layout")
   let axes = field(node, "axes")
-  require(axes.kind == JArray and axes.len > 0, "integer scan axes are required")
+  require(axes.kind == JArray and axes.len > 0, label & " axes are required")
   let dimensions = max(1, shape.len)
+  var seen = initHashSet[string]()
+  var hasWhole = false
+  var hasPositiveAxis = false
+  var hasNegativeAxis = false
   for axis in axes:
-    require(axis.kind == JInt and axis.getInt >= -dimensions and axis.getInt < dimensions,
-      "integer scan axis is out of bounds")
+    if allowWhole and axis.kind == JNull:
+      require(not hasWhole, label & " whole-reduction axis is duplicated")
+      hasWhole = true
+    else:
+      require(axis.kind == JInt and axis.getInt >= -dimensions and axis.getInt < dimensions,
+        label & " axis is out of bounds")
+      let axisKey = $axis.getInt
+      require(axisKey notin seen, label & " axis is duplicated")
+      seen.incl(axisKey)
+      hasPositiveAxis = hasPositiveAxis or axis.getInt > 0
+      hasNegativeAxis = hasNegativeAxis or axis.getInt < 0
+  if allowWhole:
+    require(hasWhole, label & " whole-reduction axis is required")
+    if shape.len > 1:
+      require(hasPositiveAxis and hasNegativeAxis, label & " positive and negative axes are required")
+    elif shape.len == 1:
+      require(hasNegativeAxis and "0" in seen, label & " rank-one axes must include 0 and -1")
 
+proc expectIntegerScanInput(node: JsonNode) =
+  expectIntegerWordsInput(node, "integer scan", false)
+
+proc expectIntegerReductionInput(node: JsonNode) =
+  expectIntegerWordsInput(node, "integer reduction", true)
 
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
@@ -380,6 +404,45 @@ proc validateFixtureData*(data, reference: JsonNode) =
         "integer scan fixtures require exact-value tolerances")
       require(inputs.kind == JObject and inputs.len > 0, "integer scan inputs missing")
       for _, spec in inputs: expectIntegerScanInput(spec)
+    of "tensor.integer_reductions":
+      require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
+        "integer reduction fixtures require exact-value tolerances")
+      let requiredNames = ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+        "uint64", "scalar", "empty", "overflow", "transpose", "offset", "reverse", "broadcast"]
+      require(inputs.kind == JObject and inputs.len == requiredNames.len,
+        "integer reduction inputs do not match required cases")
+      for name in requiredNames:
+        require(inputs.hasKey(name), "missing integer reduction input " & name)
+        let spec = inputs[name]
+        expectIntegerReductionInput(spec)
+        let expectedDtype = if name in ["bool", "int8", "int16", "int32", "int64", "uint8",
+            "uint16", "uint32", "uint64"]: name
+          elif name == "empty": "uint64"
+          elif name == "offset": "uint16"
+          elif name == "broadcast": "uint8"
+          else: "int64"
+        require(text(field(spec, "dtype"), "integer reduction dtype") == expectedDtype,
+          "integer reduction dtype mismatch for " & name)
+        let expectedShape = case name
+          of "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+              "uint64", "transpose": %*[2, 3]
+          of "empty": %*[2, 0, 3]
+          of "overflow", "reverse": %*[5]
+          of "offset": %*[3, 4]
+          of "broadcast": %*[1, 3]
+          else: %*[]
+        require(field(spec, "shape") == expectedShape, "integer reduction shape mismatch for " & name)
+        var requiredAxes = newJArray()
+        requiredAxes.add newJNull()
+        let axisCount = max(1, expectedShape.len)
+        for axis in 0 ..< axisCount: requiredAxes.add newJInt(axis)
+        for axis in 1 .. axisCount: requiredAxes.add newJInt(-axis)
+        require(field(spec, "axes") == requiredAxes,
+          "integer reduction axes do not match required coverage for " & name)
+        let expectedLayout = if name in ["transpose", "offset", "reverse", "broadcast"]: name
+          else: "identity"
+        require(text(field(spec, "layout"), "integer reduction layout") == expectedLayout,
+          "integer reduction layout mismatch for " & name)
     of "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient":
       let product = id == "autograd.product_gradient"
       require(inputs.kind == JObject and inputs.len > 0, "reduction gradient inputs missing")
@@ -439,6 +502,20 @@ proc validateFixtureData*(data, reference: JsonNode) =
             "integer scan axis observations are incomplete")
           for axis in spec["axes"]:
             let key = $axis.getInt
+            expectTensor(field(byAxis, key), false, "int64")
+    of "tensor.integer_reductions":
+      require(expected.kind == JObject and expected.len == inputs.len,
+        "integer reduction expected cases must match inputs")
+      for name, spec in inputs:
+        let byOperation = field(expected, name)
+        require(byOperation.kind == JObject and byOperation.len == 2,
+          "integer reduction must include sum and prod observations")
+        for operation in ["sum", "prod"]:
+          let byAxis = field(byOperation, operation)
+          require(byAxis.kind == JObject and byAxis.len == spec["axes"].len,
+            "integer reduction axis observations are incomplete")
+          for axis in spec["axes"]:
+            let key = if axis.kind == JNull: "all" else: $axis.getInt
             expectTensor(field(byAxis, key), false, "int64")
     else: discard
   require(ids.len == RequiredCaseIds.len, "missing required fixture case")

@@ -1,9 +1,10 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
-## Measures allocating CPU integer scans on externally supplied signed int64 words.
+## Measures allocating CPU integer reductions and scans on signed int64 words.
 import std/[algorithm, json, math, monotimes, os, times]
 import arraymancer
 
-const cases = ["cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns"]
+const cases = ["sum", "prod", "sum_rows", "sum_columns", "prod_rows", "prod_columns",
+               "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns"]
 
 proc nativeValue[T](word: int64): T =
   ## Match Torch's signed-word cast, including unsigned wraparound.
@@ -25,11 +26,17 @@ proc loadInput[T](manifest: JsonNode): Tensor[T] =
 
 proc execute[T](name: string; input: Tensor[T]): Tensor[int64] =
   case name
+  of "sum": newTensorWith[int64]([], input.sum())
+  of "prod": newTensorWith[int64]([], input.product())
+  of "sum_rows": input.sum(-1)
+  of "sum_columns": input.sum(-2)
+  of "prod_rows": input.product(-1)
+  of "prod_columns": input.product(-2)
   of "cumsum_rows": input.cumsum(-1)
   of "cumsum_columns": input.cumsum(-2)
   of "cumprod_rows": input.cumprod(-1)
   of "cumprod_columns": input.cumprod(-2)
-  else: raise newException(ValueError, "Unknown integer scan: " & name)
+  else: raise newException(ValueError, "Unknown integer action: " & name)
 
 proc observe(input: Tensor[int64]): JsonNode =
   var shape = newJArray()
@@ -41,7 +48,7 @@ proc observe(input: Tensor[int64]): JsonNode =
   %*{"dtype": "int64", "shape": shape, "values": values}
 
 proc consume(input: Tensor[int64]) =
-  ## Keep allocating scan work observable to the optimizer.
+  ## Keep allocating tensor work observable to the optimizer.
   let address = cast[uint](input.get_offset_ptr)
   asm {.asmSyntax: "gcc".}"""
     ""
@@ -90,13 +97,13 @@ proc runForDtype(manifest: JsonNode): JsonNode =
   of "uint16": run[uint16](manifest)
   of "uint32": run[uint32](manifest)
   of "uint64": run[uint64](manifest)
-  else: raise newException(ValueError, "Unsupported integer scan dtype")
+  else: raise newException(ValueError, "Unsupported integer benchmark dtype")
 
 when isMainModule:
   if paramCount() != 1:
-    echo "Usage: integer_scan_runner INPUT.json"
+    echo "Usage: integer_runner INPUT.json"
     quit(if paramCount() == 0: 0 else: 2)
   let manifest = parseFile(paramStr(1))
   if manifest["rows"].getInt != 128 or manifest["columns"].getInt != 128:
-    raise newException(ValueError, "Integer scan input must be 128x128")
+    raise newException(ValueError, "Integer benchmark input must be 128x128")
   echo runForDtype(manifest)

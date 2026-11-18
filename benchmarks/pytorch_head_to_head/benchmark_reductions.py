@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Check and time allocating CPU/Metal reductions and scans against pinned PyTorch.
 
-Float32 retains the existing 20-case benchmark. Integer/bool scans are CPU-only;
-build their runner with:
-  nim c -d:release --path:src --out:build/integer_scan_runner benchmarks/pytorch_head_to_head/integer_scan_runner.nim
+Float32 retains the existing 20-action benchmark. Integer/bool reductions and scans
+are CPU-only; build their runner with:
+  nim c -d:release --path:src --out:build/integer_runner benchmarks/pytorch_head_to_head/integer_runner.nim
 Inputs stay resident; both implementations synchronize only at sample boundaries.
 Three paired rounds alternate backend order and require every median and p95 to win.
 Use 100 samples of 50 allocating calls; warmup matches one complete sample.
@@ -34,7 +34,8 @@ CASES = ("prod", "sum_rows", "sum_columns", "mean_rows", "mean_columns",
          "cumsum_rows", "cumsum_columns", "cumsum_rows_backward", "cumsum_columns_backward",
          "cumprod_rows", "cumprod_columns", "cumprod_rows_backward", "cumprod_columns_backward")
 
-INTEGER_CASES = ("cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns")
+INTEGER_CASES = ("sum", "prod", "sum_rows", "sum_columns", "prod_rows", "prod_columns",
+                 "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns")
 INTEGER_DTYPES = ("bool", "int8", "int16", "int32", "int64",
                   "uint8", "uint16", "uint32", "uint64")
 INTEGER_TORCH_DTYPES: dict[str, torch.dtype] = {
@@ -45,7 +46,7 @@ INTEGER_TORCH_DTYPES: dict[str, torch.dtype] = {
 INTEGER_ARTIFACTS = (
     "src/arraymancer/tensor/aggregate.nim",
     "src/arraymancer/tensor/private/p_accelerate.nim",
-    "benchmarks/pytorch_head_to_head/integer_scan_runner.nim",
+    "benchmarks/pytorch_head_to_head/integer_runner.nim",
     "benchmarks/pytorch_head_to_head/benchmark_reductions.py",
 )
 ARTIFACTS = (
@@ -104,13 +105,23 @@ def operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
 
 
 def integer_operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
-    """Resolve an allocating int64-output scan on a resident native-dtype input."""
+    """Resolve an allocating int64-output reduction or scan on resident typed input."""
+    if name == "sum":
+        return lambda: value.sum()
+    if name == "prod":
+        return lambda: value.prod()
+    if name.startswith(("sum_", "prod_")):
+        kind, direction = name.split("_")
+        axis = -1 if direction == "rows" else -2
+        if kind == "sum":
+            return lambda: value.sum(dim=axis, keepdim=True)
+        return lambda: value.prod(dim=axis, keepdim=True)
     axis = -1 if name.endswith("_rows") else -2
     if name.startswith("cumsum_"):
         return lambda: value.cumsum(dim=axis)
     if name.startswith("cumprod_"):
         return lambda: value.cumprod(dim=axis)
-    raise ValueError(f"Unknown integer scan: {name}")
+    raise ValueError(f"Unknown integer action: {name}")
 
 
 def run_integer_benchmark(args: argparse.Namespace) -> int:
@@ -148,7 +159,7 @@ def run_integer_benchmark(args: argparse.Namespace) -> int:
     native_command = [str(args.runner.resolve()), str(input_path.resolve())]
     compile_command = [
         "nim", "c", "-d:release", "--path:src", f"--out:{args.runner}",
-        "benchmarks/pytorch_head_to_head/integer_scan_runner.nim",
+        "benchmarks/pytorch_head_to_head/integer_runner.nim",
     ]
 
     def native() -> dict[str, Any]:
@@ -241,7 +252,7 @@ def main() -> int:
             args.runner = Path("build/reduction_runner_cpu" if args.backend == "cpu"
                                else "build/reduction_runner")
         else:
-            args.runner = Path("build/integer_scan_runner")
+            args.runner = Path("build/integer_runner")
     if sys.version_info[:3] != (3, 13, 18) or torch.__version__.split("+")[0] != "2.15.0":
         raise RuntimeError("Requires pinned CPython 3.13.18 and PyTorch 2.15.0")
     torch.set_num_threads(1)

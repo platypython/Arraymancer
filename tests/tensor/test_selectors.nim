@@ -276,7 +276,7 @@ proc main() =
                 [2, 2]].toTensor
 
         let rowsum = x.sum(axis = 1)
-        check rowsum.transpose.squeeze == [1, 2, 4].toTensor
+        check rowsum.transpose.squeeze == [1'i64, 2, 4].toTensor
         let cond = [true,
                     true,
                     false]

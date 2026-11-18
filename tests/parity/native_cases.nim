@@ -100,6 +100,49 @@ proc integerScans(spec: JsonNode): JsonNode =
       of "uint64": integerScanCase[uint64](input)
       else: raise newException(ValueError, "unsupported integer scan dtype: " & input["dtype"].getStr)
 
+proc integerReductionCase[T](spec: JsonNode): JsonNode =
+  var source = getIntegerTensor[T](spec)
+  case spec["layout"].getStr
+  of "transpose": source = source.transpose
+  of "offset": source = source.transpose[_, 1..^1]
+  of "reverse": source = source[^1..0|-1]
+  of "broadcast": source = source.broadcast(4, 3)
+  else: discard
+  result = newJObject()
+  for operation in ["sum", "prod"]:
+    var observations = newJObject()
+    for axisNode in spec["axes"]:
+      let key = if axisNode.kind == JNull: "all" else: $axisNode.getInt
+      if axisNode.kind == JNull:
+        let output = if operation == "sum":
+                       newTensorWith[int64]([], source.sum)
+                     else:
+                       newTensorWith[int64]([], source.product)
+        observations[key] = tensorObservation(output)
+      else:
+        let axis = axisNode.getInt
+        let output = if operation == "sum":
+                       source.sum(axis)
+                     else:
+                       source.product(axis)
+        observations[key] = tensorObservation(output)
+    result[operation] = observations
+
+proc integerReductions(spec: JsonNode): JsonNode =
+  result = newJObject()
+  for name, input in spec:
+    result[name] = case input["dtype"].getStr
+      of "bool": integerReductionCase[bool](input)
+      of "int8": integerReductionCase[int8](input)
+      of "int16": integerReductionCase[int16](input)
+      of "int32": integerReductionCase[int32](input)
+      of "int64": integerReductionCase[int64](input)
+      of "uint8": integerReductionCase[uint8](input)
+      of "uint16": integerReductionCase[uint16](input)
+      of "uint32": integerReductionCase[uint32](input)
+      of "uint64": integerReductionCase[uint64](input)
+      else: raise newException(ValueError, "unsupported integer reduction dtype: " & input["dtype"].getStr)
+
 
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
@@ -108,6 +151,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
   case id
   of "tensor.integer_scans":
     result = integerScans(inputs)
+  of "tensor.integer_reductions":
+    result = integerReductions(inputs)
   of "tensor.transpose_alias":
     var base = getTensor(inputs["a"])
     var view = base.transpose
