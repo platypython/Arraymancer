@@ -1,6 +1,8 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Bind generic GEMM packing and microkernel optimization pragmas inside their
+  instantiation scopes so integer fallback multiplication compiles on Nim 2.
 - Promote CPU whole/axis integer and boolean sums/products to wrapping int64
   without conversion tensors. Preserve floating/complex reductions, signed and
   broadcast views, and the documented integer-mean dtype/division behavior.

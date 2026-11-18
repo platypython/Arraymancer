@@ -13,7 +13,6 @@ import
   ../../private/align_unroller,
   ./gemm_utils, ./gemm_tiling
 
-withCompilerOptimHints()
 
 # ############################################################
 #
@@ -32,6 +31,7 @@ proc pack_A_mc_kc*[T; ukernel: static MicroKernel](
   ## Concretely the outer dimension of packed matrices
   ## is k so that C[i, j] = A[i, k] * B[k, j]
   ## does not require strided access
+  withCompilerOptimHints()
   let buffer{.restrict.} = assume_aligned packedA
   const MR = ukernel.extract_mr()
   let unroll_stop = mc.round_step_down(MR)
@@ -70,6 +70,7 @@ proc pack_B_kc_nc*[T; ukernel: static MicroKernel](
   ## Concretely the outer dimension of packed matrices
   ## is k so that C[i, j] = A[i, k] * B[k, j]
   ## does not require strided access
+  withCompilerOptimHints()
   let buffer{.restrict.} = assume_aligned packedB
   const NR = ukernel.extract_nr()
   let unroll_stop = nc.round_step_down(NR)

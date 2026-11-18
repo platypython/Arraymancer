@@ -11,7 +11,6 @@ import
   ./gemm_tiling, ./gemm_utils,
   macros
 
-withCompilerOptimHints()
 
 # ############################################################
 #
@@ -20,6 +19,7 @@ withCompilerOptimHints()
 # ############################################################
 
 template ukernel_generic_impl*(){.dirty.} =
+  withCompilerOptimHints()
   const
     MR = ukernel.extract_mr()
     NR = ukernel.extract_nr()
@@ -55,6 +55,7 @@ proc gebb_ukernel_epilogue_fallback*[MR, NR: static int, T](
       beta: T,  vC: MatrixView[T]
     ){.inline.} =
 
+  withCompilerOptimHints()
   let pAB{.restrict.} = assume_aligned cast[ptr array[MR, array[NR, T]]](AB[0][0].unsafeAddr)
 
   if beta == 0.T:
@@ -99,6 +100,7 @@ func gebb_ukernel_edge_epilogue*[MR, NR: static int, T](
       mr, nr: int # Tail to process
     ){.inline.} =
 
+  withCompilerOptimHints()
   let pAB{.restrict.} = assume_aligned cast[ptr array[MR, array[NR, T]]](AB[0][0].unsafeAddr)
 
   if beta == 0.T:
