@@ -97,7 +97,7 @@ proc sqrt*[T](t: Tensor[T]): Tensor[T] {.noinit.} =
     result = newTensorUninit[T](t.shape)
     result.applyUnary(t, unarySqrt)
   else:
-    result = t.map_inline(math.sqrt(x))
+    result = t.map_inline(sqrt(x))
 makeUniversal(cbrt,
   docSuffix="Note that the scalar [cbrt](https://nim-lang.org/docs/math.html#cbrt%2Cfloat64) function computes the cube root of its input.")
 proc ln*[T](t: Tensor[T]): Tensor[T] {.noinit.} =
@@ -107,7 +107,7 @@ proc ln*[T](t: Tensor[T]): Tensor[T] {.noinit.} =
     result = newTensorUninit[T](t.shape)
     result.applyUnary(t, unaryLn)
   else:
-    result = t.map_inline(math.ln(x))
+    result = t.map_inline(ln(x))
 makeUniversal(log10)
 makeUniversal(log2)
 proc exp*[T](t: Tensor[T]): Tensor[T] {.noinit.} =
@@ -117,7 +117,7 @@ proc exp*[T](t: Tensor[T]): Tensor[T] {.noinit.} =
     result = newTensorUninit[T](t.shape)
     result.applyUnary(t, unaryExp)
   else:
-    result = t.map_inline(math.exp(x))
+    result = t.map_inline(exp(x))
 
 export exp, ln, sqrt
 makeUniversal(arccos)

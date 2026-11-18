@@ -16,7 +16,8 @@ import  ./backend/openmp,
         ./private/p_checks,
         ./private/p_inner_spans,
         ./private/p_accelerate,
-        ./data_structure, ./init_cpu, ./accessors
+        ./data_structure, ./init_cpu, ./accessors,
+        ../laser/compiler_optim_hints
 
 import std / [sugar, math]
 # Valid tensor spans already fit their backing storage. Wrapping index arithmetic
@@ -113,7 +114,9 @@ template apply3_inline*[T: KnownSupportsCopyMem;U,V](dest: var Tensor[T],
       let strides = [output[].strides, input1.strides, input2.strides]
       let span = innerSpan(output[].shape, strides)
       let origins = [output[].offset, input1.offset, input2.offset]
-      let destination = output[].storage.raw_buffer
+      withCompilerOptimHints()
+      # The checked storage separation also excludes loop-carried output aliases.
+      let destination {.restrict.} = output[].storage.raw_buffer
       let source1 = input1.storage.raw_buffer
       let source2 = input2.storage.raw_buffer
       if span.length > 1 or output[].size == 1:
@@ -236,7 +239,9 @@ template map2_inline*[T, U](t1: Tensor[T], t2: Tensor[U], op:untyped): untyped =
 
   when outType is KnownSupportsCopyMem:
     var dest = newTensorUninit[outType](z1.shape)
-    let data = dest.storage.raw_buffer
+    withCompilerOptimHints()
+    # Fresh output storage cannot alias either input, even when the inputs overlap.
+    let data {.restrict.} = dest.storage.raw_buffer
     when T is KnownSupportsCopyMem and U is KnownSupportsCopyMem:
       let strides = [z1.strides, z2.strides]
       let span = innerSpan(z1.shape, strides)
