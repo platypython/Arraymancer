@@ -1,6 +1,8 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Dispatch packed Metal row reductions in independent SIMD-sized threadgroups,
+  retaining existing subgroup arithmetic and layout guards.
 - Promote CPU integer and boolean cumulative sums/products to int64 before
   arithmetic, with modulo-2^64 carries and bit-preserving uint64 conversion.
   Keep scalar/empty shapes and signed/broadcast input views without a

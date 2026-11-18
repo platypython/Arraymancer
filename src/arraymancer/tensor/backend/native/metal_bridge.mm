@@ -2830,7 +2830,9 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
       const NSUInteger simdWidth = pipeline.threadExecutionWidth;
       if (!simdWidth || simdWidth > 256 || (simdWidth & (simdWidth - 1)))
         return failure(7, "axis reduction pipeline has an unsupported SIMD width");
-      const uint64_t outputsPerGroup = 256 /
+      // Independent packed rows need no multi-SIMD threadgroup residency.
+      if (packedAxis) threads.width = simdWidth;
+      const uint64_t outputsPerGroup = threads.width /
           (packedAxisRows4 ? MIN((NSUInteger)8, simdWidth) : simdWidth);
       groups.width = (outputCount + outputsPerGroup - 1) / outputsPerGroup;
       if (groups.width * threads.width > UINT32_MAX)
