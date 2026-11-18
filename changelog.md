@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Retire Metal buffer-use records and in-flight ownership atomically before
+  clearing producer handles. Completion queries no longer hide a producer from
+  CPU readback while its queued buffer leases are still being released.
 - Fix CPU cumulative products to retain wide float32 carries after overflowed
   or underflowed outputs. Share the single-output scan traversal with cumulative
   sums and use independent ARM64 float64 SIMD lanes. Preserve scalar signs,

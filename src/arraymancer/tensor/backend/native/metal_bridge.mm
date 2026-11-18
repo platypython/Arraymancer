@@ -673,10 +673,6 @@ static void finalizeSingleCommand(AMStream *stream, AMPendingCommand *record) {
     auto outputAt = [&](NSUInteger index) -> AMBuffer * {
       return singleOutput ?: outputs[index];
     };
-    for (NSUInteger index = 0; index < outputCount; ++index) {
-      AMBuffer *output = outputAt(index);
-      finishBufferProducer(output, record.invocation, command, submissionError);
-    }
     if (command.status == MTLCommandBufferStatusCompleted &&
         record.materializationBytes) {
       for (NSUInteger index = 0; index < outputCount; ++index) {
@@ -691,7 +687,9 @@ static void finalizeSingleCommand(AMStream *stream, AMPendingCommand *record) {
       }
     }
 
-    if (record.pendingUse || record.customLeases.count) {
+    AMDeviceState *state = record.bufferLeases.count || record.materializationBytes
+        ? stream.state : nil;
+    if (record.pendingUse || record.customLeases.count || state) {
       ensureCustomLeaseLock();
       @synchronized(customLeaseLock) {
         for (AMCustomLease *lease in record.customLeases) {
@@ -702,25 +700,27 @@ static void finalizeSingleCommand(AMStream *stream, AMPendingCommand *record) {
           [owner.pendingUses removeObjectIdenticalTo:record.pendingUse];
         record.pendingUse = nil;
         record.customLeases = @[];
+        if (state) {
+          @synchronized(state) {
+            for (AMBuffer *owner in record.bufferLeases) {
+              if (!owner.inFlightLeases) continue;
+              --owner.inFlightLeases;
+              if (!owner.inFlightLeases) state.inFlightBytes -= owner.capacity;
+              if (!owner.externalReferences && !owner.inFlightLeases)
+                cacheOwnerLocked(state, owner);
+            }
+            if (command.status == MTLCommandBufferStatusCompleted &&
+                record.materializationBytes)
+              state.materializationBytes = saturatedAdd(
+                  state.materializationBytes, record.materializationBytes);
+          }
+        }
       }
     }
-
-    AMDeviceState *state = record.bufferLeases.count || record.materializationBytes
-        ? stream.state : nil;
-    if (state) {
-      @synchronized(state) {
-        for (AMBuffer *owner in record.bufferLeases) {
-          if (!owner.inFlightLeases) continue;
-          --owner.inFlightLeases;
-          if (!owner.inFlightLeases) state.inFlightBytes -= owner.capacity;
-          if (!owner.externalReferences && !owner.inFlightLeases)
-            cacheOwnerLocked(state, owner);
-        }
-        if (command.status == MTLCommandBufferStatusCompleted &&
-            record.materializationBytes)
-          state.materializationBytes = saturatedAdd(
-              state.materializationBytes, record.materializationBytes);
-      }
+    // A read lease must find either its producer or fully retired ownership.
+    for (NSUInteger index = 0; index < outputCount; ++index) {
+      AMBuffer *output = outputAt(index);
+      finishBufferProducer(output, record.invocation, command, submissionError);
     }
     finishStreamCommand(stream, record, submissionError);
     record.command = nil;
@@ -1492,7 +1492,6 @@ AMStatus am_buffer_evidence(void *buffer, AMEvidence *evidence) {
           owner.producerError =
               producer.error.localizedDescription ?: @"Metal command failed";
       }
-      owner.producer = nil;
     }
     *evidence = owner.evidence;
     if (owner.producerError &&
