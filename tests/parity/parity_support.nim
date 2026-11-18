@@ -57,14 +57,14 @@ const
     "loss.mse_mean_broadcast", "loss.mse_sum_broadcast", "loss.mse_none_broadcast",
     "autograd.matmul_ranks", "autograd.singleton_views", "tensor.elementwise_shapes",
     "autograd.unary_math", "autograd.activation_math", "tensor.reduction_edges",
-    "autograd.product_gradient", "autograd.cumsum_gradient"]
+    "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
     "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
-    "api:autograd", "api:autograd"]
+    "api:autograd", "api:autograd", "api:autograd"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -335,7 +335,7 @@ proc validateFixtureData*(data, reference: JsonNode) =
           n *= d.getInt
     of "tensor.broadcast_same_rank", "tensor.broadcast_leading_dims", "tensor.matmul_2d":
       expectInputTensor(field(inputs, "a")); expectInputTensor(field(inputs, "b"))
-    of "autograd.product_gradient", "autograd.cumsum_gradient":
+    of "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient":
       let product = id == "autograd.product_gradient"
       require(inputs.kind == JObject and inputs.len > 0, "reduction gradient inputs missing")
       for _, spec in inputs:
@@ -357,7 +357,7 @@ proc validateFixtureData*(data, reference: JsonNode) =
             require(field(operation, "axis").kind in {JNull, JInt}, "invalid product axis")
             require(field(operation, "keepdim").kind == JBool, "invalid product keepdim")
           else:
-            require(field(operation, "axis").kind == JInt, "invalid cumulative sum axis")
+            require(field(operation, "axis").kind == JInt, "invalid cumulative scan axis")
           expectInputTensor(field(operation, "seed"))
           if not product:
             require(field(operation, "seed_nonfinite").kind == JArray,

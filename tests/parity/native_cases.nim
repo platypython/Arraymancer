@@ -104,7 +104,7 @@ proc runCase*(caseData: JsonNode): JsonNode =
         output.backprop(getTensor(operation["seed"]))
         result[name].add %*{"output": tensorObservation(output.value),
                            "grad": tensorObservation(x.grad)}
-  of "autograd.cumsum_gradient":
+  of "autograd.cumsum_gradient", "autograd.cumprod_gradient":
     for name, spec in inputs:
       var source = getTensor(spec["x"])
       for special in spec["nonfinite"]:
@@ -123,7 +123,10 @@ proc runCase*(caseData: JsonNode): JsonNode =
       for operation in spec["operations"]:
         let context = newContext Tensor[float64]
         let x = context.variable(source, requires_grad = true)
-        let output = x.cumsum(operation["axis"].getInt)
+        let output = if id == "autograd.cumsum_gradient":
+                       x.cumsum(operation["axis"].getInt)
+                     else:
+                       x.cumprod(operation["axis"].getInt)
         var seed = getTensor(operation["seed"])
         for special in operation["seed_nonfinite"]:
           seed.unsafe_raw_offset[special["index"].getInt] =

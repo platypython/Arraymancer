@@ -533,3 +533,118 @@ proc product*[TT](a: Variable[TT], axis: int, keepdim = true): Variable[TT] =
   result.value = if keepdim: cachedProduct else: cachedProduct.squeeze(normalized)
   if a.is_grad_needed:
     result.product_cache(a, cachedProduct, normalized, false, keepdim)
+
+proc cpuCumprodGradient[T: SomeFloat](
+    input, prefixes, seed: Tensor[T], axis: int,
+    packed: static[bool]): Tensor[T] =
+  ## Keep the pinned first-order zero masks; omitted-product formulas differ at Inf.
+  if input.size <= 1 or input.shape[axis] == 1:
+    return seed.clone
+  result = newTensorUninit[T](input.shape)
+  var outer = 1'u
+  var inner = 1'u
+  for dim in 0 ..< axis: outer *= uint(input.shape[dim])
+  for dim in axis + 1 ..< input.rank: inner *= uint(input.shape[dim])
+  let length = uint(input.shape[axis])
+  let inputData = input.storage.raw_buffer
+  let prefixData = prefixes.storage.raw_buffer
+  let seedData = seed.storage.raw_buffer
+  let output = result.storage.raw_buffer
+  let prefixOffset = uint(prefixes.offset)
+  when packed:
+    let inputOffset = uint(input.offset)
+    let seedOffset = uint(seed.offset)
+  else:
+    var coordinates: Metadata
+    coordinates.len = input.rank
+    for dim in 0 ..< input.rank: coordinates[dim] = 0
+    var inputBase = input.offset
+    var seedBase = seed.offset
+  let groups = outer * inner
+  for group in 0'u ..< groups:
+    let base = (group div inner) * length * inner + group mod inner
+    template inputAt(index: uint): T =
+      when packed: inputData[inputOffset + base + index * inner]
+      else: inputData[inputBase + int(index) * input.strides[axis]]
+    template seedAt(index: uint): T =
+      when packed: seedData[seedOffset + base + index * inner]
+      else: seedData[seedBase + int(index) * seed.strides[axis]]
+    template prefixAt(index: uint): T =
+      prefixData[prefixOffset + base + index * inner]
+    var firstZero = length
+    for index in 0'u ..< length:
+      if inputAt(index) == T(0):
+        firstZero = index
+        break
+    for index in firstZero ..< length:
+      output[base + index * inner] = T(0)
+    var accumulated = 0.0
+    var remaining = firstZero
+    while remaining > 0:
+      dec remaining
+      let weight = prefixAt(remaining) * seedAt(remaining)
+      accumulated += float64(weight)
+      output[base + remaining * inner] = T(accumulated) / inputAt(remaining)
+    if firstZero < length:
+      var suffixProduct = 1.0
+      var zeroSum = T(0)
+      for index in firstZero ..< length:
+        if index > firstZero:
+          let value = inputAt(index)
+          if value == T(0):
+            # Masked gradients still multiply the carried Inf/NaN by zero.
+            let maskedWeight = T(suffixProduct) * T(0)
+            zeroSum = zeroSum + maskedWeight
+            break
+          suffixProduct *= float64(value)
+        let weight = T(suffixProduct) * seedAt(index)
+        zeroSum = zeroSum + weight
+      let beforeZero = if firstZero == 0: T(1) else: prefixAt(firstZero - 1)
+      output[base + firstZero * inner] = zeroSum * beforeZero
+    when not packed:
+      if group + 1 < groups:
+        for dim in countdown(input.rank - 1, 0):
+          if dim == axis: continue
+          if coordinates[dim] < input.shape[dim] - 1:
+            inc coordinates[dim]
+            inputBase += input.strides[dim]
+            seedBase += seed.strides[dim]
+            break
+          coordinates[dim] = 0
+          inputBase -= (input.shape[dim] - 1) * input.strides[dim]
+          seedBase -= (input.shape[dim] - 1) * seed.strides[dim]
+
+type CumprodGate[TT] {.final.} = ref object of Gate[TT]
+  cached_input: TT
+  cached_prefixes: TT
+  axis: int
+
+proc cumprod_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
+  let self = CumprodGate[TT](self)
+  result = newDiffs[TT](1)
+  if self.cached_input.is_C_contiguous and payload.variable.grad.is_C_contiguous:
+    result[0] = cpuCumprodGradient(
+      self.cached_input, self.cached_prefixes, payload.variable.grad, self.axis, true)
+  else:
+    result[0] = cpuCumprodGradient(
+      self.cached_input, self.cached_prefixes, payload.variable.grad, self.axis, false)
+
+proc cumprod*[T: SomeFloat](
+    a: Variable[Tensor[T]], axis: int = 0): Variable[Tensor[T]] =
+  ## CPU float32/float64 inclusive product with an explicit seeded first-order VJP.
+  ## Negative/scalar axes, exact empty shapes and signed/broadcast reads are
+  ## supported. Backward uses rounded forward prefixes, wide reverse sums and
+  ## zero-aware masks; it does not blindly divide zero prefixes by zero inputs.
+  let normalized = reductionAxis(a.value.rank, axis)
+  new result
+  result.context = a.context
+  result.value = a.value.cumprod(normalized)
+  if a.is_grad_needed:
+    var gate: CumprodGate[Tensor[T]]
+    new gate
+    gate.cached_input = a.value
+    gate.cached_prefixes = result.value
+    gate.axis = normalized
+    result.grad = zeros_like(result.value)
+    result.requires_grad = true
+    register_node("Cumprod", gate, cumprod_backward_ag[Tensor[T]], result, a)

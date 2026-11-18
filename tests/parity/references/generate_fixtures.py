@@ -495,8 +495,8 @@ def product_gradient(torch: Any) -> dict[str, Any]:
     return _case("autograd.product_gradient", "api:autograd", inputs, expected)
 
 
-def cumsum_gradient(torch: Any) -> dict[str, Any]:
-    """Observe inclusive scans and reverse-scan VJPs on shared exact inputs."""
+def _scan_gradient(torch: Any, kind: str) -> dict[str, Any]:
+    """Observe inclusive scans and seeded VJPs on shared exact inputs."""
     specs = {
         "dense": ([2, 3], [2, 3, -4, 5, -2, 1], "identity", []),
         "nonfinite_seed": ([2, 3], [2, 3, -4, 5, -2, 1], "identity", []),
@@ -516,6 +516,18 @@ def cumsum_gradient(torch: Any) -> dict[str, Any]:
         "reverse": ([6], [2, 0, -4, 5, -2, 1], "reverse", []),
         "broadcast": ([1, 3], [2, 0, -4], "broadcast", []),
     }
+    if kind == "cumprod":
+        specs.update({
+            "nonfinite_seed": ([2, 3], [2, 0, -4, 0, 0, 1], "identity", []),
+            "one_zero": ([4], [2, 0, -3, 4], "identity", []),
+            "two_zeros": ([4], [2, 0, 0, 3], "identity", []),
+            "leading_zeros": ([4], [0, 2, 0, 3], "identity", []),
+            "zero_inf_zero": ([4], [0, 0, 0, 3], "identity", [(1, "+inf")]),
+            "inf_zero": ([3], [0, 0, 2], "identity", [(0, "+inf")]),
+            "zero_nan": ([4], [2, 0, 0, 0], "identity", [(2, "nan")]),
+            "singleton_axis": ([3, 1], [0, 0, 0], "identity",
+                               [(0, "nan"), (1, "+inf"), (2, "-inf")]),
+        })
     inputs, expected = {}, {}
     for name, (shape, values, layout, nonfinite) in specs.items():
         source = _tensor(values, shape, torch)
@@ -536,7 +548,7 @@ def cumsum_gradient(torch: Any) -> dict[str, Any]:
                                  if name == "nonfinite_seed" else [[]])
                 for seed_nonfinite in seed_variants:
                     leaf = source.detach().requires_grad_(True)
-                    output = leaf.cumsum(dim=axis)
+                    output = getattr(leaf, kind)(dim=axis)
                     seed = ((torch.arange(output.numel(), dtype=source.dtype) % 5) + 1).reshape(output.shape) * scale
                     seed_values = seed.flatten().tolist()
                     for index, value in seed_nonfinite:
@@ -554,7 +566,17 @@ def cumsum_gradient(torch: Any) -> dict[str, Any]:
             "operations": operations,
         }
         expected[name] = observations
-    return _case("autograd.cumsum_gradient", "api:autograd", inputs, expected)
+    return _case(f"autograd.{kind}_gradient", "api:autograd", inputs, expected)
+
+
+def cumsum_gradient(torch: Any) -> dict[str, Any]:
+    """Record additive scan observations without zero-specific product layouts."""
+    return _scan_gradient(torch, "cumsum")
+
+
+def cumprod_gradient(torch: Any) -> dict[str, Any]:
+    """Record rounded-prefix and zero-masked first-order product derivatives."""
+    return _scan_gradient(torch, "cumprod")
 
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
@@ -564,7 +586,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
     axis_options, broadcast_multiply, broadcast_divide,
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
-    unary_math, activation_math, reduction_edges, product_gradient, cumsum_gradient,
+    unary_math, activation_math, reduction_edges, product_gradient, cumsum_gradient, cumprod_gradient,
 )
 
 

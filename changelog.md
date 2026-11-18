@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add CPU float32/float64 cumulative-product autograd with seeded first-order
+  derivatives, negative/scalar axes, empty shapes and signed/broadcast reads.
+  Preserve rounded-prefix overflow/underflow behavior, first-zero masks and
+  nonfinite seeds; retained backward accumulates independent leaf gradients.
 - Retire Metal buffer-use records and in-flight ownership atomically before
   clearing producer handles. Completion queries no longer hide a producer from
   CPU readback while its queued buffer leases are still being released.
