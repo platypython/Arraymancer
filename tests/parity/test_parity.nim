@@ -149,6 +149,67 @@ suite "Pinned PyTorch conformance foundation":
     expect ValueError: validateFixtureData(malformed, reference)
 
 
+  test "Explicit product dtypes cast before multiplying and preserve reduction ordering":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var productCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.prod_dtype": productCase = caseData
+    doAssert productCase.kind == JObject
+    check productCase["atol"].getFloat == 1e-6
+    check productCase["rtol"].getFloat == 1e-6
+    for name in ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+        "uint64", "float32", "float64", "float64_precision", "uint64_upper", "packed_odd",
+        "transpose", "offset", "reverse", "broadcast", "scalar", "empty", "float64_overflow",
+        "float64_underflow", "float64_zero_nan", "uint64_upper_zero", "lane_range", "early_zero4",
+        "zero_columns", "scalar_negative_zero", "cast_before_product"]:
+      check productCase["inputs"].hasKey(name)
+
+    let expected = productCase["expected"]
+    let actual = runCase(productCase)
+    check expected["float64_overflow"]["all"]["float32"]["values"][0].getStr == "+inf"
+    check expected["float64_underflow"]["all"]["float32"]["values"][0].getFloat == 0.0
+    check expected["float64_zero_nan"]["all"]["float32"]["values"][0].getStr == "nan"
+    check expected["float64_zero_nan"]["all"]["float64"]["values"][0].getFloat == 0.0
+    check expected["uint64_upper_zero"]["all"]["float32"]["values"][0].getStr == "nan"
+    check expected["uint64_upper_zero"]["all"]["float64"]["values"][0].getFloat == 0.0
+    check expected["lane_range"]["all"]["float32"]["values"][0].getFloat == 0.9999946355819702
+    check expected["lane_range"]["axes"]["0"]["float32"]["values"][0].getFloat ==
+      0.9999946355819702
+    check expected["lane_range"]["all"]["float64"]["values"][0].getFloat == 1.0
+    check expected["early_zero4"]["all"]["float32"]["values"][0].getFloat == 0.0
+    check expected["zero_columns"]["all"]["float32"]["values"][0].getStr == "nan"
+    check expected["zero_columns"]["all"]["float64"]["values"][0].getStr == "nan"
+    check expected["zero_columns"]["axes"]["0"]["float32"]["values"][0].getStr == "nan"
+    check expected["zero_columns"]["axes"]["0"]["float64"]["values"] == %*[0.0, 0.0, 0.0, 0.0, 0.0]
+    check expected["cast_before_product"]["all"]["float32"]["values"][0].getFloat == 1.0
+    check expected["cast_before_product"]["all"]["float64"]["values"][0].getFloat > 1.0
+    for dtype in ["float32", "float64"]:
+      for axis in ["0", "-1"]:
+        check isNegativeZero(expected["scalar_negative_zero"]["all"][dtype]["values"][0])
+        check isNegativeZero(expected["scalar_negative_zero"]["axes"][axis][dtype]["values"][0])
+        check isNegativeZero(actual["scalar_negative_zero"]["all"][dtype]["values"][0])
+        check isNegativeZero(actual["scalar_negative_zero"]["axes"][axis][dtype]["values"][0])
+
+  test "Reject malformed explicit product dtype fixtures":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var productCaseIndex = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "tensor.prod_dtype":
+        productCaseIndex = index
+    doAssert productCaseIndex >= 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][productCaseIndex]["inputs"].delete("cast_before_product")
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][productCaseIndex]["inputs"]["zero_columns"]["axes"] = %*[0, -1]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][productCaseIndex]["expected"]["cast_before_product"]["axes"]["0"]["float32"]["dtype"] = %"float64"
+    expect ValueError: validateFixtureData(malformed, reference)
+
   test "Explicit cumulative dtype scans cover output dtypes, direction and edge values":
     let fixtures = loadFixtures(parityRoot & "fixtures.json")
     var cumsumCase = newJNull()

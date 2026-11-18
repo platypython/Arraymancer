@@ -166,6 +166,7 @@ proc realDtypeScalar[T, U](source: Tensor[T], dtype: typedesc[U], operation: str
   case operation
   of "sum": result = source.sum(dtype = dtype)
   of "mean": result = source.mean(dtype = dtype)
+  of "prod": result = source.product(dtype = dtype)
   else: raise newException(ValueError, "unsupported real dtype reduction: " & operation)
 
 proc realDtypeAxis[T, U](source: Tensor[T], axis: int, dtype: typedesc[U],
@@ -173,6 +174,7 @@ proc realDtypeAxis[T, U](source: Tensor[T], axis: int, dtype: typedesc[U],
   case operation
   of "sum": result = source.sum(axis = axis, dtype = dtype)
   of "mean": result = source.mean(axis = axis, dtype = dtype)
+  of "prod": result = source.product(axis = axis, dtype = dtype)
   else: raise newException(ValueError, "unsupported real dtype reduction: " & operation)
 
 proc realDtypeOutput[T, U](source: Tensor[T], axes: JsonNode,
@@ -244,17 +246,15 @@ proc realDtype(inputs: JsonNode, operation: string): JsonNode =
 
 proc realDtypeSpecials[T](source: var Tensor[T], specials: JsonNode) =
   for special in specials:
-    let index = special["index"].getInt
-    let value = case special["value"].getStr
-                of "nan": NaN
-                of "+inf": Inf
-                else: NegInf
-    when T is float32:
-      source.unsafe_raw_offset[index] = value.float32
-    elif T is float64:
-      source.unsafe_raw_offset[index] = value
+    when T is SomeFloat:
+      let index = special["index"].getInt
+      let value = case special["value"].getStr
+                  of "nan": NaN
+                  of "+inf": Inf
+                  else: NegInf
+      source.unsafe_raw_offset[index] = T(value)
     else:
-      raise newException(ValueError, "nonfinite real dtype scan source must be floating point")
+      raise newException(ValueError, "nonfinite real dtype source must be floating point")
 
 proc realDtypeScanAxis[T, U](source: Tensor[T], axis: int, dtype: typedesc[U],
                             operation: string, reverse: bool): Tensor[U] =
@@ -429,6 +429,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = realDtype(inputs, "mean")
   of "tensor.sum_dtype":
     result = realDtype(inputs, "sum")
+  of "tensor.prod_dtype":
+    result = realDtype(inputs, "prod")
   of "tensor.cumsum_dtype":
     result = realDtypeScans(inputs, "cumsum")
   of "tensor.cumprod_dtype":

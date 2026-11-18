@@ -297,9 +297,6 @@ proc mean*[T: Complex[float32] or Complex[float64]](arg: Tensor[T], axis: int): 
   type F = T.T # Get float subtype of Complex[T]
   sumAlongAxis(arg, axis) / complex(arg.shape[axis].F, 0.F)
 
-template convertedReductionValue(value: untyped; U: typedesc): untyped =
-  when typeof(value) is bool: U(ord(value))
-  else: U(value)
 
 proc sumConvertedBlock[T, U](input: ptr UncheckedArray[T], base, count: uint;
                               dtype: typedesc[U]): U =
@@ -393,19 +390,45 @@ iterator stridedReductionValues[T](input: ptr UncheckedArray[T], base, count, st
   for position in 0 ..< count:
     yield input[base + position * stride]
 
+template productConvertedValues(values: untyped; U: typedesc): untyped =
+  block:
+    var product = U(1)
+    for value in values:
+      when typeof(value) is bool:
+        if not value:
+          product = U(0)
+          break
+      else:
+        product *= convertedReductionValue(value, U)
+    product
+
+proc productConvertedSpan[T, U](input: ptr UncheckedArray[T], base, count: uint;
+                                 dtype: typedesc[U]): U =
+  ## Cast on read; float32 overflow and underflow remain float32 operations.
+  when T is bool:
+    productConvertedValues(stridedReductionValues(input, base.int, count.int, 1), U)
+  elif defined(macosx):
+    reduceConvertedProductSpan(unsafeAddr input[base], count, U)
+  else:
+    productConvertedValues(stridedReductionValues(input, base.int, count.int, 1), U)
+
 proc reduceConvertedAxis[T, U](arg: Tensor[T], axis: int;
-                               dtype: typedesc[U]; average: static[bool]): Tensor[U] =
+                               dtype: typedesc[U]; average: static[bool];
+                               multiply: static[bool] = false): Tensor[U] =
   ## The fresh output is the only buffer; signed input strides remain intact.
+  static: doAssert not (average and multiply)
   withCompilerOptimHints()
   if arg.rank == 0:
     if arg.size == 0: return newTensor[U](0)
     let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
-    return newTensorWith[U]([], U(0) + convertedReductionValue(input[0], U))
+    when multiply: return newTensorWith[U]([], convertedReductionValue(input[0], U))
+    else: return newTensorWith[U]([], U(0) + convertedReductionValue(input[0], U))
   var shape = arg.shape
   shape[axis] = 1
   let axisLength = arg.shape[axis]
   if axisLength == 0:
     when average: return newTensorWith[U](shape, U(NaN))
+    elif multiply: return newTensorWith[U](shape, U(1))
     else: return newTensor[U](shape)
   result = newTensorUninit[U](shape)
   if result.size == 0: return
@@ -416,14 +439,22 @@ proc reduceConvertedAxis[T, U](arg: Tensor[T], axis: int;
   template normalized(value: untyped): untyped =
     when average: value / divisor
     else: value
+  template reduced(values: untyped): untyped =
+    when multiply: productConvertedValues(values, U)
+    else: normalized(sumConvertedValues(values, U))
   if arg.is_C_contiguous:
     var outer = 1'u
     for dimension in 0 ..< axis: outer *= arg.shape[dimension].uint
     var inner = 1'u
     for dimension in axis + 1 ..< arg.rank: inner *= arg.shape[dimension].uint
     let length = axisLength.uint
+    when defined(macosx) and defined(arm64) and multiply and not (T is bool):
+      if inner > 1:
+        reduceConvertedProductColumns(result.get_offset_ptr, arg.get_offset_ptr,
+                                      outer, length, inner)
+        return
     when defined(macosx) and defined(arm64) and U is float32 and
-         (T is bool or T is int8):
+         (T is bool or T is int8) and not multiply:
       if inner > 1 and length <= 128:
         reduceConvertedFloat32Columns(result.get_offset_ptr, input,
                                       outer, length, inner, average)
@@ -431,12 +462,13 @@ proc reduceConvertedAxis[T, U](arg: Tensor[T], axis: int;
     for batch in 0'u ..< outer:
       let base = batch * length * inner
       if inner == 1:
-        output[batch] = normalized(sumConvertedSpan(input, base, length, U))
-      elif length > 128:
+        when multiply: output[batch] = productConvertedSpan(input, base, length, U)
+        else: output[batch] = normalized(sumConvertedSpan(input, base, length, U))
+      elif multiply or length > 128:
         let destination = batch * inner
         for column in 0'u ..< inner:
-          output[destination + column] = normalized(sumConvertedValues(
-            stridedReductionValues(input, int(base + column), axisLength, int(inner)), U))
+          output[destination + column] = reduced(
+            stridedReductionValues(input, int(base + column), axisLength, int(inner)))
       else:
         let destination = batch * inner
         for column in 0'u ..< inner:
@@ -468,8 +500,8 @@ proc reduceConvertedAxis[T, U](arg: Tensor[T], axis: int;
       if dimension != axis:
         base += (remainder mod shape[dimension]) * arg.strides[dimension]
         remainder = remainder div shape[dimension]
-    output[index] = normalized(sumConvertedValues(
-      stridedReductionValues(input, base, axisLength, arg.strides[axis]), U))
+    output[index] = reduced(
+      stridedReductionValues(input, base, axisLength, arg.strides[axis]))
 
 proc mean*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T];
                                                 dtype: typedesc[U]): U =
@@ -518,6 +550,31 @@ proc sum*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T], axis: int;
     if arg.rank > 0 and arg.size > 0 and arg.is_C_contiguous:
       return arg.sum(axis)
   reduceConvertedAxis(arg, axis, U, false)
+
+proc product*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T];
+                                                   dtype: typedesc[U]): U =
+  ## Product after casting each real input to the requested floating ``dtype``.
+  ## Arithmetic stays in that dtype, including overflow and underflow.
+  ## Unsigned inputs convert numerically; empty products are one.
+  ## No converted input tensor is allocated.
+  if arg.size == 0: return U(1)
+  when T is U:
+    if arg.is_C_contiguous: return arg.product
+  if arg.is_C_contiguous:
+    let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+    return productConvertedSpan(input, 0'u, arg.size.uint, U)
+  productConvertedValues(arg, U)
+
+proc product*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T], axis: int;
+                                                   dtype: typedesc[U]): Tensor[U] =
+  ## Product in the requested floating dtype, retaining the reduced dimension.
+  ## Empty reductions produce ones; scalar axes 0 and -1 preserve scalar signs.
+  ## Views are cast on read. Only the independent final output is allocated.
+  let axis = reductionAxis(arg.rank, axis)
+  when T is U and (T is float64 or (defined(macosx) and T is float32)):
+    if arg.rank > 0 and arg.size > 0 and arg.is_C_contiguous:
+      return arg.product(axis)
+  reduceConvertedAxis(arg, axis, U, false, true)
 
 proc min*[T](arg: Tensor[T]): T =
   ## Compute the min of all elements

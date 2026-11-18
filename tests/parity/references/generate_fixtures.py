@@ -1155,8 +1155,46 @@ _REAL_SCAN_DTYPE_SPECS: dict[str, dict[str, Any]] = {
         "layout": "identity", "axes": [0, -1],
     },
 }
-
-
+_REAL_PROD_DTYPE_SPECS: dict[str, dict[str, Any]] = {
+    "float64_overflow": {
+        "dtype": "float64", "shape": [3], "values": [1e20, 1e20, 1e-20],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "float64_underflow": {
+        "dtype": "float64", "shape": [3], "values": [1e-30, 1e-30, 1e30],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "float64_zero_nan": {
+        "dtype": "float64", "shape": [3], "values": [1e20, 1e20, 0.0],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "uint64_upper_zero": {
+        "dtype": "uint64", "shape": [3], "words": [-1, -1, 0],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "lane_range": {
+        "dtype": "float64", "shape": [16],
+        "values": [1e-20, 1e-20, 1e20, 1e20] + [1.0] * 12,
+        "layout": "identity", "axes": [0, -1],
+    },
+    "early_zero4": {
+        "dtype": "float64", "shape": [4], "values": [0.0, 1e20, 1e20, 1e20],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "zero_columns": {
+        "dtype": "float64", "shape": [4, 5],
+        "values": [0.0] * 5 + [1e200] * 15,
+        "layout": "identity", "axes": [0, 1, -1],
+    },
+    "scalar_negative_zero": {
+        "dtype": "float64", "shape": [], "values": [-0.0],
+        "layout": "identity", "axes": [0, -1],
+    },
+    "cast_before_product": {
+        "dtype": "float64", "shape": [64], "values": [1.0 + 2**-24] * 64,
+        "layout": "identity", "axes": [0, -1],
+    },
+}
 
 
 def _real_dtype_source(torch: Any, spec: dict[str, Any]) -> Any:
@@ -1217,7 +1255,9 @@ def _real_dtype_reductions(torch: Any, operation: str) -> dict[str, Any]:
     torch_dtypes = {name: getattr(torch, name) for name in (*_INTEGER_DTYPE_NAMES, "float32", "float64")}
     inputs: dict[str, Any] = {}
     expected: dict[str, Any] = {}
-    for name, spec in _REAL_DTYPE_SPECS.items():
+    specs = {**_REAL_DTYPE_SPECS,
+             **(_REAL_PROD_DTYPE_SPECS if operation == "prod" else {})}
+    for name, spec in specs.items():
         dtype_name = spec["dtype"]
         source = _real_dtype_source(torch, spec)
         inputs[name] = {**spec}
@@ -1258,6 +1298,11 @@ def sum_dtype(torch: Any) -> dict[str, Any]:
     return _real_dtype_reductions(torch, "sum")
 
 
+def prod_dtype(torch: Any) -> dict[str, Any]:
+    """Observe explicit CPU product casts, views, and reduction grouping."""
+    return _real_dtype_reductions(torch, "prod")
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -1267,7 +1312,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
     unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
     cumsum_gradient, cumprod_gradient,
-    integer_scans, integer_reductions, mean_dtype, sum_dtype, cumsum_dtype, cumprod_dtype,
+    integer_scans, integer_reductions, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
 )
 
 

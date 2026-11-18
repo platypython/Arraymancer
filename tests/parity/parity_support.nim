@@ -59,7 +59,8 @@ const
     "autograd.unary_math", "autograd.activation_math", "tensor.reduction_edges",
     "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient",
     "tensor.integer_scans", "tensor.integer_reductions", "tensor.float64_reductions",
-    "tensor.mean_dtype", "tensor.sum_dtype", "tensor.cumsum_dtype", "tensor.cumprod_dtype"]
+    "tensor.mean_dtype", "tensor.sum_dtype", "tensor.cumsum_dtype", "tensor.cumprod_dtype",
+    "tensor.prod_dtype"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
@@ -67,7 +68,7 @@ const
     "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
     "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
     "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch", "api:autograd",
-    "api:torch", "api:torch", "api:torch", "api:torch"]
+    "api:torch", "api:torch", "api:torch", "api:torch", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -648,6 +649,9 @@ const
     "transpose", "offset", "reverse", "broadcast", "scalar", "empty"]
   RealDtypeScanExtraNames = ["float32_wide_scan", "float64_overflow", "float64_underflow",
     "nonfinite", "scalar_negative_zero", "vector_negative_zero"]
+  RealDtypeProductExtraNames = ["float64_overflow", "float64_underflow", "float64_zero_nan",
+    "uint64_upper_zero", "lane_range", "early_zero4", "zero_columns", "scalar_negative_zero",
+    "cast_before_product"]
 
 proc expectRealDtypeInput(spec: JsonNode, name: string) =
   require(spec.kind == JObject and spec.len == (if name == "nonfinite": 6 else: 5),
@@ -656,8 +660,9 @@ proc expectRealDtypeInput(spec: JsonNode, name: string) =
   let expectedDtype = case name
     of "float32", "float32_wide_scan": "float32"
     of "float64", "float64_precision", "float64_overflow", "float64_underflow",
-        "nonfinite", "scalar_negative_zero", "vector_negative_zero": "float64"
-    of "uint64_upper", "empty": "uint64"
+        "float64_zero_nan", "lane_range", "early_zero4", "zero_columns",
+        "cast_before_product", "nonfinite", "scalar_negative_zero", "vector_negative_zero": "float64"
+    of "uint64_upper", "uint64_upper_zero", "empty": "uint64"
     of "packed_odd": "int16"
     of "transpose": "uint16"
     of "offset": "uint32"
@@ -670,11 +675,16 @@ proc expectRealDtypeInput(spec: JsonNode, name: string) =
     of "offset": @[3, 4]
     of "reverse": @[5]
     of "float64_precision", "uint64_upper": @[2]
+    of "float64_overflow", "float64_underflow", "float64_zero_nan", "uint64_upper_zero": @[3]
+    of "lane_range": @[16]
+    of "cast_before_product": @[64]
+    of "early_zero4": @[4]
+    of "zero_columns": @[4, 5]
     of "packed_odd": @[3, 5]
     of "broadcast": @[1, 3]
     of "scalar", "scalar_negative_zero": @[]
     of "empty": @[2, 0, 3]
-    of "float32_wide_scan", "float64_overflow", "float64_underflow": @[3]
+    of "float32_wide_scan": @[3]
     of "nonfinite": @[4]
     of "vector_negative_zero": @[1]
     else: @[2, 3]
@@ -688,7 +698,7 @@ proc expectRealDtypeInput(spec: JsonNode, name: string) =
   let expectedAxes = case name
     of "empty": @[0, 1, 2, -1]
     of "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
-        "uint64", "float32", "float64", "packed_odd", "broadcast": @[0, 1, -1]
+        "uint64", "float32", "float64", "packed_odd", "broadcast", "zero_columns": @[0, 1, -1]
     else: @[0, -1]
   var axes = newJArray()
   for axis in expectedAxes: axes.add newJInt(axis)
@@ -706,9 +716,11 @@ proc expectRealDtypeInput(spec: JsonNode, name: string) =
   else:
     require(not spec.hasKey("nonfinite"), "unexpected nonfinite real dtype input " & name)
 
-proc expectRealDtypeInputs(inputs: JsonNode, includeScanExtras = false) =
+proc expectRealDtypeInputs(inputs: JsonNode, includeScanExtras = false,
+                           includeProductExtras = false) =
   let expectedCount = RealDtypeInputNames.len +
-    (if includeScanExtras: RealDtypeScanExtraNames.len else: 0)
+    (if includeScanExtras: RealDtypeScanExtraNames.len else: 0) +
+    (if includeProductExtras: RealDtypeProductExtraNames.len else: 0)
   require(inputs.kind == JObject and inputs.len == expectedCount,
     "real dtype inputs do not match required cases")
   for name in RealDtypeInputNames:
@@ -717,6 +729,10 @@ proc expectRealDtypeInputs(inputs: JsonNode, includeScanExtras = false) =
   if includeScanExtras:
     for name in RealDtypeScanExtraNames:
       require(inputs.hasKey(name), "missing real dtype scan input " & name)
+      expectRealDtypeInput(inputs[name], name)
+  if includeProductExtras:
+    for name in RealDtypeProductExtraNames:
+      require(inputs.hasKey(name), "missing real dtype product input " & name)
       expectRealDtypeInput(inputs[name], name)
 
 proc expectMeanDtypeError(node: JsonNode, label: string) =
@@ -893,6 +909,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "real dtype fixtures require 1e-6 tolerances")
       expectRealDtypeInputs(inputs)
+    of "tensor.prod_dtype":
+      require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
+        "real dtype product fixtures require 1e-6 tolerances")
+      expectRealDtypeInputs(inputs, includeProductExtras = true)
     of "tensor.cumsum_dtype", "tensor.cumprod_dtype":
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "real dtype scan fixtures require 1e-6 tolerances")
@@ -981,6 +1001,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectFloat64Reductions(expected, inputs)
     of "tensor.mean_dtype", "tensor.sum_dtype":
       expectRealDtypeExpected(expected, inputs, id == "tensor.mean_dtype")
+    of "tensor.prod_dtype":
+      expectRealDtypeExpected(expected, inputs, false)
     of "tensor.cumsum_dtype", "tensor.cumprod_dtype":
       expectRealDtypeScanExpected(expected, inputs)
     else: discard

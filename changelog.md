@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add explicit float32/float64 output dtypes to CPU real-valued products.
+  Cast views on read and multiply in the requested dtype without conversion
+  buffers. Preserve empty identities and scalar signs; fix ARM64 horizontal
+  lane folding and ordered column products for overflow-sensitive inputs.
 - Add explicit float32/float64 output dtypes to CPU real-valued cumulative sums
   and products. Cast signed/broadcast views on read, retain ordered float64
   carries after rounded stores, and preserve scalar signs and empty shapes.

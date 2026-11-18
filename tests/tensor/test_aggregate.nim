@@ -752,6 +752,101 @@ proc main() =
         [[0], [0], [0]], [[0], [0], [0]]
       ].toTensor
 
+      test "Explicit product dtypes cast before output-dtype arithmetic":
+        let rounded = newTensorWith[float64](64, 1.0 + 1.0 / 16777216.0)
+        check rounded.product(dtype = float32) == 1'f32
+        check rounded.product(dtype = float64) > 1.000003
+        check [1, 2, 3].toTensor.product(dtype = float64) == 6.0
+        var upperRounding = newTensorWith[uint64](16, 1'u64)
+        upperRounding[0] = (1'u64 shl 63) + (1'u64 shl 39) + 1
+        check upperRounding.product(dtype = float32) == float32((1'u64 shl 63) + (1'u64 shl 40))
+        let overflow = [1e20, 1e20, 1e-20].toTensor
+        check overflow.product(dtype = float32).classify == fcInf
+        check abs(overflow.product(dtype = float64) / 1e20 - 1.0) < 1e-14
+        let underflow = [1e-30, 1e-30, 1e30].toTensor
+        check underflow.product(dtype = float32) == 0'f32
+        check underflow.product(dtype = float64) > 0
+        let zero = [1e20, 1e20, 0.0].toTensor
+        check zero.product(dtype = float32).classify == fcNan
+        check zero.product(dtype = float64) == 0.0
+        let upper = [high(uint64), high(uint64), 0'u64].toTensor
+        check upper.product(dtype = float32).classify == fcNan
+        check upper.product(dtype = float64) == 0.0
+        check [0.0, 1e20, 1e20, 1e20].toTensor.product(dtype = float32) == 0'f32
+
+      test "Converted byte products retain signs, offsets and packed tails":
+        template checkBytes(T: typedesc) =
+          block:
+            var owner = newTensor[T](24)
+            for index in 0 ..< owner.size:
+              when T is int8:
+                owner[index] = if index mod 5 == 0: T(-2)
+                               elif index mod 3 == 0: T(3)
+                               else: T(1)
+              else:
+                owner[index] = T(1 + index mod 3)
+            when T is int8: owner[1] = low(int8)
+            else: owner[1] = high(uint8)
+            for count in 7 .. 21:
+              let view = owner[1..count]
+              var expected = 1'f32
+              for value in view: expected *= float32(value)
+              check view.product(dtype = float32) == expected
+              check view.product(0, dtype = float32)[0] == expected
+        checkBytes(int8)
+        checkBytes(uint8)
+
+      test "Products preserve lane folding and ordered column range":
+        when defined(macosx) and defined(arm64):
+          var lanes = newTensorWith[float64](16, 1.0)
+          lanes[0] = 1e-20
+          lanes[1] = 1e-20
+          lanes[2] = 1e20
+          lanes[3] = 1e20
+          let expected = 0.9999946355819702'f32
+          check lanes.product(dtype = float32) == expected
+          check lanes.asType(float32).product == expected
+          check lanes.product(0, dtype = float32)[0] == expected
+        var columns = newTensorWith[float64]([4, 5], 1e200)
+        for column in 0 ..< 5: columns[0, column] = 0.0
+        check columns.product(0) == newTensor[float64](1, 5)
+        check columns.product(0, dtype = float64) == newTensor[float64](1, 5)
+        for value in columns.product(0, dtype = float32):
+          check value.classify == fcNan
+
+      test "Explicit products preserve signed views, empty identities and scalar signs":
+        var owner = newTensor[uint32](107)
+        for index in 0 ..< 105: owner[index + 1] = uint32(1 + index mod 2)
+        let input = owner[1..105].reshape(3, 5, 7)
+        for view in [input, input[_, _, 6..0|-1],
+                     input[0..0, _, _].broadcast(3, 5, 7)]:
+          for axis in 0 ..< 3:
+            let output = view.product(axis - 3, dtype = float32)
+            for i in 0 ..< output.shape[0]:
+              for j in 0 ..< output.shape[1]:
+                for k in 0 ..< output.shape[2]:
+                  var coordinate = [i, j, k]
+                  var expected = 1'f32
+                  for position in 0 ..< view.shape[axis]:
+                    coordinate[axis] = position
+                    expected *= float32(view[coordinate[0], coordinate[1], coordinate[2]])
+                  check output[i, j, k] == expected
+        let scalar = newTensorWith[float64]([], -0.0)
+        check scalar.product(dtype = float32).classify == fcNegZero
+        for axis in [0, -1]:
+          let output = scalar.product(axis, dtype = float32)
+          check output.rank == 0
+          check output.atContiguousIndex(0).classify == fcNegZero
+        let empty = newTensor[bool](2, 0, 3)
+        check empty.product(dtype = float64) == 1.0
+        check empty.product(1, dtype = float32) == newTensorWith[float32]([2, 1, 3], 1'f32)
+        check empty.product(0, dtype = float64).shape == [1, 0, 3]
+        expect IndexDefect: discard scalar.product(1, dtype = float32)
+        expect IndexDefect: discard empty.product(-4, dtype = float64)
+        var output = input.product(0, dtype = float64)
+        output[0, 0, 0] = 99
+        check input[0, 0, 0] == 1
+
       test "Explicit scan dtypes cast before wide ordered carries":
         let narrow = [16777217'i32, -16777216'i32].toTensor
         check narrow.cumsum(dtype = float32) == [16777216'f32, 0].toTensor

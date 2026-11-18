@@ -15,6 +15,12 @@
 ## Provides packed CPU float64 reductions and private macOS float32 bulk operations.
 import std/math
 import ../../laser/compiler_optim_hints
+
+template convertedReductionValue*(value: untyped; U: typedesc): untyped =
+  ## Cast bools numerically without reinterpreting unsigned source words.
+  when typeof(value) is bool: U(ord(value))
+  else: U(value)
+
 when defined(macosx):
   {.passL: "-framework Accelerate".}
 
@@ -27,6 +33,9 @@ when defined(macosx):
     {.importc, header: "<Accelerate/Accelerate.h>".}
 
   when defined(arm64):
+    when defined(clang):
+      # Outlining splits these hot loops into calls for each converted SIMD load.
+      {.localPassC: "-mno-outline".}
     type Float32x4 {.importc: "float32x4_t", bycopy, header: "<arm_neon.h>".} = object
       raw: array[4, float32]
     proc vld1q_f32(input: ptr float32): Float32x4
@@ -124,17 +133,191 @@ when defined(macosx):
     proc vaddvq_f32(value: Float32x4): float32
       {.importc, nodecl, header: "<arm_neon.h>".}
 
-    proc loadConvertedFloat32x4[T](input: ptr UncheckedArray[T], index: uint): Float32x4 {.inline.} =
-      ## Unaligned native loads preserve each cast before the floating sum.
-      when T is int32:
+    type
+      UInt8x8 {.importc: "uint8x8_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[8, uint8]
+      UInt16x4 {.importc: "uint16x4_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[4, uint16]
+      UInt16x8 {.importc: "uint16x8_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[8, uint16]
+      Int32x2 {.importc: "int32x2_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[2, int32]
+      UInt32x2 {.importc: "uint32x2_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[2, uint32]
+      Int64x2 {.importc: "int64x2_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[2, int64]
+      UInt64x2 {.importc: "uint64x2_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[2, uint64]
+    proc vcreate_s8(value: uint64): Int8x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcreate_u8(value: uint64): UInt8x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcreate_s16(value: uint64): Int16x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcreate_u16(value: uint64): UInt16x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmovl_u8(value: UInt8x8): UInt16x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vget_low_u16(value: UInt16x8): UInt16x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmovl_u16(value: UInt16x4): UInt32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vget_low_s32(value: Int32x4): Int32x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vget_low_u32(value: UInt32x4): UInt32x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vld1_s32(input: ptr int32): Int32x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vld1_u32(input: ptr uint32): UInt32x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmovl_s32(value: Int32x2): Int64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmovl_u32(value: UInt32x2): UInt64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vld1q_s64(input: ptr int64): Int64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vld1q_u64(input: ptr uint64): UInt64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcvtq_f64_s64(value: Int64x2): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcvtq_f64_u64(value: UInt64x2): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+
+    proc vld1_u8(input: ptr uint8): UInt8x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vget_high_u16(value: UInt16x8): UInt16x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+
+    proc loadSmallIntegerLanes[T](input: ptr UncheckedArray[T], index: uint;
+                                    count: static[int]): auto {.inline.} =
+      ## Exact-width copies become unaligned loads without aliasing or overreads.
+      var bits: uint64
+      copyMem(addr bits, unsafeAddr input[index], count * sizeof(T))
+      when T is int8:
+        vmovl_s16(vget_low_s16(vmovl_s8(vcreate_s8(bits))))
+      elif T is int16:
+        vmovl_s16(vcreate_s16(bits))
+      elif T is uint16:
+        vmovl_u16(vcreate_u16(bits))
+      else:
+        vmovl_u16(vget_low_u16(vmovl_u8(vcreate_u8(bits))))
+
+    # Both cast helpers fill every lane; runtime result-zeroing would dominate loads.
+    proc loadConvertedFloat32x4[T](input: ptr UncheckedArray[T], index: uint): Float32x4 {.inline, noinit.} =
+      ## Unaligned loads cast each lane before any output-dtype arithmetic.
+      when T is float32:
+        vld1q_f32(unsafeAddr input[index])
+      elif T is int32:
         vcvtq_f32_s32(vld1q_s32(unsafeAddr input[index]))
       elif T is uint32:
         vcvtq_f32_u32(vld1q_u32(unsafeAddr input[index]))
+      elif T is int8 or T is int16:
+        vcvtq_f32_s32(loadSmallIntegerLanes(input, index, 4))
+      elif T is bool or T is uint8 or T is uint16:
+        vcvtq_f32_u32(loadSmallIntegerLanes(input, index, 4))
       elif T is float64:
         vcombine_f32(vcvt_f32_f64(vld1q_f64(unsafeAddr input[index])),
                      vcvt_f32_f64(vld1q_f64(unsafeAddr input[index + 2])))
       else:
-        {.error: "Unsupported packed float32 conversion".}
+        let low = vset_lane_f32(convertedReductionValue(input[index + 1], float32),
+          vdup_n_f32(convertedReductionValue(input[index], float32)), 1)
+        let high = vset_lane_f32(convertedReductionValue(input[index + 3], float32),
+          vdup_n_f32(convertedReductionValue(input[index + 2], float32)), 1)
+        vcombine_f32(low, high)
+
+    proc loadConvertedByteFloat32Pair[T: int8 or uint8](input: ptr UncheckedArray[T],
+        index: uint; first, second: var Float32x4) {.inline.} =
+      ## Eight live bytes let LLVM widen both halves without artificial lane dependencies.
+      when T is int8:
+        let wide = vmovl_s8(vld1_s8(unsafeAddr input[index]))
+        first = vcvtq_f32_s32(vmovl_s16(vget_low_s16(wide)))
+        second = vcvtq_f32_s32(vmovl_s16(vget_high_s16(wide)))
+      else:
+        let wide = vmovl_u8(vld1_u8(unsafeAddr input[index]))
+        first = vcvtq_f32_u32(vmovl_u16(vget_low_u16(wide)))
+        second = vcvtq_f32_u32(vmovl_u16(vget_high_u16(wide)))
+
+    proc loadConvertedFloat64x2[T](input: ptr UncheckedArray[T], index: uint): Float64x2 {.inline, noinit.} =
+      ## Integer widening retains numeric casts without a scalar lane pack.
+      when T is float64:
+        vld1q_f64(unsafeAddr input[index])
+      elif T is float32:
+        vcvt_f64_f32(vld1_f32(unsafeAddr input[index]))
+      elif T is int8 or T is int16:
+        vcvtq_f64_s64(vmovl_s32(vget_low_s32(loadSmallIntegerLanes(input, index, 2))))
+      elif T is bool or T is uint8 or T is uint16:
+        vcvtq_f64_u64(vmovl_u32(vget_low_u32(loadSmallIntegerLanes(input, index, 2))))
+      elif T is int32:
+        vcvtq_f64_s64(vmovl_s32(vld1_s32(unsafeAddr input[index])))
+      elif T is uint32:
+        vcvtq_f64_u64(vmovl_u32(vld1_u32(unsafeAddr input[index])))
+      elif T is SomeSignedInt:
+        vcvtq_f64_s64(vld1q_s64(cast[ptr int64](unsafeAddr input[index])))
+      else:
+        vcvtq_f64_u64(vld1q_u64(cast[ptr uint64](unsafeAddr input[index])))
+
+    proc reduceConvertedProductColumns*[T, U](output: ptr U; input: ptr T;
+                                               outer, axisLength, inner: uint) =
+      ## Parallelize independent columns, never reassociate a column's products.
+      withCompilerOptimHints()
+      let destination {.restrict.} = cast[ptr UncheckedArray[U]](output)
+      let source = cast[ptr UncheckedArray[T]](input)
+      when U is float32:
+        const width = 4'u
+        template identity: untyped = vdupq_n_f32(1'f32)
+        template load(index: uint): untyped = loadConvertedFloat32x4(source, index)
+        template multiply(a, b: untyped): untyped = vmulq_f32(a, b)
+        template store(index: uint; value: untyped) = vst1q_f32(addr destination[index], value)
+      else:
+        const width = 2'u
+        template identity: untyped = vdupq_n_f64(1.0)
+        template load(index: uint): untyped = loadConvertedFloat64x2(source, index)
+        template multiply(a, b: untyped): untyped = vmulq_f64(a, b)
+        template store(index: uint; value: untyped) = vst1q_f64(addr destination[index], value)
+      for group in 0'u ..< outer:
+        let inputBase = group * axisLength * inner
+        let outputBase = group * inner
+        var column = 0'u
+        while column + 4 * width <= inner:
+          var a = identity()
+          var b = a
+          var c = a
+          var d = a
+          for row in 0'u ..< axisLength:
+            let base = inputBase + row * inner + column
+            when U is float32 and (T is int8 or T is uint8):
+              var
+                first {.noinit.}: Float32x4
+                second {.noinit.}: Float32x4
+                third {.noinit.}: Float32x4
+                fourth {.noinit.}: Float32x4
+              loadConvertedByteFloat32Pair(source, base, first, second)
+              loadConvertedByteFloat32Pair(source, base + 8, third, fourth)
+              a = multiply(a, first)
+              b = multiply(b, second)
+              c = multiply(c, third)
+              d = multiply(d, fourth)
+            else:
+              a = multiply(a, load(base))
+              b = multiply(b, load(base + width))
+              c = multiply(c, load(base + 2 * width))
+              d = multiply(d, load(base + 3 * width))
+          store(outputBase + column, a)
+          store(outputBase + column + width, b)
+          store(outputBase + column + 2 * width, c)
+          store(outputBase + column + 3 * width, d)
+          column += 4 * width
+        while column + width <= inner:
+          var value = identity()
+          for row in 0'u ..< axisLength:
+            value = multiply(value, load(inputBase + row * inner + column))
+          store(outputBase + column, value)
+          column += width
+        for tail in column ..< inner:
+          var value = U(1)
+          for row in 0'u ..< axisLength:
+            value *= convertedReductionValue(source[inputBase + row * inner + tail], U)
+          destination[outputBase + tail] = value
 
     proc sumConvertedFloat32Block*[T](input: ptr UncheckedArray[T],
                                        base, count: uint): float32 {.inline.} =
@@ -424,10 +607,10 @@ when defined(macosx):
       true
 
 
-  proc reduceFloat64Span(input: ptr float64; count: uint;
-                        multiply: static[bool]): float64 =
+  proc reduceFloat64Span[T](input: ptr T; count: uint;
+                           multiply: static[bool]): float64 =
     ## Independent partial carries shorten the dependency chain for one span.
-    let source = cast[ptr UncheckedArray[float64]](input)
+    let source = cast[ptr UncheckedArray[T]](input)
     const identity = when multiply: 1.0 else: 0.0
     var cursor = 0'u
     when defined(arm64):
@@ -439,10 +622,10 @@ when defined(macosx):
       var c = a
       var d = a
       while cursor + 8 <= count:
-        a = combine(a, vld1q_f64(unsafeAddr source[cursor]))
-        b = combine(b, vld1q_f64(unsafeAddr source[cursor + 2]))
-        c = combine(c, vld1q_f64(unsafeAddr source[cursor + 4]))
-        d = combine(d, vld1q_f64(unsafeAddr source[cursor + 6]))
+        a = combine(a, loadConvertedFloat64x2(source, cursor))
+        b = combine(b, loadConvertedFloat64x2(source, cursor + 2))
+        c = combine(c, loadConvertedFloat64x2(source, cursor + 4))
+        d = combine(d, loadConvertedFloat64x2(source, cursor + 6))
         cursor += 8
       let lanes = combine(combine(a, b), combine(c, d))
       when multiply:
@@ -456,21 +639,21 @@ when defined(macosx):
       var d = identity
       while cursor + 4 <= count:
         when multiply:
-          a *= source[cursor]
-          b *= source[cursor + 1]
-          c *= source[cursor + 2]
-          d *= source[cursor + 3]
+          a *= convertedReductionValue(source[cursor], float64)
+          b *= convertedReductionValue(source[cursor + 1], float64)
+          c *= convertedReductionValue(source[cursor + 2], float64)
+          d *= convertedReductionValue(source[cursor + 3], float64)
         else:
-          a += source[cursor]
-          b += source[cursor + 1]
-          c += source[cursor + 2]
-          d += source[cursor + 3]
+          a += convertedReductionValue(source[cursor], float64)
+          b += convertedReductionValue(source[cursor + 1], float64)
+          c += convertedReductionValue(source[cursor + 2], float64)
+          d += convertedReductionValue(source[cursor + 3], float64)
         cursor += 4
       when multiply: result = ((a * b) * c) * d
       else: result = ((a + b) + c) + d
     while cursor < count:
-      when multiply: result *= source[cursor]
-      else: result += source[cursor]
+      when multiply: result *= convertedReductionValue(source[cursor], float64)
+      else: result += convertedReductionValue(source[cursor], float64)
       inc cursor
 
   proc reducePackedFloat64*(output, input: ptr float64; count: uint;
@@ -487,7 +670,6 @@ when defined(macosx):
     withCompilerOptimHints()
     let destination {.restrict.} = cast[ptr UncheckedArray[float64]](output)
     let source = cast[ptr UncheckedArray[float64]](input)
-    const identity = when multiply: 1.0 else: 0.0
     if inner == 1:
       for group in 0'u ..< outer:
         let value = reduceFloat64Span(unsafeAddr source[group * axisLength],
@@ -495,15 +677,16 @@ when defined(macosx):
         when average: destination[group] = value / float64(axisLength)
         else: destination[group] = value
       return
-    for group in 0'u ..< outer:
-      let inputBase = group * axisLength * inner
-      let outputBase = group * inner
-      var column = 0'u
-      when defined(arm64):
-        template combine(a, b: Float64x2): Float64x2 =
-          when multiply: vmulq_f64(a, b)
-          else: vaddq_f64(a, b)
-        when not multiply:
+    when defined(arm64) and multiply:
+      reduceConvertedProductColumns(output, input, outer, axisLength, inner)
+    else:
+      const identity = when multiply: 1.0 else: 0.0
+      for group in 0'u ..< outer:
+        let inputBase = group * axisLength * inner
+        let outputBase = group * inner
+        var column = 0'u
+        when defined(arm64):
+          template combine(a, b: Float64x2): Float64x2 = vaddq_f64(a, b)
           # Adjacent output pairs share each row visit without regrouping terms.
           while column + 4 <= inner:
             var a0 = vdupq_n_f64(identity)
@@ -539,38 +722,38 @@ when defined(macosx):
             vst1q_f64(addr destination[outputBase + column], value0)
             vst1q_f64(addr destination[outputBase + column + 2], value1)
             column += 4
-        while column + 2 <= inner:
-          var a = vdupq_n_f64(identity)
-          var b = a
-          var c = a
-          var d = a
-          var row = 0'u
-          while row + 4 <= axisLength:
-            a = combine(a, vld1q_f64(unsafeAddr source[inputBase + row * inner + column]))
-            b = combine(b, vld1q_f64(unsafeAddr source[inputBase + (row + 1) * inner + column]))
-            c = combine(c, vld1q_f64(unsafeAddr source[inputBase + (row + 2) * inner + column]))
-            d = combine(d, vld1q_f64(unsafeAddr source[inputBase + (row + 3) * inner + column]))
-            row += 4
-          var value = combine(combine(a, b), combine(c, d))
-          for tail in row ..< axisLength:
-            value = combine(value,
-                            vld1q_f64(unsafeAddr source[inputBase + tail * inner + column]))
-          when average:
-            value = vdivq_f64(value, vdupq_n_f64(float64(axisLength)))
-          vst1q_f64(addr destination[outputBase + column], value)
-          column += 2
-      for tail in column ..< inner:
-        var value = identity
-        for row in 0'u ..< axisLength:
-          when multiply: value *= source[inputBase + row * inner + tail]
-          else: value += source[inputBase + row * inner + tail]
-        when average: value /= float64(axisLength)
-        destination[outputBase + tail] = value
+          while column + 2 <= inner:
+            var a = vdupq_n_f64(identity)
+            var b = a
+            var c = a
+            var d = a
+            var row = 0'u
+            while row + 4 <= axisLength:
+              a = combine(a, vld1q_f64(unsafeAddr source[inputBase + row * inner + column]))
+              b = combine(b, vld1q_f64(unsafeAddr source[inputBase + (row + 1) * inner + column]))
+              c = combine(c, vld1q_f64(unsafeAddr source[inputBase + (row + 2) * inner + column]))
+              d = combine(d, vld1q_f64(unsafeAddr source[inputBase + (row + 3) * inner + column]))
+              row += 4
+            var value = combine(combine(a, b), combine(c, d))
+            for tail in row ..< axisLength:
+              value = combine(value,
+                              vld1q_f64(unsafeAddr source[inputBase + tail * inner + column]))
+            when average:
+              value = vdivq_f64(value, vdupq_n_f64(float64(axisLength)))
+            vst1q_f64(addr destination[outputBase + column], value)
+            column += 2
+        for tail in column ..< inner:
+          var value = identity
+          for row in 0'u ..< axisLength:
+            when multiply: value *= source[inputBase + row * inner + tail]
+            else: value += source[inputBase + row * inner + tail]
+          when average: value /= float64(axisLength)
+          destination[outputBase + tail] = value
 
-  proc reduceFloat32Span(input: ptr float32; count: int;
-                        multiply: static[bool]): float32 =
+  proc reduceFloat32Span[T](input: ptr T; count: int;
+                           multiply: static[bool]): float32 =
     ## Independent accumulators hide arithmetic latency without a temporary copy.
-    let source = cast[ptr UncheckedArray[float32]](input)
+    let source = cast[ptr UncheckedArray[T]](input)
     let length = uint(count)
     const identity = when multiply: 1'f32 else: 0'f32
     var cursor = 0'u
@@ -584,21 +767,40 @@ when defined(macosx):
       var c = a
       var d = a
       while cursor + 16 <= length:
-        a = combine(a, vld1q_f32(unsafeAddr source[cursor]))
-        b = combine(b, vld1q_f32(unsafeAddr source[cursor + 4]))
-        c = combine(c, vld1q_f32(unsafeAddr source[cursor + 8]))
-        d = combine(d, vld1q_f32(unsafeAddr source[cursor + 12]))
+        when T is int8 or T is uint8:
+          var
+            first {.noinit.}: Float32x4
+            second {.noinit.}: Float32x4
+            third {.noinit.}: Float32x4
+            fourth {.noinit.}: Float32x4
+          loadConvertedByteFloat32Pair(source, cursor, first, second)
+          loadConvertedByteFloat32Pair(source, cursor + 8, third, fourth)
+          a = combine(a, first)
+          b = combine(b, second)
+          c = combine(c, third)
+          d = combine(d, fourth)
+        else:
+          a = combine(a, loadConvertedFloat32x4(source, cursor))
+          b = combine(b, loadConvertedFloat32x4(source, cursor + 4))
+          c = combine(c, loadConvertedFloat32x4(source, cursor + 8))
+          d = combine(d, loadConvertedFloat32x4(source, cursor + 12))
         cursor += 16
       let lanes = combine(combine(a, b), combine(c, d))
       when multiply:
-        result = (vgetq_lane_f32(lanes, 0) * vgetq_lane_f32(lanes, 1)) *
-                 (vgetq_lane_f32(lanes, 2) * vgetq_lane_f32(lanes, 3))
+        result = ((vgetq_lane_f32(lanes, 0) * vgetq_lane_f32(lanes, 1)) *
+                  vgetq_lane_f32(lanes, 2)) * vgetq_lane_f32(lanes, 3)
       else:
         result = (vgetq_lane_f32(lanes, 0) + vgetq_lane_f32(lanes, 1)) +
                  (vgetq_lane_f32(lanes, 2) + vgetq_lane_f32(lanes, 3))
     for index in cursor ..< length:
-      when multiply: result *= source[index]
-      else: result += source[index]
+      when multiply: result *= convertedReductionValue(source[index], float32)
+      else: result += convertedReductionValue(source[index], float32)
+
+  proc reduceConvertedProductSpan*[T, U](input: ptr T; count: uint;
+                                         dtype: typedesc[U]): U =
+    ## Reuse native product grouping with casts before output-dtype arithmetic.
+    when U is float32: reduceFloat32Span(input, count.int, true)
+    else: reduceFloat64Span(input, count, true)
 
   proc reducePackedFloat32*(output, input: ptr float32;
                            outer, axisLength, inner: int;
@@ -620,40 +822,41 @@ when defined(macosx):
         when average: destination[group] = value / float32(axisLength)
         else: destination[group] = value
       return
-    const identity = when multiply: 1'f32 else: 0'f32
-    for group in 0'u ..< groups:
-      let inputBase = group * length * width
-      let outputBase = group * width
-      var column = 0'u
-      when defined(arm64):
-        template combine(a, b: Float32x4): Float32x4 =
-          when multiply: vmulq_f32(a, b)
-          else: vaddq_f32(a, b)
-        while column + 4 <= width:
-          var a = vdupq_n_f32(identity)
-          var b = a
-          var c = a
-          var d = a
-          var row = 0'u
-          while row + 4 <= length:
-            a = combine(a, vld1q_f32(unsafeAddr source[inputBase + row * width + column]))
-            b = combine(b, vld1q_f32(unsafeAddr source[inputBase + (row + 1) * width + column]))
-            c = combine(c, vld1q_f32(unsafeAddr source[inputBase + (row + 2) * width + column]))
-            d = combine(d, vld1q_f32(unsafeAddr source[inputBase + (row + 3) * width + column]))
-            row += 4
-          var value = combine(combine(a, b), combine(c, d))
-          for tail in row ..< length:
-            value = combine(value, vld1q_f32(unsafeAddr source[inputBase + tail * width + column]))
-          when average: value = vdivq_f32(value, vdupq_n_f32(float32(axisLength)))
-          vst1q_f32(addr destination[outputBase + column], value)
-          column += 4
-      for tail in column ..< width:
-        var value = identity
-        for row in 0'u ..< length:
-          when multiply: value *= source[inputBase + row * width + tail]
-          else: value += source[inputBase + row * width + tail]
-        when average: value /= float32(axisLength)
-        destination[outputBase + tail] = value
+    when defined(arm64) and multiply:
+      reduceConvertedProductColumns(output, input, groups, length, width)
+    else:
+      const identity = when multiply: 1'f32 else: 0'f32
+      for group in 0'u ..< groups:
+        let inputBase = group * length * width
+        let outputBase = group * width
+        var column = 0'u
+        when defined(arm64):
+          template combine(a, b: Float32x4): Float32x4 = vaddq_f32(a, b)
+          while column + 4 <= width:
+            var a = vdupq_n_f32(identity)
+            var b = a
+            var c = a
+            var d = a
+            var row = 0'u
+            while row + 4 <= length:
+              a = combine(a, vld1q_f32(unsafeAddr source[inputBase + row * width + column]))
+              b = combine(b, vld1q_f32(unsafeAddr source[inputBase + (row + 1) * width + column]))
+              c = combine(c, vld1q_f32(unsafeAddr source[inputBase + (row + 2) * width + column]))
+              d = combine(d, vld1q_f32(unsafeAddr source[inputBase + (row + 3) * width + column]))
+              row += 4
+            var value = combine(combine(a, b), combine(c, d))
+            for tail in row ..< length:
+              value = combine(value, vld1q_f32(unsafeAddr source[inputBase + tail * width + column]))
+            when average: value = vdivq_f32(value, vdupq_n_f32(float32(axisLength)))
+            vst1q_f32(addr destination[outputBase + column], value)
+            column += 4
+        for tail in column ..< width:
+          var value = identity
+          for row in 0'u ..< length:
+            when multiply: value *= source[inputBase + row * width + tail]
+            else: value += source[inputBase + row * width + tail]
+          when average: value /= float32(axisLength)
+          destination[outputBase + tail] = value
 
   proc sqrtFloat32*(output, input: ptr float32; count: int) =
     ## Write nonnegative-count, disjoint packed spans using hardware square roots.

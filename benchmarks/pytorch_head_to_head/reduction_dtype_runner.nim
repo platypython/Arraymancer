@@ -5,6 +5,7 @@ import arraymancer
 
 const cases = [
   "mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns",
+  "prod", "prod_rows", "prod_columns",
   "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
 ]
 
@@ -45,6 +46,9 @@ proc execute[InputT, OutputT](name: string; input: Tensor[InputT]): Tensor[Outpu
   of "sum": newTensorWith[OutputT]([], input.sum(dtype = OutputT))
   of "sum_rows": input.sum(-1, dtype = OutputT)
   of "sum_columns": input.sum(-2, dtype = OutputT)
+  of "prod": newTensorWith[OutputT]([], input.product(dtype = OutputT))
+  of "prod_rows": input.product(-1, dtype = OutputT)
+  of "prod_columns": input.product(-2, dtype = OutputT)
   of "cumsum_rows": input.cumsum(-1, dtype = OutputT)
   of "cumsum_columns": input.cumsum(-2, dtype = OutputT)
   of "cumprod_rows": input.cumprod(-1, dtype = OutputT)

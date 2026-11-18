@@ -2,16 +2,15 @@
 Tutorial: Aggregate and statistics
 ==================================
 
-``sum`` and ``mean`` functions are available to compute the sum and mean
-of a tensor. ``sum`` and ``mean`` can also be computed along an axis
+``sum``, ``product`` and ``mean`` reduce a whole tensor or a single axis
 with the ``axis`` argument.
 
 Floating-point and complex means retain the input dtype by default. Integer
 and boolean means require an explicit floating dtype; they do not use integer
-division. For real CPU inputs, both ``sum`` and ``mean`` accept
+division. For real CPU inputs, ``sum``, ``product`` and ``mean`` accept
 ``dtype = float32`` or ``dtype = float64``. Each value is cast before reduction
 without allocating a converted input tensor. Without an explicit dtype,
-integer and boolean sums promote to wrapping int64.
+integer and boolean sums and products promote to wrapping int64.
 
 .. code-block:: nim
 
@@ -22,9 +21,17 @@ integer and boolean sums promote to wrapping int64.
    doAssert values.sum(dtype = float64) == 21.0
    doAssert values.sum(axis = 0, dtype = float32) ==
             [[5'f32, 7, 9]].toTensor
+   doAssert values.product(dtype = float64) == 720.0
+   doAssert values.product(axis = 0, dtype = float32) ==
+            [[4'f32, 10, 18]].toTensor
 
 Axis reductions keep the reduced dimension with length one. Empty sums produce
-zeros and empty floating means produce NaNs; other empty dimensions remain empty.
+zeros, empty products produce ones, and empty floating means produce NaNs;
+other empty dimensions remain empty.
+
+Products multiply in the requested dtype, including intermediate overflow and
+underflow. Packed reductions group terms and can round differently from scalar
+products.
 
 ``cumsum`` and ``cumprod`` also accept explicit floating dtypes for real CPU
 inputs. They retain the input shape, cast each value before accumulating, and

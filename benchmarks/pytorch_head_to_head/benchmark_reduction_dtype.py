@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Check and time all 220 CPU reduction and scan dtype actions against pinned PyTorch.
+"""Check and time all 286 CPU reduction and scan dtype actions against pinned PyTorch.
 
 Build the native runner from the repository root with:
   nim c -d:release --path:src --out:build/reduction_dtype_runner benchmarks/pytorch_head_to_head/reduction_dtype_runner.nim
 Then run the full benchmark (no filters; optional --output and --runner):
   python benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.py
-The 22 input/output dtype groups each contain ten actions: mean, mean_rows,
-mean_columns, sum, sum_rows, sum_columns, cumsum_rows, cumsum_columns,
-cumprod_rows and cumprod_columns. Each paired round alternates backend order;
-all 100 samples of 50 allocating calls are retained. The 220 actions produce
-1,320 median/p95 comparisons across three paired rounds, and every comparison
-must win. Inputs stay resident and explicit output-dtype casting is part of
-each timed reduction or scan call.
+The 22 input/output dtype groups each contain thirteen actions: mean, mean_rows,
+mean_columns, sum, sum_rows, sum_columns, prod, prod_rows, prod_columns,
+cumsum_rows, cumsum_columns, cumprod_rows and cumprod_columns. Each paired
+round alternates backend order; all 100 samples of 50 allocating calls are
+retained. The 286 actions produce 1,716 median/p95 comparisons across three
+paired rounds, and every comparison must win. Inputs stay resident and explicit
+output-dtype casting is part of each timed reduction or scan call.
 """
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ INTEGER_DTYPES = frozenset(INPUT_DTYPES[:9])
 OUTPUT_DTYPES = ("float32", "float64")
 CASES = (
     "mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns",
+    "prod", "prod_rows", "prod_columns",
     "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
 )
 TORCH_DTYPES: dict[str, torch.dtype] = {
@@ -68,8 +69,13 @@ SOURCE_PATHS = (
 def operation(name: str, value: torch.Tensor, output_dtype: str) -> Callable[[], torch.Tensor]:
     """Resolve an allocating reduction or scan; keep casting inside the action."""
     dtype = TORCH_DTYPES[output_dtype]
-    if name in ("mean", "sum"):
-        reducer = value.mean if name == "mean" else value.sum
+    if name in ("mean", "sum", "prod"):
+        if name == "mean":
+            reducer = value.mean
+        elif name == "sum":
+            reducer = value.sum
+        else:
+            reducer = value.prod
         return lambda: reducer(dtype=dtype)
     if name in ("cumsum_rows", "cumprod_rows"):
         scanner = value.cumsum if name == "cumsum_rows" else value.cumprod
@@ -77,13 +83,18 @@ def operation(name: str, value: torch.Tensor, output_dtype: str) -> Callable[[],
     if name in ("cumsum_columns", "cumprod_columns"):
         scanner = value.cumsum if name == "cumsum_columns" else value.cumprod
         return lambda: scanner(dim=-2, dtype=dtype)
-    if name in ("mean_rows", "sum_rows"):
+    if name in ("mean_rows", "sum_rows", "prod_rows"):
         axis = -1
-    elif name in ("mean_columns", "sum_columns"):
+    elif name in ("mean_columns", "sum_columns", "prod_columns"):
         axis = -2
     else:
         raise ValueError(f"Unknown reduction dtype action: {name}")
-    reducer = value.mean if name.startswith("mean") else value.sum
+    if name.startswith("mean"):
+        reducer = value.mean
+    elif name.startswith("sum"):
+        reducer = value.sum
+    else:
+        reducer = value.prod
     return lambda: reducer(dim=axis, keepdim=True, dtype=dtype)
 
 
@@ -159,7 +170,7 @@ def run_group(
                 raise RuntimeError(f"{group}/{name}: value count mismatch")
             actual_values = actual_values.reshape(actual["shape"])
             torch.testing.assert_close(
-                actual_values, reference, atol=tolerance, rtol=tolerance,
+                actual_values, reference, atol=tolerance, rtol=tolerance, equal_nan=True,
                 msg=lambda message: f"{group}/{name}: {message}",
             )
         return report
