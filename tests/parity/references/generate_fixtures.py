@@ -495,6 +495,68 @@ def product_gradient(torch: Any) -> dict[str, Any]:
     return _case("autograd.product_gradient", "api:autograd", inputs, expected)
 
 
+def cumsum_gradient(torch: Any) -> dict[str, Any]:
+    """Observe inclusive scans and reverse-scan VJPs on shared exact inputs."""
+    specs = {
+        "dense": ([2, 3], [2, 3, -4, 5, -2, 1], "identity", []),
+        "nonfinite_seed": ([2, 3], [2, 3, -4, 5, -2, 1], "identity", []),
+        "batched": ([2, 2, 5], list(range(-8, 12)), "identity", []),
+        "vector": ([6], [2, 0, -4, 5, -2, 1], "identity", []),
+        "nonfinite": ([4], [0, 2, 0, 0], "identity",
+                      [(0, "+inf"), (2, "-inf"), (3, "nan")]),
+        "nan": ([3], [0, 2, 3], "identity", [(0, "nan")]),
+        "scalar": ([], [-3], "identity", []),
+        "scalar_negative_zero": ([], [-0.0], "identity", []),
+        "scalar_nan": ([], [0], "identity", [(0, "nan")]),
+        "empty_vector": ([0], [], "identity", []),
+        "empty_axis": ([2, 0, 3], [], "identity", []),
+        "empty_outer": ([0, 2, 3], [], "identity", []),
+        "transpose": ([2, 3], [2, 3, -4, 5, -2, 1], "transpose", []),
+        "offset": ([2, 3], [2, 3, -4, 5, -2, 1], "offset", []),
+        "reverse": ([6], [2, 0, -4, 5, -2, 1], "reverse", []),
+        "broadcast": ([1, 3], [2, 0, -4], "broadcast", []),
+    }
+    inputs, expected = {}, {}
+    for name, (shape, values, layout, nonfinite) in specs.items():
+        source = _tensor(values, shape, torch)
+        for index, value in nonfinite:
+            source.reshape(-1)[index] = float(value.replace("+", ""))
+        if layout == "transpose":
+            source = source.transpose(0, 1)
+        elif layout == "offset":
+            source = source.transpose(0, 1)[:, 1:]
+        elif layout == "reverse":
+            source = source.flip([0])
+        elif layout == "broadcast":
+            source = source.expand(4, 3)
+        operations, observations = [], []
+        for axis in [*range(max(1, source.ndim)), -1]:
+            for scale in (1, 0, -2):
+                seed_variants = ([[(1, "+inf"), (2, "-inf")], [(2, "nan")]]
+                                 if name == "nonfinite_seed" else [[]])
+                for seed_nonfinite in seed_variants:
+                    leaf = source.detach().requires_grad_(True)
+                    output = leaf.cumsum(dim=axis)
+                    seed = ((torch.arange(output.numel(), dtype=source.dtype) % 5) + 1).reshape(output.shape) * scale
+                    seed_values = seed.flatten().tolist()
+                    for index, value in seed_nonfinite:
+                        seed.reshape(-1)[index] = float(value)
+                    output.backward(seed)
+                    operations.append({
+                        "axis": axis, "seed": {"shape": list(seed.shape), "values": seed_values},
+                        "seed_nonfinite": [{"index": index, "value": value}
+                                           for index, value in seed_nonfinite],
+                    })
+                    observations.append({"output": _observe(output), "grad": _observe(leaf.grad)})
+        inputs[name] = {
+            "x": {"shape": shape, "values": values}, "layout": layout,
+            "nonfinite": [{"index": index, "value": value} for index, value in nonfinite],
+            "operations": operations,
+        }
+        expected[name] = observations
+    return _case("autograd.cumsum_gradient", "api:autograd", inputs, expected)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -502,7 +564,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
     axis_options, broadcast_multiply, broadcast_divide,
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
-    unary_math, activation_math, reduction_edges, product_gradient,
+    unary_math, activation_math, reduction_edges, product_gradient, cumsum_gradient,
 )
 
 

@@ -104,6 +104,36 @@ proc runCase*(caseData: JsonNode): JsonNode =
         output.backprop(getTensor(operation["seed"]))
         result[name].add %*{"output": tensorObservation(output.value),
                            "grad": tensorObservation(x.grad)}
+  of "autograd.cumsum_gradient":
+    for name, spec in inputs:
+      var source = getTensor(spec["x"])
+      for special in spec["nonfinite"]:
+        let value = case special["value"].getStr
+                    of "nan": NaN
+                    of "-inf": NegInf
+                    else: Inf
+        source.unsafe_raw_offset[special["index"].getInt] = value
+      case spec["layout"].getStr
+      of "transpose": source = source.transpose
+      of "offset": source = source.transpose[_, 1..^1]
+      of "reverse": source = source[^1..0|-1]
+      of "broadcast": source = source.broadcast(4, 3)
+      else: discard
+      result[name] = newJArray()
+      for operation in spec["operations"]:
+        let context = newContext Tensor[float64]
+        let x = context.variable(source, requires_grad = true)
+        let output = x.cumsum(operation["axis"].getInt)
+        var seed = getTensor(operation["seed"])
+        for special in operation["seed_nonfinite"]:
+          seed.unsafe_raw_offset[special["index"].getInt] =
+            (case special["value"].getStr
+             of "nan": NaN
+             of "-inf": NegInf
+             else: Inf)
+        output.backprop(seed)
+        result[name].add %*{"output": tensorObservation(output.value),
+                           "grad": tensorObservation(x.grad)}
   of "tensor.reduction_edges":
     for name, spec in inputs:
       var a = getTensor(spec["a"])

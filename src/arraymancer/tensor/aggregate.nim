@@ -384,21 +384,109 @@ proc iqr*[T](arg: Tensor[T]): float =
   result = percentile(tS, 75, isSorted = true) -
            percentile(tS, 25, isSorted = true)
 
-proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[T] = # from hugogranstrom
-  ## Calculates the cumulative sum of a rank-n Tensor.
-  ## Inputs:
-  ##  - t: a rank-n tensor to cumulatively sum
-  ##  - axis: int
-  ## Returns:
-  ##  - A tensor cumulatively summed at axis, that is, add each value to
-  mixin `_`
-  result = zeros_like(arg)
-  for i, tAxis in enumerateAxis(arg, axis):
-    var temp = result.atAxisIndex(axis, i)
-    if i == 0:
-      temp[_] = tAxis
+proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
+  ## Return an independent, same-shaped tensor with inclusive cumulative sums
+  ## along ``axis``. Negative axes count from the end; scalar tensors accept
+  ## axes 0 and -1. Empty tensors preserve their exact shape.
+  ## Invalid axes raise ``ValueError``.
+  ##
+  ## Reads follow the input's strides, including offset, reversed, and
+  ## broadcast views. Float32 inputs accumulate in float64 before each
+  ## prefix is rounded to float32; other element types retain their type and
+  ## use their ordinary ``+`` operation.
+  mixin _
+  let rank = arg.rank
+  var sumAxis: int
+  if rank == 0:
+    if axis != 0 and axis != -1:
+      raise newException(ValueError, "Cumulative sum axis is outside input rank")
+  elif axis >= -rank and axis < rank:
+    sumAxis = if axis < 0: axis + rank else: axis
+  else:
+    raise newException(ValueError, "Cumulative sum axis is outside input rank")
+
+  result = newTensorUninit[T](arg.shape)
+  if arg.size == 0:
+    return
+  if rank == 0:
+    result.storage.raw_buffer[0] = arg.storage.raw_buffer[arg.offset]
+    return
+
+  var outer = 1'u
+  for dim in 0 ..< sumAxis:
+    outer *= uint(arg.shape[dim])
+  var inner = 1'u
+  for dim in sumAxis + 1 ..< rank:
+    inner *= uint(arg.shape[dim])
+  let axisLength = uint(arg.shape[sumAxis])
+  let groupCount = outer * inner
+
+  let inputData = arg.storage.raw_buffer
+  let output = result.storage.raw_buffer
+  template writeOutput(index: uint; value: untyped) =
+    when T is KnownSupportsCopyMem:
+      output[index] = value
     else:
-      temp[_] = result.atAxisIndex(axis, i-1) + tAxis
+      output[int(index)] = value
+
+  when T is float32 or T is float64:
+    if arg.is_C_contiguous:
+      when defined(macosx) and defined(arm64) and T is float32:
+        cumsumPackedFloat32(addr output[0], unsafeAddr inputData[arg.offset],
+                            outer, axisLength, inner, false)
+      else:
+        # Valid packed tensors bound the unsigned storage offsets.
+        let inputOffset = uint(arg.offset)
+        for group in 0'u ..< groupCount:
+          let outputBase = (group div inner) * axisLength * inner + group mod inner
+          var accumulated = 0.0
+          for index in 0'u ..< axisLength:
+            let flat = outputBase + index * inner
+            accumulated += float64(inputData[inputOffset + flat])
+            output[flat] = T(accumulated)
+      return
+
+  var coordinates: Metadata
+  coordinates.len = rank
+  for dim in 0 ..< rank:
+    coordinates[dim] = 0
+  var inputBase = arg.offset
+  var group = 0'u
+  while group < groupCount:
+    let outputBase = (group div inner) * axisLength * inner + group mod inner
+    when T is float32:
+      var accumulated = 0.0
+      for index in 0'u ..< axisLength:
+        accumulated += float64(inputData[inputBase + int(index) * arg.strides[sumAxis]])
+        writeOutput(outputBase + index * inner, T(accumulated))
+    elif T is float64:
+      var accumulated = 0.0
+      for index in 0'u ..< axisLength:
+        accumulated += inputData[inputBase + int(index) * arg.strides[sumAxis]]
+        writeOutput(outputBase + index * inner, T(accumulated))
+    else:
+      var accumulated: T
+      var hasValue = false
+      for index in 0'u ..< axisLength:
+        let value = inputData[inputBase + int(index) * arg.strides[sumAxis]]
+        if hasValue:
+          accumulated = accumulated + value
+        else:
+          accumulated = value
+          hasValue = true
+        writeOutput(outputBase + index * inner, accumulated)
+
+    if group + 1'u < groupCount:
+      for dim in countdown(rank - 1, 0):
+        if dim == sumAxis:
+          continue
+        if coordinates[dim] < arg.shape[dim] - 1:
+          inc coordinates[dim]
+          inputBase += arg.strides[dim]
+          break
+        coordinates[dim] = 0
+        inputBase -= (arg.shape[dim] - 1) * arg.strides[dim]
+    inc group
 
 proc cumprod*[T](arg: Tensor[T], axis: int = 0): Tensor[T] = # from hugogranstrom
   ## Calculates the cumulative sum of a rank-n Tensor.

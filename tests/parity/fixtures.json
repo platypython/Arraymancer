@@ -20543,6 +20543,7379 @@
           }
         ]
       }
+    },
+    {
+      "id": "autograd.cumsum_gradient",
+      "area": "api:autograd",
+      "inputs": {
+        "dense": {
+          "x": {
+            "shape": [
+              2,
+              3
+            ],
+            "values": [
+              2,
+              3,
+              -4,
+              5,
+              -2,
+              1
+            ]
+          },
+          "layout": "identity",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "nonfinite_seed": {
+          "x": {
+            "shape": [
+              2,
+              3
+            ],
+            "values": [
+              2,
+              3,
+              -4,
+              5,
+              -2,
+              1
+            ]
+          },
+          "layout": "identity",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 1,
+                  "value": "+inf"
+                },
+                {
+                  "index": 2,
+                  "value": "-inf"
+                }
+              ]
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 2,
+                  "value": "nan"
+                }
+              ]
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 1,
+                  "value": "+inf"
+                },
+                {
+                  "index": 2,
+                  "value": "-inf"
+                }
+              ]
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 2,
+                  "value": "nan"
+                }
+              ]
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 1,
+                  "value": "+inf"
+                },
+                {
+                  "index": 2,
+                  "value": "-inf"
+                }
+              ]
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 2,
+                  "value": "nan"
+                }
+              ]
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 1,
+                  "value": "+inf"
+                },
+                {
+                  "index": 2,
+                  "value": "-inf"
+                }
+              ]
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 2,
+                  "value": "nan"
+                }
+              ]
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 1,
+                  "value": "+inf"
+                },
+                {
+                  "index": 2,
+                  "value": "-inf"
+                }
+              ]
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 2,
+                  "value": "nan"
+                }
+              ]
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 1,
+                  "value": "+inf"
+                },
+                {
+                  "index": 2,
+                  "value": "-inf"
+                }
+              ]
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 2,
+                  "value": "nan"
+                }
+              ]
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 1,
+                  "value": "+inf"
+                },
+                {
+                  "index": 2,
+                  "value": "-inf"
+                }
+              ]
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 2,
+                  "value": "nan"
+                }
+              ]
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 1,
+                  "value": "+inf"
+                },
+                {
+                  "index": 2,
+                  "value": "-inf"
+                }
+              ]
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 2,
+                  "value": "nan"
+                }
+              ]
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 1,
+                  "value": "+inf"
+                },
+                {
+                  "index": 2,
+                  "value": "-inf"
+                }
+              ]
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": [
+                {
+                  "index": 2,
+                  "value": "nan"
+                }
+              ]
+            }
+          ]
+        },
+        "batched": {
+          "x": {
+            "shape": [
+              2,
+              2,
+              5
+            ],
+            "values": [
+              -8,
+              -7,
+              -6,
+              -5,
+              -4,
+              -3,
+              -2,
+              -1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11
+            ]
+          },
+          "layout": "identity",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 2,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 2,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 2,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  2,
+                  5
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "vector": {
+          "x": {
+            "shape": [
+              6
+            ],
+            "values": [
+              2,
+              0,
+              -4,
+              5,
+              -2,
+              1
+            ]
+          },
+          "layout": "identity",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "nonfinite": {
+          "x": {
+            "shape": [
+              4
+            ],
+            "values": [
+              0,
+              2,
+              0,
+              0
+            ]
+          },
+          "layout": "identity",
+          "nonfinite": [
+            {
+              "index": 0,
+              "value": "+inf"
+            },
+            {
+              "index": 2,
+              "value": "-inf"
+            },
+            {
+              "index": 3,
+              "value": "nan"
+            }
+          ],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  4
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  4
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  4
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  4
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  4
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  4
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "nan": {
+          "x": {
+            "shape": [
+              3
+            ],
+            "values": [
+              0,
+              2,
+              3
+            ]
+          },
+          "layout": "identity",
+          "nonfinite": [
+            {
+              "index": 0,
+              "value": "nan"
+            }
+          ],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "scalar": {
+          "x": {
+            "shape": [],
+            "values": [
+              -3
+            ]
+          },
+          "layout": "identity",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [],
+                "values": [
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [],
+                "values": [
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [],
+                "values": [
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [],
+                "values": [
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [],
+                "values": [
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [],
+                "values": [
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "scalar_negative_zero": {
+          "x": {
+            "shape": [],
+            "values": [
+              -0.0
+            ]
+          },
+          "layout": "identity",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [],
+                "values": [
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [],
+                "values": [
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [],
+                "values": [
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [],
+                "values": [
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [],
+                "values": [
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [],
+                "values": [
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "scalar_nan": {
+          "x": {
+            "shape": [],
+            "values": [
+              0
+            ]
+          },
+          "layout": "identity",
+          "nonfinite": [
+            {
+              "index": 0,
+              "value": "nan"
+            }
+          ],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [],
+                "values": [
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [],
+                "values": [
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [],
+                "values": [
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [],
+                "values": [
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [],
+                "values": [
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [],
+                "values": [
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "empty_vector": {
+          "x": {
+            "shape": [
+              0
+            ],
+            "values": []
+          },
+          "layout": "identity",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  0
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  0
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  0
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  0
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  0
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  0
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "empty_axis": {
+          "x": {
+            "shape": [
+              2,
+              0,
+              3
+            ],
+            "values": []
+          },
+          "layout": "identity",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 2,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 2,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 2,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  2,
+                  0,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "empty_outer": {
+          "x": {
+            "shape": [
+              0,
+              2,
+              3
+            ],
+            "values": []
+          },
+          "layout": "identity",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 2,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 2,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 2,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  0,
+                  2,
+                  3
+                ],
+                "values": []
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "transpose": {
+          "x": {
+            "shape": [
+              2,
+              3
+            ],
+            "values": [
+              2,
+              3,
+              -4,
+              5,
+              -2,
+              1
+            ]
+          },
+          "layout": "transpose",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  3,
+                  2
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  3,
+                  2
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  3,
+                  2
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  3,
+                  2
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  3,
+                  2
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  3,
+                  2
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  3,
+                  2
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  3,
+                  2
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  3,
+                  2
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "offset": {
+          "x": {
+            "shape": [
+              2,
+              3
+            ],
+            "values": [
+              2,
+              3,
+              -4,
+              5,
+              -2,
+              1
+            ]
+          },
+          "layout": "offset",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "reverse": {
+          "x": {
+            "shape": [
+              6
+            ],
+            "values": [
+              2,
+              0,
+              -4,
+              5,
+              -2,
+              1
+            ]
+          },
+          "layout": "reverse",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  6
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        },
+        "broadcast": {
+          "x": {
+            "shape": [
+              1,
+              3
+            ],
+            "values": [
+              2,
+              0,
+              -4
+            ]
+          },
+          "layout": "broadcast",
+          "nonfinite": [],
+          "operations": [
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  4,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  4,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 0,
+              "seed": {
+                "shape": [
+                  4,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  4,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  4,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": 1,
+              "seed": {
+                "shape": [
+                  4,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  4,
+                  3
+                ],
+                "values": [
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0,
+                  3.0,
+                  4.0,
+                  5.0,
+                  1.0,
+                  2.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  4,
+                  3
+                ],
+                "values": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "seed_nonfinite": []
+            },
+            {
+              "axis": -1,
+              "seed": {
+                "shape": [
+                  4,
+                  3
+                ],
+                "values": [
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0,
+                  -6.0,
+                  -8.0,
+                  -10.0,
+                  -2.0,
+                  -4.0
+                ]
+              },
+              "seed_nonfinite": []
+            }
+          ]
+        }
+      },
+      "atol": 1e-10,
+      "rtol": 1e-10,
+      "expected": {
+        "dense": [
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                3.0,
+                -4.0,
+                7.0,
+                1.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                7.0,
+                4.0,
+                4.0,
+                5.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                3.0,
+                -4.0,
+                7.0,
+                1.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                3.0,
+                -4.0,
+                7.0,
+                1.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -10.0,
+                -14.0,
+                -8.0,
+                -8.0,
+                -10.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                6.0,
+                5.0,
+                3.0,
+                10.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -12.0,
+                -10.0,
+                -6.0,
+                -20.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                6.0,
+                5.0,
+                3.0,
+                10.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -12.0,
+                -10.0,
+                -6.0,
+                -20.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          }
+        ],
+        "nonfinite_seed": [
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                3.0,
+                -4.0,
+                7.0,
+                1.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                "+inf",
+                "-inf",
+                4.0,
+                5.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                3.0,
+                -4.0,
+                7.0,
+                1.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                7.0,
+                "nan",
+                4.0,
+                5.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                3.0,
+                -4.0,
+                7.0,
+                1.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                "+inf",
+                "-inf",
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                3.0,
+                -4.0,
+                7.0,
+                1.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                "nan",
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                3.0,
+                -4.0,
+                7.0,
+                1.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -10.0,
+                "+inf",
+                "-inf",
+                -8.0,
+                -10.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                3.0,
+                -4.0,
+                7.0,
+                1.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -10.0,
+                -14.0,
+                "nan",
+                -8.0,
+                -10.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "-inf",
+                10.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan",
+                10.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "-inf",
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan",
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "-inf",
+                -20.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan",
+                -20.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "-inf",
+                10.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan",
+                10.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "-inf",
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan",
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "-inf",
+                -20.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                1.0,
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                3
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan",
+                -20.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          }
+        ],
+        "batched": [
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -7.0,
+                -6.0,
+                -5.0,
+                -4.0,
+                -3.0,
+                -2.0,
+                -1.0,
+                0.0,
+                1.0,
+                -6.0,
+                -4.0,
+                -2.0,
+                0.0,
+                2.0,
+                4.0,
+                6.0,
+                8.0,
+                10.0,
+                12.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                4.0,
+                6.0,
+                8.0,
+                10.0,
+                2.0,
+                4.0,
+                6.0,
+                8.0,
+                10.0,
+                1.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                1.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -7.0,
+                -6.0,
+                -5.0,
+                -4.0,
+                -3.0,
+                -2.0,
+                -1.0,
+                0.0,
+                1.0,
+                -6.0,
+                -4.0,
+                -2.0,
+                0.0,
+                2.0,
+                4.0,
+                6.0,
+                8.0,
+                10.0,
+                12.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -7.0,
+                -6.0,
+                -5.0,
+                -4.0,
+                -3.0,
+                -2.0,
+                -1.0,
+                0.0,
+                1.0,
+                -6.0,
+                -4.0,
+                -2.0,
+                0.0,
+                2.0,
+                4.0,
+                6.0,
+                8.0,
+                10.0,
+                12.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -4.0,
+                -8.0,
+                -12.0,
+                -16.0,
+                -20.0,
+                -4.0,
+                -8.0,
+                -12.0,
+                -16.0,
+                -20.0,
+                -2.0,
+                -4.0,
+                -6.0,
+                -8.0,
+                -10.0,
+                -2.0,
+                -4.0,
+                -6.0,
+                -8.0,
+                -10.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -7.0,
+                -6.0,
+                -5.0,
+                -4.0,
+                -11.0,
+                -9.0,
+                -7.0,
+                -5.0,
+                -3.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                6.0,
+                9.0,
+                11.0,
+                13.0,
+                15.0,
+                17.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                4.0,
+                6.0,
+                8.0,
+                10.0,
+                1.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                2.0,
+                4.0,
+                6.0,
+                8.0,
+                10.0,
+                1.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -7.0,
+                -6.0,
+                -5.0,
+                -4.0,
+                -11.0,
+                -9.0,
+                -7.0,
+                -5.0,
+                -3.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                6.0,
+                9.0,
+                11.0,
+                13.0,
+                15.0,
+                17.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -7.0,
+                -6.0,
+                -5.0,
+                -4.0,
+                -11.0,
+                -9.0,
+                -7.0,
+                -5.0,
+                -3.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                6.0,
+                9.0,
+                11.0,
+                13.0,
+                15.0,
+                17.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -4.0,
+                -8.0,
+                -12.0,
+                -16.0,
+                -20.0,
+                -2.0,
+                -4.0,
+                -6.0,
+                -8.0,
+                -10.0,
+                -4.0,
+                -8.0,
+                -12.0,
+                -16.0,
+                -20.0,
+                -2.0,
+                -4.0,
+                -6.0,
+                -8.0,
+                -10.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -15.0,
+                -21.0,
+                -26.0,
+                -30.0,
+                -3.0,
+                -5.0,
+                -6.0,
+                -6.0,
+                -5.0,
+                2.0,
+                5.0,
+                9.0,
+                14.0,
+                20.0,
+                7.0,
+                15.0,
+                24.0,
+                34.0,
+                45.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                15.0,
+                14.0,
+                12.0,
+                9.0,
+                5.0,
+                15.0,
+                14.0,
+                12.0,
+                9.0,
+                5.0,
+                15.0,
+                14.0,
+                12.0,
+                9.0,
+                5.0,
+                15.0,
+                14.0,
+                12.0,
+                9.0,
+                5.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -15.0,
+                -21.0,
+                -26.0,
+                -30.0,
+                -3.0,
+                -5.0,
+                -6.0,
+                -6.0,
+                -5.0,
+                2.0,
+                5.0,
+                9.0,
+                14.0,
+                20.0,
+                7.0,
+                15.0,
+                24.0,
+                34.0,
+                45.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -15.0,
+                -21.0,
+                -26.0,
+                -30.0,
+                -3.0,
+                -5.0,
+                -6.0,
+                -6.0,
+                -5.0,
+                2.0,
+                5.0,
+                9.0,
+                14.0,
+                20.0,
+                7.0,
+                15.0,
+                24.0,
+                34.0,
+                45.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -30.0,
+                -28.0,
+                -24.0,
+                -18.0,
+                -10.0,
+                -30.0,
+                -28.0,
+                -24.0,
+                -18.0,
+                -10.0,
+                -30.0,
+                -28.0,
+                -24.0,
+                -18.0,
+                -10.0,
+                -30.0,
+                -28.0,
+                -24.0,
+                -18.0,
+                -10.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -15.0,
+                -21.0,
+                -26.0,
+                -30.0,
+                -3.0,
+                -5.0,
+                -6.0,
+                -6.0,
+                -5.0,
+                2.0,
+                5.0,
+                9.0,
+                14.0,
+                20.0,
+                7.0,
+                15.0,
+                24.0,
+                34.0,
+                45.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                15.0,
+                14.0,
+                12.0,
+                9.0,
+                5.0,
+                15.0,
+                14.0,
+                12.0,
+                9.0,
+                5.0,
+                15.0,
+                14.0,
+                12.0,
+                9.0,
+                5.0,
+                15.0,
+                14.0,
+                12.0,
+                9.0,
+                5.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -15.0,
+                -21.0,
+                -26.0,
+                -30.0,
+                -3.0,
+                -5.0,
+                -6.0,
+                -6.0,
+                -5.0,
+                2.0,
+                5.0,
+                9.0,
+                14.0,
+                20.0,
+                7.0,
+                15.0,
+                24.0,
+                34.0,
+                45.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -8.0,
+                -15.0,
+                -21.0,
+                -26.0,
+                -30.0,
+                -3.0,
+                -5.0,
+                -6.0,
+                -6.0,
+                -5.0,
+                2.0,
+                5.0,
+                9.0,
+                14.0,
+                20.0,
+                7.0,
+                15.0,
+                24.0,
+                34.0,
+                45.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                2,
+                2,
+                5
+              ],
+              "numel": 20,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -30.0,
+                -28.0,
+                -24.0,
+                -18.0,
+                -10.0,
+                -30.0,
+                -28.0,
+                -24.0,
+                -18.0,
+                -10.0,
+                -30.0,
+                -28.0,
+                -24.0,
+                -18.0,
+                -10.0,
+                -30.0,
+                -28.0,
+                -24.0,
+                -18.0,
+                -10.0
+              ]
+            }
+          }
+        ],
+        "vector": [
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                3.0,
+                1.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                16.0,
+                15.0,
+                13.0,
+                10.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                3.0,
+                1.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                3.0,
+                1.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -32.0,
+                -30.0,
+                -26.0,
+                -20.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                3.0,
+                1.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                16.0,
+                15.0,
+                13.0,
+                10.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                3.0,
+                1.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                3.0,
+                1.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -32.0,
+                -30.0,
+                -26.0,
+                -20.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          }
+        ],
+        "nonfinite": [
+          {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "+inf",
+                "+inf",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                10.0,
+                9.0,
+                7.0,
+                4.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "+inf",
+                "+inf",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "+inf",
+                "+inf",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -20.0,
+                -18.0,
+                -14.0,
+                -8.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "+inf",
+                "+inf",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                10.0,
+                9.0,
+                7.0,
+                4.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "+inf",
+                "+inf",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "+inf",
+                "+inf",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                4
+              ],
+              "numel": 4,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -20.0,
+                -18.0,
+                -14.0,
+                -8.0
+              ]
+            }
+          }
+        ],
+        "nan": [
+          {
+            "output": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                6.0,
+                5.0,
+                3.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -12.0,
+                -10.0,
+                -6.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                6.0,
+                5.0,
+                3.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan",
+                "nan",
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [
+                3
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -12.0,
+                -10.0,
+                -6.0
+              ]
+            }
+          }
+        ],
+        "scalar": [
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -2.0
+              ]
+            }
+          }
+        ],
+        "scalar_negative_zero": [
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.0
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -2.0
+              ]
+            }
+          }
+        ],
+        "scalar_nan": [
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan"
+              ]
+            },
+            "grad": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -2.0
+              ]
+            }
+          }
+        ],
+        "empty_vector": [
+          {
+            "output": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          }
+        ],
+        "empty_axis": [
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                2,
+                0,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          }
+        ],
+        "empty_outer": [
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            },
+            "grad": {
+              "shape": [
+                0,
+                2,
+                3
+              ],
+              "numel": 0,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": []
+            }
+          }
+        ],
+        "transpose": [
+          {
+            "output": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                5.0,
+                3.0,
+                1.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                9.0,
+                7.0,
+                8.0,
+                5.0,
+                5.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                5.0,
+                3.0,
+                1.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                5.0,
+                5.0,
+                3.0,
+                1.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -18.0,
+                -14.0,
+                -16.0,
+                -10.0,
+                -10.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                7.0,
+                3.0,
+                1.0,
+                -4.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                3.0,
+                2.0,
+                7.0,
+                4.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                7.0,
+                3.0,
+                1.0,
+                -4.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                7.0,
+                3.0,
+                1.0,
+                -4.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -6.0,
+                -4.0,
+                -14.0,
+                -8.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                7.0,
+                3.0,
+                1.0,
+                -4.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                3.0,
+                2.0,
+                7.0,
+                4.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                7.0,
+                3.0,
+                1.0,
+                -4.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                7.0,
+                3.0,
+                1.0,
+                -4.0,
+                -3.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                2
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -6.0,
+                -4.0,
+                -14.0,
+                -8.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          }
+        ],
+        "offset": [
+          {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                6.0,
+                5.0,
+                3.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                3.0,
+                4.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -12.0,
+                -10.0,
+                -6.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                -2.0,
+                1.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                2.0,
+                3.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                -2.0,
+                1.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                -2.0,
+                1.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -2.0,
+                -4.0,
+                -6.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                -2.0,
+                1.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                2.0,
+                3.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                -2.0,
+                1.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                5.0,
+                -2.0,
+                1.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                3,
+                1
+              ],
+              "numel": 3,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -2.0,
+                -4.0,
+                -6.0
+              ]
+            }
+          }
+        ],
+        "reverse": [
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                -1.0,
+                4.0,
+                0.0,
+                0.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                16.0,
+                15.0,
+                13.0,
+                10.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                -1.0,
+                4.0,
+                0.0,
+                0.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                -1.0,
+                4.0,
+                0.0,
+                0.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -32.0,
+                -30.0,
+                -26.0,
+                -20.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                -1.0,
+                4.0,
+                0.0,
+                0.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                16.0,
+                15.0,
+                13.0,
+                10.0,
+                6.0,
+                1.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                -1.0,
+                4.0,
+                0.0,
+                0.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.0,
+                -1.0,
+                4.0,
+                0.0,
+                0.0,
+                2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                6
+              ],
+              "numel": 6,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -32.0,
+                -30.0,
+                -26.0,
+                -20.0,
+                -12.0,
+                -2.0
+              ]
+            }
+          }
+        ],
+        "broadcast": [
+          {
+            "output": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                0.0,
+                -4.0,
+                4.0,
+                0.0,
+                -8.0,
+                6.0,
+                0.0,
+                -12.0,
+                8.0,
+                0.0,
+                -16.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                12.0,
+                11.0,
+                10.0,
+                11.0,
+                9.0,
+                7.0,
+                7.0,
+                4.0,
+                6.0,
+                5.0,
+                1.0,
+                2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                0.0,
+                -4.0,
+                4.0,
+                0.0,
+                -8.0,
+                6.0,
+                0.0,
+                -12.0,
+                8.0,
+                0.0,
+                -16.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                0.0,
+                -4.0,
+                4.0,
+                0.0,
+                -8.0,
+                6.0,
+                0.0,
+                -12.0,
+                8.0,
+                0.0,
+                -16.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -24.0,
+                -22.0,
+                -20.0,
+                -22.0,
+                -18.0,
+                -14.0,
+                -14.0,
+                -8.0,
+                -12.0,
+                -10.0,
+                -2.0,
+                -4.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                6.0,
+                5.0,
+                3.0,
+                10.0,
+                6.0,
+                1.0,
+                9.0,
+                7.0,
+                4.0,
+                8.0,
+                3.0,
+                2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -12.0,
+                -10.0,
+                -6.0,
+                -20.0,
+                -12.0,
+                -2.0,
+                -18.0,
+                -14.0,
+                -8.0,
+                -16.0,
+                -6.0,
+                -4.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                6.0,
+                5.0,
+                3.0,
+                10.0,
+                6.0,
+                1.0,
+                9.0,
+                7.0,
+                4.0,
+                8.0,
+                3.0,
+                2.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "output": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0,
+                2.0,
+                2.0,
+                -2.0
+              ]
+            },
+            "grad": {
+              "shape": [
+                4,
+                3
+              ],
+              "numel": 12,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -12.0,
+                -10.0,
+                -6.0,
+                -20.0,
+                -12.0,
+                -2.0,
+                -18.0,
+                -14.0,
+                -8.0,
+                -16.0,
+                -6.0,
+                -4.0
+              ]
+            }
+          }
+        ]
+      }
     }
   ]
 }

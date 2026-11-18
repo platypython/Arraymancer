@@ -45,6 +45,94 @@ when defined(macosx):
       {.importc, nodecl, header: "<arm_neon.h>".}
     proc vgetq_lane_f32(value: Float32x4; lane: cint): float32
       {.importc, nodecl, header: "<arm_neon.h>".}
+    type Float32x2 {.importc: "float32x2_t", bycopy, header: "<arm_neon.h>".} = object
+      raw: array[2, float32]
+    type Float64x2 {.importc: "float64x2_t", bycopy, header: "<arm_neon.h>".} = object
+      raw: array[2, float64]
+    proc vdup_n_f32(value: float32): Float32x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vset_lane_f32(value: float32; vector: Float32x2; lane: cint): Float32x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vget_lane_f32(value: Float32x2; lane: cint): float32
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vget_low_f32(value: Float32x4): Float32x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vget_high_f32(value: Float32x4): Float32x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcombine_f32(low, high: Float32x2): Float32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcvt_f64_f32(value: Float32x2): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcvt_f32_f64(value: Float64x2): Float32x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vdupq_n_f64(value: float64): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vaddq_f64(a, b: Float64x2): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+
+    proc cumsumPackedFloat32*(output, input: ptr float32;
+                             outer, axisLength, inner: uint;
+                             reverse: static[bool]) =
+      ## Scan disjoint packed spans, preserving sequential float64 accumulation.
+      ## SIMD lanes are separate scans, never reassociated prefixes of one scan.
+      withCompilerOptimHints()
+      let destination {.restrict.} = cast[ptr UncheckedArray[float32]](output)
+      let source = cast[ptr UncheckedArray[float32]](input)
+      template coordinate(step: uint): uint =
+        when reverse: axisLength - 1 - step
+        else: step
+      if inner == 1:
+        var group = 0'u
+        while group + 4 <= outer:
+          let base0 = group * axisLength
+          let base1 = base0 + axisLength
+          let base2 = base1 + axisLength
+          let base3 = base2 + axisLength
+          var low = vdupq_n_f64(0)
+          var high = low
+          for step in 0'u ..< axisLength:
+            let index = coordinate(step)
+            let a = vset_lane_f32(source[base1 + index],
+                                 vdup_n_f32(source[base0 + index]), 1)
+            let b = vset_lane_f32(source[base3 + index],
+                                 vdup_n_f32(source[base2 + index]), 1)
+            low = vaddq_f64(low, vcvt_f64_f32(a))
+            high = vaddq_f64(high, vcvt_f64_f32(b))
+            let packedLow = vcvt_f32_f64(low)
+            let packedHigh = vcvt_f32_f64(high)
+            destination[base0 + index] = vget_lane_f32(packedLow, 0)
+            destination[base1 + index] = vget_lane_f32(packedLow, 1)
+            destination[base2 + index] = vget_lane_f32(packedHigh, 0)
+            destination[base3 + index] = vget_lane_f32(packedHigh, 1)
+          group += 4
+        for tail in group ..< outer:
+          let base = tail * axisLength
+          var accumulated = 0.0
+          for step in 0'u ..< axisLength:
+            let index = base + coordinate(step)
+            accumulated += float64(source[index])
+            destination[index] = float32(accumulated)
+        return
+      for group in 0'u ..< outer:
+        let base = group * axisLength * inner
+        var column = 0'u
+        while column + 4 <= inner:
+          var low = vdupq_n_f64(0)
+          var high = low
+          for step in 0'u ..< axisLength:
+            let index = base + coordinate(step) * inner + column
+            let values = vld1q_f32(unsafeAddr source[index])
+            low = vaddq_f64(low, vcvt_f64_f32(vget_low_f32(values)))
+            high = vaddq_f64(high, vcvt_f64_f32(vget_high_f32(values)))
+            vst1q_f32(addr destination[index],
+                     vcombine_f32(vcvt_f32_f64(low), vcvt_f32_f64(high)))
+          column += 4
+        for tail in column ..< inner:
+          var accumulated = 0.0
+          for step in 0'u ..< axisLength:
+            let index = base + coordinate(step) * inner + tail
+            accumulated += float64(source[index])
+            destination[index] = float32(accumulated)
 
   proc reduceFloat32Span(input: ptr float32; count: int;
                         multiply: static[bool]): float32 =

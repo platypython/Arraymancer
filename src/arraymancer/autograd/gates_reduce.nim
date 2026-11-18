@@ -16,6 +16,8 @@ import  ../private/ast_utils,
         ../tensor,
         ./autograd_common,
         sequtils
+when defined(macosx) and defined(arm64):
+  import ../tensor/private/p_accelerate
 
 proc reductionTensor[T](value: T): Tensor[T] =
   ## Wrap a host reduction in an initialized scalar without intermediate storage.
@@ -33,6 +35,138 @@ proc reductionAxis(rank, axis: int): int =
   elif axis >= -rank and axis < rank:
     return if axis < 0: axis + rank else: axis
   raise newException(ValueError, "Reduction axis is outside the input rank")
+
+proc cpuReverseCumsumGradient[T: SomeFloat](
+    seed: Tensor[T], inputShape: Metadata, axis: int): Tensor[T] =
+  ## Reverse inclusive scan of the seed into one packed input-shaped output.
+  result = newTensorUninit[T](inputShape)
+  if result.size == 0:
+    return
+  if inputShape.len == 0:
+    result.storage.raw_buffer[0] = seed.storage.raw_buffer[seed.offset]
+    return
+
+  var outer = 1'u
+  for dim in 0 ..< axis:
+    outer *= uint(inputShape[dim])
+  var inner = 1'u
+  for dim in axis + 1 ..< inputShape.len:
+    inner *= uint(inputShape[dim])
+  let axisLength = uint(inputShape[axis])
+  let groupCount = outer * inner
+  let seedData = seed.storage.raw_buffer
+  let output = result.storage.raw_buffer
+
+  if seed.is_C_contiguous:
+    when defined(macosx) and defined(arm64) and T is float32:
+      cumsumPackedFloat32(addr output[0], unsafeAddr seedData[seed.offset],
+                          outer, axisLength, inner, true)
+    else:
+      # Backprop validates the seed shape before this packed traversal.
+      let seedOffset = uint(seed.offset)
+      for group in 0'u ..< groupCount:
+        let outputBase = (group div inner) * axisLength * inner + group mod inner
+        var accumulated = 0.0
+        var remaining = axisLength
+        while remaining > 0:
+          dec remaining
+          let flat = outputBase + remaining * inner
+          accumulated += float64(seedData[seedOffset + flat])
+          output[flat] = T(accumulated)
+    return
+
+  var coordinates: Metadata
+  coordinates.len = inputShape.len
+  for dim in 0 ..< inputShape.len:
+    coordinates[dim] = 0
+  var seedBase = seed.offset
+  var group = 0'u
+  while group < groupCount:
+    let outputBase = (group div inner) * axisLength * inner + group mod inner
+    when T is float32:
+      var accumulated: float64
+      var hasValue = false
+      var index = axisLength
+      while index > 0:
+        dec index
+        let value = float64(seedData[seedBase + int(index) * seed.strides[axis]])
+        if hasValue:
+          accumulated += value
+        else:
+          accumulated = value
+          hasValue = true
+        output[outputBase + index * inner] = T(accumulated)
+    else:
+      var accumulated: T
+      var hasValue = false
+      var index = axisLength
+      while index > 0:
+        dec index
+        let value = seedData[seedBase + int(index) * seed.strides[axis]]
+        if hasValue:
+          accumulated = accumulated + value
+        else:
+          accumulated = value
+          hasValue = true
+        output[outputBase + index * inner] = accumulated
+
+    if group + 1'u < groupCount:
+      for dim in countdown(inputShape.len - 1, 0):
+        if dim == axis:
+          continue
+        if coordinates[dim] < inputShape[dim] - 1:
+          inc coordinates[dim]
+          seedBase += seed.strides[dim]
+          break
+        coordinates[dim] = 0
+        seedBase -= (inputShape[dim] - 1) * seed.strides[dim]
+    inc group
+
+type CumsumGate[TT] {.final.} = ref object of Gate[TT]
+  cached_input_shape: Metadata
+  axis: int
+
+proc cumsum_backward_ag[TT](self: Gate[TT], payload: Payload[TT]): SmallDiffs[TT] =
+  let self = CumsumGate[TT](self)
+  result = newDiffs[TT](1)
+  when TT is Tensor[float32]:
+    result[0] = cpuReverseCumsumGradient(
+      payload.variable.grad, self.cached_input_shape, self.axis)
+  elif TT is Tensor[float64]:
+    result[0] = cpuReverseCumsumGradient(
+      payload.variable.grad, self.cached_input_shape, self.axis)
+  elif defined(metal) or defined(coreai):
+    when TT is MetalTensor[float32]:
+      result[0] = cumsumGradient(payload.variable.grad, self.axis)
+    else:
+      {.error: "Variable cumsum gradients support CPU float32/float64 and Metal float32".}
+  else:
+    {.error: "Variable cumsum gradients support CPU float32/float64 and Metal float32".}
+
+proc cumsum_cache[TT](result: Variable[TT], a: Variable[TT], axis: int) =
+  var gate: CumsumGate[TT]
+  new gate
+  gate.cached_input_shape = a.value.shape
+  gate.axis = axis
+  result.grad = zeros_like(result.value)
+  result.requires_grad = true
+  register_node(
+    "Cumsum",
+    gate,
+    cumsum_backward_ag[TT],
+    result,
+    a
+  )
+
+proc cumsum*[TT](a: Variable[TT], axis: int = 0): Variable[TT] =
+  ## Inclusive cumulative sum along a positive or negative axis.
+  ## Backward is a reverse inclusive scan of the upstream gradient.
+  let normalized = reductionAxis(a.value.rank, axis)
+  new result
+  result.context = a.context
+  result.value = a.value.cumsum(normalized)
+  if a.is_grad_needed:
+    result.cumsum_cache(a, normalized)
 
 proc sumAlongAxis[T](value: Tensor[T], axis: int): Tensor[T] =
   if value.size == 0:

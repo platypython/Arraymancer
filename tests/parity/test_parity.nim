@@ -67,6 +67,25 @@ suite "Pinned PyTorch conformance foundation":
     malformed["oracle"]["python"] = %"3.13.0"
     expect ValueError: validateFixtureData(malformed, reference)
 
+  test "Nonfinite scan seeds reject out-of-bounds writes and invalid values":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var scanCase = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "autograd.cumsum_gradient":
+        scanCase = index
+    doAssert scanCase >= 0
+    let seedSize = fixtures["cases"][scanCase]["inputs"]["nonfinite_seed"][
+      "operations"][0]["seed"]["values"].len
+    for index in [-1, seedSize]:
+      var malformed = duplicate(fixtures)
+      let operation = malformed["cases"][scanCase]["inputs"]["nonfinite_seed"]["operations"][0]
+      operation["seed_nonfinite"][0]["index"] = %index
+      expect ValueError: validateFixtureData(malformed, reference)
+    var malformed = duplicate(fixtures)
+    let operation = malformed["cases"][scanCase]["inputs"]["nonfinite_seed"]["operations"][0]
+    operation["seed_nonfinite"][0]["value"] = %"not-a-number"
+    expect ValueError: validateFixtureData(malformed, reference)
+
   test "Metal reference data requires every subcase and exact tensor metadata":
     let fixtures = loadMetalFixtures(parityRoot & "metal_fixtures.json")
     var malformed = duplicate(fixtures)

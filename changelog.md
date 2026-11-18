@@ -1,6 +1,11 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add seeded cumulative-sum autograd for CPU float32/float64, including scalar
+  and empty tensors, signed/broadcast views and nonfinite inputs/seeds. Normalize
+  negative axes and accumulate CPU float32 prefixes in float64 without reloading
+  rounded outputs. Vectorize independent packed ARM64 scans without reassociating
+  prefixes; integer dtype promotion remains outside this floating-point port.
 - Reduce packed Metal rows in four-value SIMD subgroups and load adjacent
   factors together for full products, including float-aligned offset views.
   Keep short-row tails within their SIMD subgroup and avoid separated-factor

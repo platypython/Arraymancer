@@ -329,6 +329,41 @@ proc main() =
         check: cumsum(a, 1) == [[0, 4, 11],
                                 [1, 10, 15],
                                 [3, 7, 8]].toTensor
+
+      test "cumsum handles floating precision, scalar signs, and axes":
+        check [100_000_000'f32, 1'f32, -100_000_000'f32].toTensor.cumsum ==
+          [100_000_000'f32, 100_000_000'f32, 1'f32].toTensor
+        check [100_000_000.0, 1.0, -100_000_000.0].toTensor.cumsum ==
+          [100_000_000.0, 100_000_001.0, 1.0].toTensor
+
+        let negativeZero = cast[float64](0x8000000000000000'u64)
+        let scalar = newTensorWith[float64]([], negativeZero)
+        check scalar.cumsum().atContiguousIndex(0).classify == fcNegZero
+        for value in [negativeZero, negativeZero, 0.0].toTensor.cumsum:
+          check value.classify == fcZero
+
+        let empty = newTensor[float32](2, 0, 3)
+        let emptyResult = empty.cumsum(1)
+        check emptyResult.shape == [2, 0, 3]
+        check emptyResult.size == 0
+
+        let matrix = [[0, 4, 7], [1, 9, 5], [3, 4, 1]].toTensor
+        expect ValueError:
+          discard matrix.cumsum(-3)
+        expect ValueError:
+          discard matrix.cumsum(2)
+        expect ValueError:
+          discard scalar.cumsum(1)
+
+      test "cumsum reads offset, reversed, transposed, and broadcast views":
+        let owner = [99, 1, 2, 3, 4, 99].toTensor
+        check owner[4..1|-1].cumsum == [4, 7, 9, 10].toTensor
+
+        let transposed = [[1, 4], [2, 5], [3, 6]].toTensor.transpose
+        check transposed.cumsum(0) == [[1, 2, 3], [5, 7, 9]].toTensor
+
+        let rows = [10, 20].toTensor.reshape(1, 2).broadcast(3, 2)
+        check rows.cumsum(0) == [[10, 20], [20, 40], [30, 60]].toTensor
       test "cumprod":
         let a = [[0, 4, 7],
                  [1, 9, 5],
