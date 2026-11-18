@@ -118,6 +118,28 @@ proc main() =
       compareOperation(unaryLn, math.ln(x))
       compareOperation(unarySqrt, math.sqrt(x))
 
+    test "Square-root spans preserve subnormal lanes and vector tails":
+      let values = [cast[float32](1'u32), cast[float32](0x007fffff'u32),
+        cast[float32](0x00800000'u32), -0'f32, 0'f32, NaN.float32,
+        2'f32, Inf.float32, 9'f32]
+      var sourceOwner = newTensorWith[float32](values.len + 2, 99'f32)
+      var outputOwner = newTensorWith[float32](values.len + 2, -99'f32)
+      for index, value in values: sourceOwner[index + 1] = value
+      for count in 1 .. values.len:
+        let source = sourceOwner[1..count]
+        var output = outputOwner[1..count]
+        output.applyUnary(source, unarySqrt)
+        check outputOwner[0] == -99'f32
+        check outputOwner[count + 1] == -99'f32
+        for index in 0 ..< count:
+          let wanted = math.sqrt(values[index])
+          let actual = output[index]
+          if wanted != wanted:
+            check actual != actual
+          else:
+            check cast[uint32](actual) == cast[uint32](wanted)
+          check cast[uint32](source[index]) == cast[uint32](values[index])
+
     test "Bulk unary operations preserve views, aliases and scalar/empty shapes":
       let owner = [99'f32, 1, 4, 9, 16, 99].toTensor
       let reversed = owner[4..1|-1]

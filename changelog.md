@@ -7,6 +7,7 @@ Arraymancer v0.7.x
   functions share bulk vForce exp/log and hardware sqrt paths on macOS while
   retaining scalar, empty, complex and alias behavior. Keep the packed hardware
   square-root loop separate from generic traversal to avoid per-vector outlining.
+  Use exact ARM64 SIMD square roots for packed float32 spans.
 - Use system Accelerate for contiguous macOS float32 sums and means, and avoid
   vector-promotion/layout setup for dense rank-two matrix multiplication.
 - Speed up CPU map/apply loops for contiguous tensors and compatible broadcast
