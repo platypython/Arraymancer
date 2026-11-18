@@ -1,11 +1,12 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
-## Measures allocating CPU/Metal reductions using externally supplied float32 data.
+## Measures allocating CPU/Metal reductions and scans on externally supplied float32 data.
 import std/[algorithm, json, math, monotimes, os, strutils, times]
 import arraymancer
 
 const cases = ["prod", "sum_rows", "sum_columns", "mean_rows", "mean_columns",
                "prod_rows", "prod_columns", "mean_rows_backward", "mean_columns_backward",
-               "prod_backward", "prod_rows_backward", "prod_columns_backward"]
+               "prod_backward", "prod_rows_backward", "prod_columns_backward",
+               "cumsum_rows", "cumsum_columns", "cumsum_rows_backward", "cumsum_columns_backward"]
 
 when defined(metal):
   type ReductionTensor = MetalTensor[float32]
@@ -26,6 +27,7 @@ proc execute(name: string; input: ReductionTensor): ReductionTensor =
     let output =
       if name == "prod_backward": variable.product
       elif name.startsWith("mean_"): variable.mean(axis)
+      elif name.startsWith("cumsum_"): variable.cumsum(axis)
       else: variable.product(axis)
     output.backprop(output.value.ones_like)
     return variable.grad
@@ -43,6 +45,8 @@ proc execute(name: string; input: ReductionTensor): ReductionTensor =
   of "prod_columns":
     when defined(metal): input.prod(-2)
     else: input.product(-2)
+  of "cumsum_rows": input.cumsum(-1)
+  of "cumsum_columns": input.cumsum(-2)
   else: raise newException(ValueError, "Unknown reduction: " & name)
 
 proc observe(input: ReductionTensor): JsonNode =

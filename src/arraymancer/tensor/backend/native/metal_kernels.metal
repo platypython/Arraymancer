@@ -982,6 +982,162 @@ kernel void NAME(constant PackedReductionTask *tasks [[buffer(0)]], \
 PACKED_FULL_PRODUCT_KERNEL(math_product_tasks, false)
 PACKED_FULL_PRODUCT_KERNEL(math_product4_tasks, true)
 
+
+long cumsumOuterOffset(ulong outer, constant Descriptor &descriptor,
+                       int axis) {
+  long offset = 0;
+  for (int dim = axis - 1; dim >= 0; --dim) {
+    const ulong coordinate = outer % ulong(descriptor.shape[dim]);
+    outer /= ulong(descriptor.shape[dim]);
+    offset += long(coordinate) * descriptor.strides[dim];
+  }
+  return offset;
+}
+
+long cumsumInnerOffset(ulong inner, constant Descriptor &descriptor,
+                       int axis) {
+  long offset = 0;
+  for (int dim = descriptor.rank - 1; dim > axis; --dim) {
+    const ulong coordinate = inner % ulong(descriptor.shape[dim]);
+    inner /= ulong(descriptor.shape[dim]);
+    offset += long(coordinate) * descriptor.strides[dim];
+  }
+  return offset;
+}
+
+kernel void cumsum_scalar(device const float *input [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]],
+    constant Descriptor &od [[buffer(3)]],
+    uint tid [[thread_position_in_grid]]) {
+  if (tid == 0)
+    output[od.offset] = as_type<float>(as_type<uint>(input[id.offset]));
+}
+
+kernel void cumsum_rows(device const float *input [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]],
+    constant int &axis [[buffer(3)]],
+    constant ulong &axisLength [[buffer(4)]],
+    constant ulong &innerCount [[buffer(5)]],
+    constant uint &lineGridWidth [[buffer(6)]],
+    constant int &reverse [[buffer(7)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint width [[threads_per_simdgroup]]) {
+  const ulong line = ulong(group.x) + ulong(group.y) * ulong(lineGridWidth);
+  const ulong outer = line / innerCount;
+  const ulong inner = line % innerCount;
+  const long base = id.offset + cumsumOuterOffset(outer, id, axis) +
+      cumsumInnerOffset(inner, id, axis);
+  float carry = 0.0f;
+
+  // Each lane keeps four adjacent prefixes; exclusive carries preserve Inf.
+  for (ulong tile = 0; tile < axisLength; tile += ulong(width) * 4ul) {
+    const ulong start = tile + ulong(lane) * 4ul;
+    float4 prefixes = 0.0f;
+    for (uint part = 0; part < 4; ++part) {
+      const ulong scan = start + ulong(part);
+      if (scan < axisLength) {
+        const ulong axisIndex = reverse ? axisLength - 1ul - scan : scan;
+        prefixes[part] = input[base + long(axisIndex) * id.strides[axis]];
+      }
+    }
+    prefixes.y += prefixes.x;
+    prefixes.z += prefixes.y;
+    prefixes.w += prefixes.z;
+    const float preceding = simd_prefix_exclusive_sum(prefixes.w);
+    const float tileTotal = simd_shuffle(preceding + prefixes.w, ushort(width - 1));
+    const float initial = carry + preceding;
+    for (uint part = 0; part < 4; ++part) {
+      const ulong scan = start + ulong(part);
+      if (scan < axisLength) {
+        const ulong axisIndex = reverse ? axisLength - 1ul - scan : scan;
+        const ulong outputIndex = (outer * axisLength + axisIndex) *
+            innerCount + inner;
+        output[outputIndex] = initial + prefixes[part];
+      }
+    }
+    carry += tileTotal;
+  }
+}
+
+kernel void cumsum_columns(device const float *input [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]],
+    constant int &axis [[buffer(3)]],
+    constant ulong &axisLength [[buffer(4)]],
+    constant ulong &innerCount [[buffer(5)]],
+    constant ulong &columnTileCount [[buffer(6)]],
+    constant uint &tileGridWidth [[buffer(7)]],
+    constant int &reverse [[buffer(8)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simdGroup [[simdgroup_index_in_threadgroup]],
+    uint width [[threads_per_simdgroup]]) {
+  threadgroup float4 partials[4];
+  threadgroup float4 tileTotal;
+  const ulong tileId = ulong(group.x) + ulong(group.y) * ulong(tileGridWidth);
+  const ulong outer = tileId / columnTileCount;
+  const ulong firstColumn = (tileId % columnTileCount) * 4ul;
+  const long outerBase = id.offset + cumsumOuterOffset(outer, id, axis);
+  const ulong groupCount = 128ul / ulong(width);
+  float4 carry = float4(0.0f);
+
+  for (ulong tile = 0; tile < axisLength; tile += 128ul) {
+    const ulong scan = tile + ulong(simdGroup) * ulong(width) + ulong(lane);
+    const bool active = scan < axisLength;
+    const ulong axisIndex = reverse ? axisLength - 1ul - scan : scan;
+    float4 values = float4(0.0f);
+    if (active) {
+      const long axisBase = outerBase + long(axisIndex) * id.strides[axis];
+      for (uint columnLane = 0; columnLane < 4; ++columnLane) {
+        const ulong column = firstColumn + ulong(columnLane);
+        if (column < innerCount)
+          values[columnLane] = input[axisBase +
+              cumsumInnerOffset(column, id, axis)];
+      }
+    }
+    const float4 prefix = float4(
+        simd_prefix_inclusive_sum(values.x),
+        simd_prefix_inclusive_sum(values.y),
+        simd_prefix_inclusive_sum(values.z),
+        simd_prefix_inclusive_sum(values.w));
+    const float4 subtotal = float4(
+        simd_shuffle_down(prefix.x, ushort(width - 1)),
+        simd_shuffle_down(prefix.y, ushort(width - 1)),
+        simd_shuffle_down(prefix.z, ushort(width - 1)),
+        simd_shuffle_down(prefix.w, ushort(width - 1)));
+    if (lane == 0) partials[simdGroup] = subtotal;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float4 preceding = float4(0.0f);
+    for (uint previous = 0; previous < simdGroup; ++previous)
+      preceding += partials[previous];
+    if (simdGroup == 0 && lane == 0) {
+      float4 total = float4(0.0f);
+      for (ulong index = 0; index < groupCount; ++index)
+        total += partials[index];
+      tileTotal = total;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (active) {
+      const float4 accumulated = (carry + preceding) + prefix;
+      for (uint columnLane = 0; columnLane < 4; ++columnLane) {
+        const ulong column = firstColumn + ulong(columnLane);
+        if (column < innerCount) {
+          const ulong outputIndex = (outer * axisLength + axisIndex) *
+              innerCount + column;
+          output[outputIndex] = accumulated[columnLane];
+        }
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    carry += tileTotal;
+  }
+}
+
 long productGradientAxisBase(ulong slice, constant Descriptor &descriptor,
                              int axis) {
   long base = descriptor.offset;

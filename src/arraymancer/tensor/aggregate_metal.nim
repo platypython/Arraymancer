@@ -86,3 +86,31 @@ proc productGradient*(input, product, seed: MetalTensor[float32];
     seed.storage.owner.handle, descriptor(seed),
     result.storage.owner.handle, descriptor(result),
     int32(axis), arraymancerAppleLibDir.cstring)
+
+proc cumsumScan(t: MetalTensor[float32]; axis: int;
+                reverse: bool): MetalTensor[float32] =
+  ## Scan on-device while preserving arbitrary input view strides.
+  validateMetalView(t)
+  let rank = max(t.rank, 1)
+  if axis < -rank or axis >= rank:
+    raise newException(MetalError, "Metal cumulative-sum axis outside rank")
+  let normalized = if axis < 0: axis + rank else: axis
+  result = newMetalTensorUninit[float32](t.shape, t.storage.device)
+  if t.size == 0: return
+  checkMetal metalApi().cumsum(
+    t.storage.owner.handle, descriptor(t),
+    result.storage.owner.handle, descriptor(result),
+    int32(normalized), int32(ord(reverse)), arraymancerAppleLibDir.cstring)
+
+proc cumsum*(t: MetalTensor[float32]; axis: int = 0): MetalTensor[float32] =
+  ## Return an independent, dense, input-shaped inclusive sum.
+  ## Accepts negative axes (scalar axes: 0/-1), exact empty shapes and
+  ## signed/broadcast input views without materializing them. Grouped float32
+  ## carries can round differently from the CPU's float64 accumulation.
+  cumsumScan(t, axis, false)
+
+proc cumsumGradient*(seed: MetalTensor[float32];
+                     axis: int): MetalTensor[float32] =
+  ## The adjoint of a forward inclusive scan is a reverse inclusive scan.
+  ## Returns independent, seed-shaped float32 storage on the seed's device.
+  cumsumScan(seed, axis, true)

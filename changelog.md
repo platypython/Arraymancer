@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add native Metal float32 cumulative sums and seeded reverse-inclusive VJPs.
+  Scan signed/broadcast views without input copies, preserve scalar bits and
+  empty shapes, and retain queued owners across stream/event handoffs. Keep
+  four adjacent row prefixes per SIMD lane without threadgroup barriers.
 - Add CPU float32/float64 cumulative-product autograd with seeded first-order
   derivatives, negative/scalar axes, empty shapes and signed/broadcast reads.
   Preserve rounded-prefix overflow/underflow behavior, first-zero masks and

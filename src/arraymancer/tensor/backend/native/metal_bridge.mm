@@ -2876,6 +2876,156 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
   }
 }
 
+AMStatus am_cumsum(void *inputHandle, AMTensorDescriptor inputDescriptor,
+                   void *outputHandle, AMTensorDescriptor outputDescriptor,
+                   int32_t axis, int32_t reverse, const char *directory) {
+  @autoreleasepool {
+    if (!inputHandle || !outputHandle || !directory)
+      return failure(2, "null Metal cumulative-sum argument");
+    if (reverse != 0 && reverse != 1)
+      return failure(2, "Metal cumulative-sum reverse flag must be zero or one");
+
+    AMBuffer *input = (__bridge AMBuffer *)inputHandle;
+    AMBuffer *output = (__bridge AMBuffer *)outputHandle;
+    uint64_t inputCount = 0, outputCount = 0;
+    AMStatus status = validateFloatTensor(input, inputDescriptor, inputCount);
+    if (status.code) return status;
+    status = validateFloatTensor(output, outputDescriptor, outputCount);
+    if (status.code) return status;
+    if (!sameDevice(input, output))
+      return failure(2, "Metal cumulative-sum buffers use different devices");
+    if (input == output || input.buffer == output.buffer ||
+        !sameShape(inputDescriptor, outputDescriptor) ||
+        inputCount != outputCount)
+      return failure(2, "Metal cumulative-sum output must be independent and input-shaped");
+    if (axis < 0 || (inputDescriptor.rank == 0
+            ? axis != 0 : axis >= inputDescriptor.rank))
+      return failure(2, "Metal cumulative-sum axis is outside rank");
+    if (outputCount && outputDescriptor.offset != 0)
+      return failure(2, "Metal cumulative-sum output must be zero-offset contiguous storage");
+    if (outputCount) {
+      uint64_t expectedStride = 1;
+      for (int dim = outputDescriptor.rank - 1; dim >= 0; --dim) {
+        if (outputDescriptor.strides[dim] != (int64_t)expectedStride)
+          return failure(2, "Metal cumulative-sum output must be contiguous");
+        const __uint128_t next = (__uint128_t)expectedStride *
+            (uint64_t)outputDescriptor.shape[dim];
+        if (next > UINT64_MAX)
+          return failure(2, "Metal cumulative-sum output shape overflows");
+        expectedStride = (uint64_t)next;
+      }
+    }
+    if (!outputCount) return ok();
+
+    const bool scalar = inputDescriptor.rank == 0;
+    uint64_t outerCount = 1, innerCount = 1, axisLength = 1;
+    if (!scalar) {
+      axisLength = (uint64_t)inputDescriptor.shape[axis];
+      for (int dim = 0; dim < axis; ++dim)
+        outerCount *= (uint64_t)inputDescriptor.shape[dim];
+      for (int dim = axis + 1; dim < inputDescriptor.rank; ++dim)
+        innerCount *= (uint64_t)inputDescriptor.shape[dim];
+    }
+
+    AMDeviceState *state = output.state;
+    if (!state || !state.device)
+      return failure(1, "Metal cumulative-sum output has no device state");
+    NSError *error = nil;
+    AMCompute *context = compute(output.buffer.device, directory, &error);
+    if (!context)
+      return failure(9, error.localizedDescription.UTF8String
+          ?: "Metal queue or library unavailable");
+
+    const uint64_t columnTileCount = innerCount / 4ul +
+        (innerCount % 4ul != 0);
+    const uint64_t groupCount = scalar ? 1 : (innerCount == 1
+        ? outerCount : outerCount * columnTileCount);
+    const __uint128_t maxGridGroups =
+        (__uint128_t)UINT32_MAX * (__uint128_t)UINT32_MAX;
+    if (!groupCount || (__uint128_t)groupCount > maxGridGroups)
+      return failure(2, "Metal cumulative-sum grid exceeds index limits");
+    const uint64_t gridWidth = MIN(groupCount, (uint64_t)UINT32_MAX);
+    const uint64_t gridHeight = groupCount / gridWidth +
+        (groupCount % gridWidth != 0);
+    if (gridHeight > UINT32_MAX)
+      return failure(2, "Metal cumulative-sum grid exceeds index limits");
+
+    id<MTLComputePipelineState> pipeline = pipelineFor(context,
+        scalar ? @"cumsum_scalar" :
+        (innerCount == 1 ? @"cumsum_rows" : @"cumsum_columns"), &error);
+    if (!pipeline)
+      return failure(error ? 7 : 8, error.localizedDescription.UTF8String
+          ?: "missing Metal cumulative-sum kernel");
+    const NSUInteger threadCount = scalar ? 1 :
+        (innerCount == 1 ? pipeline.threadExecutionWidth : 128);
+    if (scalar) {
+      if (pipeline.maxTotalThreadsPerThreadgroup < threadCount)
+        return failure(7, "Metal scalar cumulative-sum kernel cannot run");
+    } else {
+      const NSUInteger simdWidth = pipeline.threadExecutionWidth;
+      if (!simdWidth || pipeline.maxTotalThreadsPerThreadgroup < threadCount ||
+          (innerCount != 1 && (128 % simdWidth || 128 / simdWidth > 4)))
+        return failure(7, "Metal cumulative-sum pipeline has an unsupported SIMD width");
+    }
+
+    AMStream *stream = nil;
+    status = selectedStream(output.buffer.device, context.state, &stream);
+    if (status.code) return status;
+    @synchronized(stream.encodingLock) {
+      id<MTLCommandBuffer> command = mathCommandBuffer(stream);
+      if (!command)
+        return failure(5, "cannot create Metal cumulative-sum command");
+      id<MTLComputeCommandEncoder> encoder =
+          mathComputeEncoder(stream, command, output, true);
+      if (!encoder)
+        return failure(5, "cannot create Metal cumulative-sum encoder");
+
+      const uint64_t invocation = nextInvocation.fetch_add(1);
+      AMEvidence evidence = {invocation, output.buffer.device.registryID,
+          0, 0, 0, 0, 2, reverse ? 132 : 131};
+      AMBuffer *__unsafe_unretained mathBuffers[2] = {input, output};
+      flushPackedMath(stream, encoder);
+      orderMathAccess(stream, output, input, nil, nil, true);
+      status = admitMathCommand(stream, command, @[], output, evidence,
+          pipeline, mathBuffers, 2);
+      if (status.code) return status;
+
+      @try {
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:input.buffer offset:0 atIndex:0];
+        [encoder setBuffer:output.buffer offset:0 atIndex:1];
+        if (scalar) {
+          [encoder setBytes:&inputDescriptor length:sizeof(inputDescriptor) atIndex:2];
+          [encoder setBytes:&outputDescriptor length:sizeof(outputDescriptor) atIndex:3];
+          [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        } else {
+          const uint64_t columns = innerCount;
+          const uint32_t nativeGridWidth = (uint32_t)gridWidth;
+          [encoder setBytes:&inputDescriptor length:sizeof(inputDescriptor) atIndex:2];
+          const int32_t scanAxis = axis;
+          [encoder setBytes:&scanAxis length:sizeof(scanAxis) atIndex:3];
+          [encoder setBytes:&axisLength length:sizeof(axisLength) atIndex:4];
+          [encoder setBytes:&columns length:sizeof(columns) atIndex:5];
+          if (innerCount == 1) {
+            [encoder setBytes:&nativeGridWidth length:sizeof(nativeGridWidth) atIndex:6];
+            [encoder setBytes:&reverse length:sizeof(reverse) atIndex:7];
+          } else {
+            [encoder setBytes:&columnTileCount length:sizeof(columnTileCount) atIndex:6];
+            [encoder setBytes:&nativeGridWidth length:sizeof(nativeGridWidth) atIndex:7];
+            [encoder setBytes:&reverse length:sizeof(reverse) atIndex:8];
+          }
+          [encoder dispatchThreadgroups:MTLSizeMake(gridWidth, gridHeight, 1)
+              threadsPerThreadgroup:MTLSizeMake(threadCount, 1, 1)];
+        }
+      } @catch (NSException *exception) {
+        return failMathEncoding(stream, invocation, exception.reason);
+      }
+      return finishMathEncoding(stream);
+    }
+  }
+}
+
 AMStatus am_product_gradient(void *inputHandle, AMTensorDescriptor inputDescriptor,
                              void *productHandle, AMTensorDescriptor pd,
                              void *seedHandle, AMTensorDescriptor sd,

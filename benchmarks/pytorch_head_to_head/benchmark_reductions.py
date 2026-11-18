@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Check and time allocating CPU/Metal reductions against pinned PyTorch.
+"""Check and time allocating CPU/Metal reductions and scans against pinned PyTorch.
 
 Build reduction_runner.nim with release and --path:src (plus metal for MPS). Inputs stay
 resident; both implementations synchronize only at sample boundaries. Three
 paired rounds alternate backend order and require every median and p95 to win.
+Use 100 samples of 50 allocating calls; warmup matches one complete sample.
 """
 from __future__ import annotations
 
@@ -27,7 +28,8 @@ import torch
 
 CASES = ("prod", "sum_rows", "sum_columns", "mean_rows", "mean_columns",
          "prod_rows", "prod_columns", "mean_rows_backward", "mean_columns_backward",
-         "prod_backward", "prod_rows_backward", "prod_columns_backward")
+         "prod_backward", "prod_rows_backward", "prod_columns_backward",
+         "cumsum_rows", "cumsum_columns", "cumsum_rows_backward", "cumsum_columns_backward")
 ARTIFACTS = (
     "src/arraymancer/tensor/aggregate.nim",
     "src/arraymancer/tensor/private/p_accelerate.nim",
@@ -57,6 +59,8 @@ def operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
                 output = leaf.prod()
             elif name.startswith("mean_"):
                 output = leaf.mean(dim=axis, keepdim=True)
+            elif name.startswith("cumsum_"):
+                output = leaf.cumsum(dim=axis)
             else:
                 output = leaf.prod(dim=axis, keepdim=True)
             output.backward(torch.ones_like(output))
@@ -72,6 +76,8 @@ def operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
         return lambda: value.sum(dim=axis, keepdim=True)
     if kind == "mean":
         return lambda: value.mean(dim=axis, keepdim=True)
+    if kind == "cumsum":
+        return lambda: value.cumsum(dim=axis)
     return lambda: value.prod(dim=axis, keepdim=True)
 
 
@@ -95,7 +101,7 @@ def main() -> int:
     # Nonzero, nonconstant products near one avoid meaningless underflow comparisons.
     source = (1 + ((torch.arange(rows * columns) % 17) - 8) * 0.0001).float().reshape(rows, columns)
     manifest = {"rows": rows, "columns": columns, "values": source.flatten().tolist(),
-                "warmup": 20, "repeats": 15, "iterations": 50}
+                "warmup": 50, "repeats": 100, "iterations": 50}
     input_path = args.output / "input.json"
     input_path.write_text(json.dumps(manifest) + "\n")
     resident = source.to(args.backend)

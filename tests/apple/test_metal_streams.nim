@@ -120,6 +120,33 @@ suite "Metal streams and pending owners":
       check pressure.cpu == newTensorWith[float32]([2, 3], -99'f32)
       check metalMemoryStats().inFlightBytes == baseline
 
+  test "Forward and reverse scans retain dropped inputs on blocked streams":
+    for queue in [defaultMetalStream(), newMetalStream()]:
+      metalSynchronize(queue)
+      let baseline = metalMemoryStats().inFlightBytes
+      let gate = newMetalEvent()
+      var released = false
+      defer:
+        if not released: signalMetalEvent(gate, 1)
+        metalSynchronize(queue)
+      var output: MetalTensor[float32]
+      block:
+        let uploaded = [2'f32, -1, 3].toTensor.metal
+        wait(queue, gate, 1)
+        withMetalStream(queue):
+          let input = uploaded + 0'f32
+          output = input.cumsum() + input.cumsumGradient(0)
+      let pressure = newTensorWith[float32]([3], -99'f32).metal
+      var pending: AMEvidence
+      checkMetal metalApi().evidence(output.storage.owner.handle, addr pending)
+      check pending.completed == 0
+      check not metalStreamIsComplete(queue)
+      signalMetalEvent(gate, 1)
+      released = true
+      check output.cpu == [6'f32, 3, 7].toTensor
+      check pressure.cpu == [-99'f32, -99, -99].toTensor
+      check metalMemoryStats().inFlightBytes == baseline
+
   test "Default-stream work completes without another submission or completion query":
     let stream = defaultMetalStream()
     metalSynchronize(stream)
