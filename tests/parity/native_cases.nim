@@ -82,6 +82,28 @@ proc runCase*(caseData: JsonNode): JsonNode =
         "reverse_divide": tensorObservation(2.0 /. a),
         "cast": tensorObservation(a.asType(float32)),
         "greater": tensorObservation(a >. 2.0), "isnan": tensorObservation(a.isNaN)}
+  of "autograd.product_gradient":
+    for name, spec in inputs:
+      var source = getTensor(spec["x"])
+      for special in spec["nonfinite"]:
+        source.unsafe_raw_offset[special["index"].getInt] =
+          (if special["value"].getStr == "nan": NaN else: Inf)
+      case spec["layout"].getStr
+      of "transpose": source = source.transpose
+      of "offset": source = source.transpose[_, 1..^1]
+      of "reverse": source = source[^1..0|-1]
+      of "broadcast": source = source.broadcast(4, 3)
+      else: discard
+      result[name] = newJArray()
+      for operation in spec["operations"]:
+        let context = newContext Tensor[float64]
+        let x = context.variable(source, requires_grad = true)
+        let output =
+          if operation["axis"].kind == JNull: x.product
+          else: x.product(operation["axis"].getInt, keepdim = operation["keepdim"].getBool)
+        output.backprop(getTensor(operation["seed"]))
+        result[name].add %*{"output": tensorObservation(output.value),
+                           "grad": tensorObservation(x.grad)}
   of "tensor.reduction_edges":
     for name, spec in inputs:
       var a = getTensor(spec["a"])

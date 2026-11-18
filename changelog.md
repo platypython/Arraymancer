@@ -1,6 +1,14 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add seeded full/axis product autograd for CPU float32/float64 and native
+  Metal float32, including negative axes, keepdim, empty/scalar tensors and
+  strided views. Preserve zero/nonfinite derivative distinctions between full
+  and explicit-axis reductions; retain pending GPU inputs and scratch buffers.
+- Vectorize packed macOS ARM64 float32 axis sums, products and means, and full
+  products. Fuse means and avoid checked signed indexing in bounded packed
+  reduction/gradient loops. Vector partial grouping can change rounding and
+  intermediate overflow, as with PyTorch CPU reductions.
 - Use fused axis means in Metal autograd. Batch bit-preserving GPU clones with
   their arithmetic producers/consumers while retaining copy accounting and
   independent snapshot storage. Cooperatively reduce packed column blocks,

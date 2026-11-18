@@ -436,6 +436,65 @@ def reduction_edges(torch: Any) -> dict[str, Any]:
     return _case("tensor.reduction_edges", "api:torch", inputs, expected)
 
 
+def product_gradient(torch: Any) -> dict[str, Any]:
+    """Observe zero-count, nonfinite and strided full/axis product VJPs."""
+    specs = {
+        "dense": ([2, 3], [2, 3, -4, 5, -2, 1], "identity", []),
+        "batched": ([2, 2, 5], list(range(2, 22)), "identity", []),
+        "zeros": ([3, 3], [2, 3, -4, 0, 3, -4, 0, 0, -4], "identity", []),
+        "infinity": ([3], [1, 2, 3], "identity", [(0, "+inf")]),
+        "zero_infinity": ([3], [0, 2, 3], "identity", [(1, "+inf")]),
+        "two_zeros_infinity": ([3], [0, 0, 3], "identity", [(2, "+inf")]),
+        "zero_nan": ([3], [0, 2, 3], "identity", [(1, "nan")]),
+        "two_zeros_nan": ([3], [0, 0, 3], "identity", [(2, "nan")]),
+        "scalar": ([], [-3], "identity", []),
+        "scalar_zero": ([], [0], "identity", []),
+        "scalar_infinity": ([], [1], "identity", [(0, "+inf")]),
+        "scalar_nan": ([], [1], "identity", [(0, "nan")]),
+        "singleton_infinity": ([1], [1], "identity", [(0, "+inf")]),
+        "singleton_nan": ([1], [1], "identity", [(0, "nan")]),
+        "empty_vector": ([0], [], "identity", []),
+        "empty_axis": ([2, 0, 3], [], "identity", []),
+        "empty_outer": ([0, 2, 3], [], "identity", []),
+        "transpose": ([2, 3], [2, 3, -4, 5, -2, 1], "transpose", []),
+        "offset": ([2, 3], [2, 3, -4, 5, -2, 1], "offset", []),
+        "reverse": ([6], [2, 0, -4, 5, -2, 1], "reverse", []),
+        "broadcast": ([1, 3], [2, 0, -4], "broadcast", []),
+    }
+    inputs, expected = {}, {}
+    for name, (shape, values, layout, nonfinite) in specs.items():
+        source = _tensor(values, shape, torch)
+        for index, value in nonfinite:
+            source.reshape(-1)[index] = float(value.replace("+", ""))
+        if layout == "transpose":
+            source = source.transpose(0, 1)
+        elif layout == "offset":
+            source = source.transpose(0, 1)[:, 1:]
+        elif layout == "reverse":
+            source = source.flip([0])
+        elif layout == "broadcast":
+            source = source.expand(4, 3)
+        operations, observations = [], []
+        axes: list[int | None] = [None, *range(max(1, source.ndim)), -1]
+        for axis in axes:
+            for keepdim in ([True] if axis is None else [True, False]):
+                for scale in (1, 0, -2):
+                    leaf = source.detach().requires_grad_(True)
+                    output = leaf.prod() if axis is None else leaf.prod(dim=axis, keepdim=keepdim)
+                    seed = ((torch.arange(output.numel(), dtype=source.dtype) % 5) + 1).reshape(output.shape) * scale
+                    output.backward(seed)
+                    operations.append({"axis": axis, "keepdim": keepdim,
+                                       "seed": {"shape": list(seed.shape), "values": seed.flatten().tolist()}})
+                    observations.append({"output": _observe(output), "grad": _observe(leaf.grad)})
+        inputs[name] = {
+            "x": {"shape": shape, "values": values}, "layout": layout,
+            "nonfinite": [{"index": index, "value": value} for index, value in nonfinite],
+            "operations": operations,
+        }
+        expected[name] = observations
+    return _case("autograd.product_gradient", "api:autograd", inputs, expected)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -443,7 +502,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
     axis_options, broadcast_multiply, broadcast_divide,
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
-    unary_math, activation_math, reduction_edges,
+    unary_math, activation_math, reduction_edges, product_gradient,
 )
 
 

@@ -95,6 +95,31 @@ suite "Metal streams and pending owners":
       check pressure.cpu == [-99'f32, -99, -99, -99].toTensor
       check metalMemoryStats().inFlightBytes == baseline
 
+  test "Product-gradient statistics and producers survive blocked queues and dropped owners":
+    for queue in [defaultMetalStream(), newMetalStream()]:
+      metalSynchronize(queue)
+      let baseline = metalMemoryStats().inFlightBytes
+      let gate = newMetalEvent()
+      var released = false
+      defer:
+        if not released: signalMetalEvent(gate, 1)
+        metalSynchronize(queue)
+      var output: MetalTensor[float32]
+      block:
+        let uploaded = [[2'f32, 0, 3], [4'f32, 5, 6]].toTensor.metal
+        let seed = [[2'f32], [-3'f32]].toTensor.metal
+        wait(queue, gate, 1)
+        withMetalStream(queue):
+          let input = uploaded + 0'f32
+          output = productGradient(input, input.prod(1), seed, 1) * 2'f32
+      let pressure = newTensorWith[float32]([2, 3], -99'f32).metal
+      check not metalStreamIsComplete(queue)
+      signalMetalEvent(gate, 1)
+      released = true
+      check output.cpu == [[0'f32, 24, 0], [-180'f32, -144, -120]].toTensor
+      check pressure.cpu == newTensorWith[float32]([2, 3], -99'f32)
+      check metalMemoryStats().inFlightBytes == baseline
+
   test "Default-stream work completes without another submission or completion query":
     let stream = defaultMetalStream()
     metalSynchronize(stream)

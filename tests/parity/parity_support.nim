@@ -56,13 +56,15 @@ const
     "autograd.axis_options", "autograd.broadcast_multiply", "autograd.broadcast_divide",
     "loss.mse_mean_broadcast", "loss.mse_sum_broadcast", "loss.mse_none_broadcast",
     "autograd.matmul_ranks", "autograd.singleton_views", "tensor.elementwise_shapes",
-    "autograd.unary_math", "autograd.activation_math", "tensor.reduction_edges"]
+    "autograd.unary_math", "autograd.activation_math", "tensor.reduction_edges",
+    "autograd.product_gradient"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
-    "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch"]
+    "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
+    "api:autograd"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -298,7 +300,7 @@ proc validateFixtureData*(data, reference: JsonNode) =
     text(field(oracle, "device"), "oracle.device") == "cpu", "fixture oracle provenance mismatch")
   discard text(field(oracle, "git_commit"), "oracle.git_commit")
   let cases = field(data, "cases")
-  require(cases.kind == JArray and cases.len == RequiredCaseIds.len, "exactly nine fixtures required")
+  require(cases.kind == JArray and cases.len == RequiredCaseIds.len, "fixture case count mismatch")
   var ids = initHashSet[string]()
   for c in cases:
     let id = text(field(c, "id"), "case id")
@@ -333,6 +335,25 @@ proc validateFixtureData*(data, reference: JsonNode) =
           n *= d.getInt
     of "tensor.broadcast_same_rank", "tensor.broadcast_leading_dims", "tensor.matmul_2d":
       expectInputTensor(field(inputs, "a")); expectInputTensor(field(inputs, "b"))
+    of "autograd.product_gradient":
+      require(inputs.kind == JObject and inputs.len > 0, "product gradient inputs missing")
+      for _, spec in inputs:
+        expectInputTensor(field(spec, "x"))
+        require(text(field(spec, "layout"), "product layout") in
+          ["identity", "transpose", "offset", "reverse", "broadcast"], "invalid product layout")
+        require(field(spec, "nonfinite").kind == JArray, "product nonfinite values must be an array")
+        for special in spec["nonfinite"]:
+          let index = field(special, "index")
+          require(index.kind == JInt and index.getInt >= 0 and
+            index.getInt < spec["x"]["values"].len, "product nonfinite index out of bounds")
+          require(text(field(special, "value"), "product nonfinite value") in ["nan", "+inf"],
+            "invalid product nonfinite value")
+        let operations = field(spec, "operations")
+        require(operations.kind == JArray and operations.len > 0, "product operations missing")
+        for operation in operations:
+          require(field(operation, "axis").kind in {JNull, JInt}, "invalid product axis")
+          require(field(operation, "keepdim").kind == JBool, "invalid product keepdim")
+          expectInputTensor(field(operation, "seed"))
     of "autograd.mean_gradient": expectInputTensor(field(inputs, "x"))
     of "loss.mse_mean": expectInputTensor(field(inputs, "prediction")); expectInputTensor(field(inputs, "target"))
     of "autograd.no_grad_exception": expectInputTensor(field(inputs, "x"))

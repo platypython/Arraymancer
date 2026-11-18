@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import ../../src/arraymancer
-import std / unittest
+import std / [unittest, math]
 
 proc main() =
   suite "[Core] Testing aggregation functions":
@@ -78,6 +78,50 @@ proc main() =
       check newTensor[float32](0).sum == 0'f32
       let emptyMean = newTensor[float32](0).mean
       check emptyMean != emptyMean
+
+    test "Float32 packed reductions handle offset, SIMD tails and every axis":
+      for rows in [1, 3, 4, 5, 17]:
+        for columns in [1, 3, 4, 7, 15, 16, 17, 31, 32, 33]:
+          let count = 2 * rows * columns
+          var owner = newTensorWith[float32]([count + 2], 99'f32)
+          let raw = owner.unsafe_raw_offset
+          const values = [1'f32, 2, 0.5, -1, 0.5, 2, -1, 1]
+          for index in 0 ..< count: raw[index + 1] = values[index mod values.len]
+          let input = owner[1..count].reshape(2, rows, columns)
+          let reference = input.asType(float64)
+          # Pinned Torch CPU float32 lane products overflow on these balanced factors.
+          case count
+          of 544, 578, 1088, 1122: check input.product.classify == fcInf
+          of 1054: check input.product.classify == fcNegInf
+          else: check input.product == float32(reference.product)
+          for axis in 0 ..< input.rank:
+            let total = input.sum(axis)
+            let product = input.product(axis)
+            let average = input.mean(axis)
+            let expectedTotal = reference.sum(axis).asType(float32)
+            let expectedProduct = reference.product(axis).asType(float32)
+            let expectedAverage = reference.mean(axis).asType(float32)
+            check total.shape == expectedTotal.shape
+            check product.shape == expectedProduct.shape
+            check average.shape == expectedAverage.shape
+            check (total - expectedTotal).abs.sum < 5e-4'f32
+            check product == expectedProduct
+            check (average - expectedAverage).abs.sum < 5e-4'f32
+
+    test "Float32 packed products and sums preserve nonfinite values and signed zero":
+      var input = ones[float32](33)
+      input[1] = Inf.float32
+      check input.product.classify == fcInf
+      input[17] = 0'f32
+      check input.product.classify == fcNan
+      check input.reshape(1, 33).product(1)[0, 0].classify == fcNan
+      input[1] = NaN.float32
+      check input.sum(0)[0].classify == fcNan
+      check input.mean(0)[0].classify == fcNan
+      for value in input.mitems: value = 1'f32
+      input[17] = -0'f32
+      check input.product.classify == fcNegZero
+      check input.reshape(1, 33).product(1)[0, 0].classify == fcNegZero
 
     test "Sum":
       check: t.sum == 66

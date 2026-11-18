@@ -44,6 +44,20 @@ func productIdentity[T](): T =
   else:
     1.T
 
+when defined(macosx):
+  proc packedFloat32Axis(arg: Tensor[float32], axis: int;
+                        multiply, average: static[bool]): Tensor[float32] =
+    ## The packed path allocates only its final output, including for means.
+    var shape = arg.shape
+    shape[axis] = 1
+    result = newTensorUninit[float32](shape)
+    var outer = 1
+    for dimension in 0 ..< axis: outer *= arg.shape[dimension]
+    var inner = 1
+    for dimension in axis + 1 ..< arg.rank: inner *= arg.shape[dimension]
+    reducePackedFloat32(result.get_offset_ptr, arg.get_offset_ptr,
+                       outer, arg.shape[axis], inner, multiply, average)
+
 proc sumAlongAxis[T](arg: Tensor[T], axis: int): Tensor[T] =
   if arg.rank == 0:
     if arg.size == 0: return newTensor[T](0)
@@ -52,6 +66,9 @@ proc sumAlongAxis[T](arg: Tensor[T], axis: int): Tensor[T] =
     var shape = arg.shape
     shape[axis] = 1
     return newTensor[T](shape)
+  when defined(macosx) and T is float32:
+    if arg.is_C_contiguous:
+      return packedFloat32Axis(arg, axis, false, false)
   arg.reduce_axis_inline(axis):
     x+=y
 
@@ -72,7 +89,13 @@ proc sum*[T](arg: Tensor[T], axis: int): Tensor[T] {.noinit.} =
 
 proc product*[T](arg: Tensor[T]): T =
   ## Compute the product of all elements; an empty product is one.
+  ## Packed macOS float32 uses vector partial products; rounding and overflow
+  ## depend on that grouping rather than a left-to-right multiplication order.
   if arg.size == 0: return productIdentity[T]()
+  when defined(macosx) and T is float32:
+    if arg.is_C_contiguous:
+      reducePackedFloat32(addr result, arg.get_offset_ptr, 1, arg.size, 1, true, false)
+      return
   arg.reduce_inline():
     x*=y
 
@@ -87,6 +110,9 @@ proc product*[T](arg: Tensor[T], axis: int): Tensor[T] {.noinit.}=
     var shape = arg.shape
     shape[axis] = 1
     return newTensorWith[T](shape, productIdentity[T]())
+  when defined(macosx) and T is float32:
+    if arg.is_C_contiguous:
+      return packedFloat32Axis(arg, axis, true, false)
   arg.reduce_axis_inline(axis):
     x.melwise_mul(y)
 
@@ -120,6 +146,9 @@ proc mean*[T: SomeFloat](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}
   ## Empty reductions produce NaNs; unreduced empty dimensions are preserved.
   let axis = reductionAxis(arg.rank, axis)
   if arg.rank == 0: return sumAlongAxis(arg, axis)
+  when defined(macosx) and T is float32:
+    if arg.size > 0 and arg.is_C_contiguous:
+      return packedFloat32Axis(arg, axis, false, true)
   sumAlongAxis(arg, axis) / arg.shape[axis].T
 
 proc mean*[T: Complex[float32] or Complex[float64]](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}=

@@ -61,3 +61,25 @@ proc prod*(t: MetalTensor[float32]; axis: int): MetalTensor[float32] =
 proc mean*(t: MetalTensor[float32]; axis: int): MetalTensor[float32] =
   ## Allocate a keepdim mean; empty axes produce NaN. Accept negative axes.
   reduceAxis(t, axis, 27)
+
+proc productGradient*(input, product, seed: MetalTensor[float32];
+                      axis: int): MetalTensor[float32] =
+  ## Return the product cotangent on the input device without materializing reads.
+  validateMetalView(input)
+  validateMetalView(product)
+  validateMetalView(seed)
+  if input.storage.device.registryId != product.storage.device.registryId or
+      input.storage.device.registryId != seed.storage.device.registryId:
+    raise newException(MetalError, "Metal device mismatch")
+  let rank = max(input.rank, 1)
+  if axis < -1 or axis >= rank:
+    raise newException(MetalError, "Metal product-gradient axis outside rank")
+
+  result = newMetalTensorUninit[float32](input.shape, input.storage.device)
+  if input.size == 0: return
+  checkMetal metalApi().productGradient(
+    input.storage.owner.handle, descriptor(input),
+    product.storage.owner.handle, descriptor(product),
+    seed.storage.owner.handle, descriptor(seed),
+    result.storage.owner.handle, descriptor(result),
+    int32(axis), arraymancerAppleLibDir.cstring)

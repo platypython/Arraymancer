@@ -1,38 +1,66 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
-## Measures allocating native Metal reductions using externally supplied float32 data.
-import std/[algorithm, json, math, monotimes, os, times]
+## Measures allocating CPU/Metal reductions using externally supplied float32 data.
+import std/[algorithm, json, math, monotimes, os, strutils, times]
 import arraymancer
 
 const cases = ["prod", "sum_rows", "sum_columns", "mean_rows", "mean_columns",
-               "prod_rows", "prod_columns", "mean_rows_backward", "mean_columns_backward"]
+               "prod_rows", "prod_columns", "mean_rows_backward", "mean_columns_backward",
+               "prod_backward", "prod_rows_backward", "prod_columns_backward"]
 
-proc execute(name: string; input: MetalTensor[float32]): MetalTensor[float32] =
-  if name in ["mean_rows_backward", "mean_columns_backward"]:
-    let context = newContext(MetalTensor[float32])
+when defined(metal):
+  type ReductionTensor = MetalTensor[float32]
+else:
+  type ReductionTensor = Tensor[float32]
+
+template synchronize() =
+  when defined(metal): metalSynchronize()
+
+proc execute(name: string; input: ReductionTensor): ReductionTensor =
+  if name.endsWith("_backward"):
+    when defined(metal):
+      let context = newContext(MetalTensor[float32])
+    else:
+      let context = newContext(Tensor[float32])
     let variable = context.variable(input, requires_grad = true)
-    let output = variable.mean(if name == "mean_rows_backward": -1 else: -2)
+    let axis = if "_rows_" in name: -1 else: -2
+    let output =
+      if name == "prod_backward": variable.product
+      elif name.startsWith("mean_"): variable.mean(axis)
+      else: variable.product(axis)
     output.backprop(output.value.ones_like)
     return variable.grad
   case name
-  of "prod": input.prod
+  of "prod":
+    when defined(metal): input.prod
+    else: newTensorWith[float32]([], input.product)
   of "sum_rows": input.sum(-1)
   of "sum_columns": input.sum(-2)
   of "mean_rows": input.mean(-1)
   of "mean_columns": input.mean(-2)
-  of "prod_rows": input.prod(-1)
-  of "prod_columns": input.prod(-2)
+  of "prod_rows":
+    when defined(metal): input.prod(-1)
+    else: input.product(-1)
+  of "prod_columns":
+    when defined(metal): input.prod(-2)
+    else: input.product(-2)
   else: raise newException(ValueError, "Unknown reduction: " & name)
 
-proc observe(input: MetalTensor[float32]): JsonNode =
-  let host = input.cpu
+proc observe(input: ReductionTensor): JsonNode =
+  when defined(metal):
+    let host = input.cpu
+  else:
+    let host = input
   var shape = newJArray()
   for dimension in host.shape: shape.add %dimension
   var values = newJArray()
   for value in host: values.add %value
   %*{"shape": shape, "values": values}
 
-proc consume(input: MetalTensor[float32]) =
-  let address = cast[uint](input.storage.owner.handle)
+proc consume(input: ReductionTensor) =
+  when defined(metal):
+    let address = cast[uint](input.storage.owner.handle)
+  else:
+    let address = cast[uint](input.get_offset_ptr)
   asm {.asmSyntax: "gcc".}"""
     ""
     :
@@ -48,20 +76,23 @@ when isMainModule:
   var source = newTensorUninit[float32](manifest["rows"].getInt, manifest["columns"].getInt)
   let data = cast[ptr UncheckedArray[float32]](source.get_offset_ptr)
   for index in 0 ..< source.size: data[index] = float32(manifest["values"][index].getFloat)
-  let input = source.metal
+  when defined(metal):
+    let input = source.metal
+  else:
+    let input = source
   let iterations = manifest["iterations"].getInt
   let repeats = manifest["repeats"].getInt
   var report = newJObject()
   for name in cases:
     let observation = observe(execute(name, input))
     for index in 0 ..< manifest["warmup"].getInt: consume(execute(name, input))
-    metalSynchronize()
+    synchronize()
     var samples = newSeq[float64](repeats)
     for sample in 0 ..< repeats:
-      metalSynchronize()
+      synchronize()
       let start = getMonoTime()
       for index in 0 ..< iterations: consume(execute(name, input))
-      metalSynchronize()
+      synchronize()
       samples[sample] = float64((getMonoTime() - start).inNanoseconds) / 1e6 / float64(iterations)
     var ordered = samples
     ordered.sort()

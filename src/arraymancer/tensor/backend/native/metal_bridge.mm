@@ -2867,6 +2867,275 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
                           packedDot, packedVectorMatrix, packedAxis || packedFullProduct);
   }
 }
+
+AMStatus am_product_gradient(void *inputHandle, AMTensorDescriptor inputDescriptor,
+                             void *productHandle, AMTensorDescriptor pd,
+                             void *seedHandle, AMTensorDescriptor sd,
+                             void *outputHandle, AMTensorDescriptor od,
+                             int32_t axis, const char *directory) {
+  @autoreleasepool {
+    if (!inputHandle || !productHandle || !seedHandle || !outputHandle ||
+        !directory)
+      return failure(2, "null Metal product-gradient argument");
+
+    AMBuffer *input = (__bridge AMBuffer *)inputHandle;
+    AMBuffer *product = (__bridge AMBuffer *)productHandle;
+    AMBuffer *seed = (__bridge AMBuffer *)seedHandle;
+    AMBuffer *output = (__bridge AMBuffer *)outputHandle;
+    uint64_t inputCount = 0, productCount = 0, seedCount = 0, outputCount = 0;
+    AMStatus status = validateFloatTensor(input, inputDescriptor, inputCount);
+    if (status.code) return status;
+    status = validateFloatTensor(product, pd, productCount);
+    if (status.code) return status;
+    status = validateFloatTensor(seed, sd, seedCount);
+    if (status.code) return status;
+    status = validateFloatTensor(output, od, outputCount);
+    if (status.code) return status;
+
+    if (!sameDevice(input, output) || !sameDevice(product, output) ||
+        !sameDevice(seed, output))
+      return failure(2, "Metal product-gradient buffers use different devices");
+    if (output == input || output == product || output == seed ||
+        !sameShape(inputDescriptor, od) || inputCount != outputCount)
+      return failure(2, "Metal product-gradient output must be independent and input-shaped");
+    if (axis < -1 || (axis >= 0 &&
+        (inputDescriptor.rank == 0 ? axis != 0 : axis >= inputDescriptor.rank)))
+      return failure(2, "Metal product-gradient axis is outside rank");
+
+    if (axis == -1) {
+      if (pd.rank != 0 || sd.rank != 0 ||
+          productCount != 1 || seedCount != 1)
+        return failure(2, "full product gradient requires scalar product and seed");
+    } else if (inputDescriptor.rank == 0) {
+      if (pd.rank != 0 || sd.rank != 0 ||
+          productCount != 1 || seedCount != 1)
+        return failure(2, "scalar product gradient requires scalar product and seed");
+    } else {
+      if (pd.rank != inputDescriptor.rank || sd.rank != inputDescriptor.rank ||
+          productCount != seedCount)
+        return failure(2, "axis product gradient requires matching product and seed ranks");
+      for (int dim = 0; dim < inputDescriptor.rank; ++dim) {
+        const int64_t expected = dim == axis ? 1 : inputDescriptor.shape[dim];
+        if (pd.shape[dim] != expected || sd.shape[dim] != expected)
+          return failure(2, "axis product and seed must keep the reduced dimension");
+      }
+    }
+    if (outputCount > UINT32_MAX)
+      return failure(2, "Metal product-gradient output exceeds grid limits");
+    if (!outputCount) return ok();
+
+    AMDeviceState *state = output.state;
+    if (!state || !state.device)
+      return failure(1, "Metal product-gradient output has no device state");
+    NSError *error = nil;
+    AMCompute *context = compute(output.buffer.device, directory, &error);
+    if (!context)
+      return failure(9, error.localizedDescription.UTF8String
+          ?: "Metal queue or library unavailable");
+
+    const bool scalarInput = inputDescriptor.rank == 0;
+    const bool fullReduction = axis == -1;
+    const uint64_t sliceCount = inputDescriptor.rank == 0 ? 1 : productCount;
+    const uint64_t axisLength = axis >= 0 && inputDescriptor.rank != 0
+        ? (uint64_t)inputDescriptor.shape[axis] : 1;
+    const bool singletonAxis = !scalarInput && !fullReduction && axisLength == 1;
+    uint64_t partialCount = 0;
+    id<MTLBuffer> scratch = nil;
+    if (!scalarInput && !singletonAxis) {
+      partialCount = fullReduction
+          ? (inputCount + 65535ul) / 65536ul : sliceCount;
+      const __uint128_t scratchBytes =
+          (__uint128_t)partialCount * sizeof(uint32_t);
+      if (!partialCount || scratchBytes > NSUIntegerMax)
+        return failure(2, "Metal product-gradient scratch size overflows");
+      scratch = [state.device newBufferWithLength:(NSUInteger)scratchBytes
+          options:MTLResourceStorageModePrivate];
+      if (!scratch)
+        return failure(4, "cannot allocate Metal product-gradient statistics");
+    }
+
+    id<MTLComputePipelineState> countPipeline = nil;
+    id<MTLComputePipelineState> finalizePipeline = nil;
+    id<MTLComputePipelineState> outputPipeline = nil;
+    id<MTLComputePipelineState> scalarPipeline = nil;
+    id<MTLComputePipelineState> singletonPipeline = nil;
+    if (scalarInput) {
+      scalarPipeline = pipelineFor(context, @"math_product_gradient_scalar", &error);
+      if (!scalarPipeline)
+        return failure(error ? 7 : 8, error.localizedDescription.UTF8String
+            ?: "missing Metal scalar product-gradient kernel");
+    } else if (singletonAxis) {
+      singletonPipeline = pipelineFor(context, @"math_product_gradient_axis_singleton", &error);
+      if (!singletonPipeline)
+        return failure(error ? 7 : 8, error.localizedDescription.UTF8String
+            ?: "missing Metal singleton product-gradient kernel");
+    } else if (fullReduction) {
+      countPipeline = pipelineFor(context, @"math_product_gradient_count_full", &error);
+      if (!countPipeline)
+        return failure(error ? 7 : 8, error.localizedDescription.UTF8String
+            ?: "missing Metal full product-gradient count kernel");
+      if (partialCount > 1) {
+        finalizePipeline = pipelineFor(context, @"math_product_gradient_finalize_full", &error);
+        if (!finalizePipeline)
+          return failure(error ? 7 : 8, error.localizedDescription.UTF8String
+              ?: "missing Metal full product-gradient finalize kernel");
+      }
+      outputPipeline = pipelineFor(context, @"math_product_gradient_full", &error);
+      if (!outputPipeline)
+        return failure(error ? 7 : 8, error.localizedDescription.UTF8String
+            ?: "missing Metal full product-gradient output kernel");
+    } else {
+      countPipeline = pipelineFor(context, @"math_product_gradient_count_axis", &error);
+      if (!countPipeline)
+        return failure(error ? 7 : 8, error.localizedDescription.UTF8String
+            ?: "missing Metal axis product-gradient count kernel");
+      outputPipeline = pipelineFor(context, @"math_product_gradient_axis", &error);
+      if (!outputPipeline)
+        return failure(error ? 7 : 8, error.localizedDescription.UTF8String
+            ?: "missing Metal axis product-gradient output kernel");
+    }
+    if (scalarInput) {
+      if (scalarPipeline.maxTotalThreadsPerThreadgroup < 1)
+        return failure(7, "Metal scalar product-gradient pipeline cannot run");
+    } else if (singletonAxis) {
+      if (singletonPipeline.maxTotalThreadsPerThreadgroup < 256)
+        return failure(7, "Metal singleton product-gradient pipeline cannot run");
+    } else if (countPipeline.maxTotalThreadsPerThreadgroup < 256 ||
+               outputPipeline.maxTotalThreadsPerThreadgroup < 256 ||
+               (fullReduction && partialCount > 1 &&
+                finalizePipeline.maxTotalThreadsPerThreadgroup < 256)) {
+      return failure(7, "Metal product-gradient pipeline cannot run its threadgroup");
+    }
+
+    if (partialCount > UINT32_MAX)
+      return failure(2, "Metal product-gradient grid exceeds index limits");
+    AMStream *stream = nil;
+    status = selectedStream(output.buffer.device, context.state, &stream);
+    if (status.code) return status;
+    @synchronized(stream.encodingLock) {
+      id<MTLCommandBuffer> command = mathCommandBuffer(stream);
+      if (!command)
+        return failure(5, "cannot create Metal product-gradient command");
+      id<MTLComputeCommandEncoder> encoder =
+          mathComputeEncoder(stream, command, output, true);
+      if (!encoder)
+        return failure(5, "cannot create Metal product-gradient encoder");
+
+      const uint64_t invocation = nextInvocation.fetch_add(1);
+      AMEvidence evidence = {invocation, output.buffer.device.registryID,
+                             0, 0, 0, 0, 2, 128};
+      AMBuffer *__unsafe_unretained mathBuffers[4];
+      NSUInteger mathBufferCount = 0;
+      AMBuffer *candidates[] = {input, product, seed, output};
+      for (AMBuffer *candidate : candidates) {
+        bool alreadyPresent = false;
+        for (NSUInteger index = 0; index < mathBufferCount; ++index)
+          if (mathBuffers[index] == candidate) alreadyPresent = true;
+        if (!alreadyPresent) mathBuffers[mathBufferCount++] = candidate;
+      }
+      flushPackedMath(stream, encoder);
+      orderMathAccess(stream, output, input, product, seed, true);
+      id<MTLComputePipelineState> leasedPipeline = scalarInput
+          ? scalarPipeline : (singletonAxis ? singletonPipeline : outputPipeline);
+      status = admitMathCommand(stream, command,
+          scratch ? @[scratch] : @[], output, evidence, leasedPipeline,
+          mathBuffers, mathBufferCount);
+      if (status.code) return status;
+      if (scratch)
+        [encoder useResource:scratch
+            usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+
+      @try {
+        const MTLSize threads = MTLSizeMake(256, 1, 1);
+        if (scalarInput) {
+          [encoder setComputePipelineState:scalarPipeline];
+          [encoder setBuffer:seed.buffer offset:0 atIndex:0];
+          [encoder setBuffer:output.buffer offset:0 atIndex:1];
+          [encoder setBytes:&sd length:sizeof(sd) atIndex:2];
+          [encoder setBytes:&od length:sizeof(od) atIndex:3];
+          [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        } else if (singletonAxis) {
+          [encoder setComputePipelineState:singletonPipeline];
+          [encoder setBuffer:input.buffer offset:0 atIndex:0];
+          [encoder setBuffer:product.buffer offset:0 atIndex:1];
+          [encoder setBuffer:seed.buffer offset:0 atIndex:2];
+          [encoder setBuffer:output.buffer offset:0 atIndex:3];
+          [encoder setBytes:&inputDescriptor length:sizeof(inputDescriptor) atIndex:4];
+          [encoder setBytes:&pd length:sizeof(pd) atIndex:5];
+          [encoder setBytes:&sd length:sizeof(sd) atIndex:6];
+          [encoder setBytes:&od length:sizeof(od) atIndex:7];
+          [encoder setBytes:&inputCount length:sizeof(inputCount) atIndex:8];
+          [encoder dispatchThreads:MTLSizeMake(inputCount, 1, 1)
+              threadsPerThreadgroup:threads];
+        } else if (fullReduction) {
+          [encoder setComputePipelineState:countPipeline];
+          [encoder setBuffer:input.buffer offset:0 atIndex:0];
+          [encoder setBuffer:scratch offset:0 atIndex:1];
+          [encoder setBytes:&inputDescriptor length:sizeof(inputDescriptor) atIndex:2];
+          [encoder setBytes:&inputCount length:sizeof(inputCount) atIndex:3];
+          [encoder dispatchThreadgroups:MTLSizeMake(partialCount, 1, 1)
+              threadsPerThreadgroup:threads];
+          [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
+          if (partialCount > 1) {
+            [encoder setComputePipelineState:finalizePipeline];
+            [encoder setBuffer:scratch offset:0 atIndex:0];
+            [encoder setBytes:&partialCount length:sizeof(partialCount) atIndex:1];
+            [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+                threadsPerThreadgroup:threads];
+            [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+          }
+
+          [encoder setComputePipelineState:outputPipeline];
+          [encoder setBuffer:input.buffer offset:0 atIndex:0];
+          [encoder setBuffer:product.buffer offset:0 atIndex:1];
+          [encoder setBuffer:seed.buffer offset:0 atIndex:2];
+          [encoder setBuffer:output.buffer offset:0 atIndex:3];
+          [encoder setBuffer:scratch offset:0 atIndex:4];
+          [encoder setBytes:&inputDescriptor length:sizeof(inputDescriptor) atIndex:5];
+          [encoder setBytes:&pd length:sizeof(pd) atIndex:6];
+          [encoder setBytes:&sd length:sizeof(sd) atIndex:7];
+          [encoder setBytes:&od length:sizeof(od) atIndex:8];
+          [encoder setBytes:&inputCount length:sizeof(inputCount) atIndex:9];
+          [encoder dispatchThreads:MTLSizeMake(inputCount, 1, 1)
+              threadsPerThreadgroup:threads];
+        } else {
+          const int32_t reducedAxis = axis;
+          [encoder setComputePipelineState:countPipeline];
+          [encoder setBuffer:input.buffer offset:0 atIndex:0];
+          [encoder setBuffer:scratch offset:0 atIndex:1];
+          [encoder setBytes:&inputDescriptor length:sizeof(inputDescriptor) atIndex:2];
+          [encoder setBytes:&reducedAxis length:sizeof(reducedAxis) atIndex:3];
+          [encoder setBytes:&axisLength length:sizeof(axisLength) atIndex:4];
+          [encoder dispatchThreadgroups:MTLSizeMake(sliceCount, 1, 1)
+              threadsPerThreadgroup:threads];
+          [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
+          [encoder setComputePipelineState:outputPipeline];
+          [encoder setBuffer:input.buffer offset:0 atIndex:0];
+          [encoder setBuffer:product.buffer offset:0 atIndex:1];
+          [encoder setBuffer:seed.buffer offset:0 atIndex:2];
+          [encoder setBuffer:output.buffer offset:0 atIndex:3];
+          [encoder setBuffer:scratch offset:0 atIndex:4];
+          [encoder setBytes:&inputDescriptor length:sizeof(inputDescriptor) atIndex:5];
+          [encoder setBytes:&pd length:sizeof(pd) atIndex:6];
+          [encoder setBytes:&sd length:sizeof(sd) atIndex:7];
+          [encoder setBytes:&od length:sizeof(od) atIndex:8];
+          [encoder setBytes:&inputCount length:sizeof(inputCount) atIndex:9];
+          [encoder setBytes:&sliceCount length:sizeof(sliceCount) atIndex:10];
+          [encoder setBytes:&reducedAxis length:sizeof(reducedAxis) atIndex:11];
+          [encoder setBytes:&axisLength length:sizeof(axisLength) atIndex:12];
+          [encoder dispatchThreads:MTLSizeMake(inputCount, 2, 1)
+              threadsPerThreadgroup:threads];
+        }
+      } @catch (NSException *exception) {
+        return failMathEncoding(stream, invocation, exception.reason);
+      }
+      return finishMathEncoding(stream);
+    }
+  }
+}
 AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,
                          void *predictionHandle, AMTensorDescriptor pd,
                          void *targetHandle, AMTensorDescriptor td,

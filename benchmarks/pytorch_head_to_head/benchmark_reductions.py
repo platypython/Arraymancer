@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Check and time allocating Metal reductions against pinned PyTorch MPS.
+"""Check and time allocating CPU/Metal reductions against pinned PyTorch.
 
-Build reduction_runner.nim with release, metal and --path:src first. Inputs stay
+Build reduction_runner.nim with release and --path:src (plus metal for MPS). Inputs stay
 resident; both implementations synchronize only at sample boundaries. Three
 paired rounds alternate backend order and require every median and p95 to win.
 """
@@ -26,14 +26,21 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "0"
 import torch
 
 CASES = ("prod", "sum_rows", "sum_columns", "mean_rows", "mean_columns",
-         "prod_rows", "prod_columns", "mean_rows_backward", "mean_columns_backward")
+         "prod_rows", "prod_columns", "mean_rows_backward", "mean_columns_backward",
+         "prod_backward", "prod_rows_backward", "prod_columns_backward")
 ARTIFACTS = (
-    "src/arraymancer/tensor/aggregate_metal.nim",
+    "src/arraymancer/tensor/aggregate.nim",
+    "src/arraymancer/tensor/private/p_accelerate.nim",
     "src/arraymancer/autograd/gates_reduce.nim",
-    "src/arraymancer/tensor/backend/native/metal_bridge.mm",
-    "src/arraymancer/tensor/backend/native/metal_kernels.metal",
     "benchmarks/pytorch_head_to_head/reduction_runner.nim",
     "benchmarks/pytorch_head_to_head/benchmark_reductions.py",
+)
+METAL_ARTIFACTS = (
+    "src/arraymancer/tensor/aggregate_metal.nim",
+    "src/arraymancer/tensor/backend/metal_abi.nim",
+    "src/arraymancer/tensor/backend/native/apple_abi.h",
+    "src/arraymancer/tensor/backend/native/metal_bridge.mm",
+    "src/arraymancer/tensor/backend/native/metal_kernels.metal",
     "build/apple/libarraymancer_metal.dylib",
     "build/apple/arraymancer.metallib",
 )
@@ -42,11 +49,16 @@ ARTIFACTS = (
 def operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
     """Resolve the callable before timing; include output allocation each call."""
     if name.endswith("_backward"):
-        axis = -1 if name == "mean_rows_backward" else -2
+        axis = -1 if "_rows_" in name else -2
 
         def backward() -> torch.Tensor:
             leaf = value.detach().requires_grad_(True)
-            output = leaf.mean(dim=axis, keepdim=True)
+            if name == "prod_backward":
+                output = leaf.prod()
+            elif name.startswith("mean_"):
+                output = leaf.mean(dim=axis, keepdim=True)
+            else:
+                output = leaf.prod(dim=axis, keepdim=True)
             output.backward(torch.ones_like(output))
             assert leaf.grad is not None
             return leaf.grad
@@ -65,15 +77,19 @@ def operation(name: str, value: torch.Tensor) -> Callable[[], torch.Tensor]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runner", type=Path, default=Path("build/reduction_runner"))
+    parser.add_argument("--backend", choices=("cpu", "mps"), default="mps")
+    parser.add_argument("--runner", type=Path, help="defaults to build/reduction_runner[_cpu]")
     parser.add_argument("--output", type=Path, default=Path("build/reduction_benchmark"))
     args = parser.parse_args()
+    if args.runner is None:
+        args.runner = Path("build/reduction_runner_cpu" if args.backend == "cpu" else "build/reduction_runner")
     if sys.version_info[:3] != (3, 13, 18) or torch.__version__.split("+")[0] != "2.15.0":
         raise RuntimeError("Requires pinned CPython 3.13.18 and PyTorch 2.15.0")
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     args.output.mkdir(parents=True, exist_ok=True)
-    artifacts = [Path(path) for path in ARTIFACTS] + [args.runner]
+    artifact_paths = ARTIFACTS + (METAL_ARTIFACTS if args.backend == "mps" else ())
+    artifacts = [Path(path) for path in artifact_paths] + [args.runner]
     hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in artifacts}
     rows, columns = 128, 128
     # Nonzero, nonconstant products near one avoid meaningless underflow comparisons.
@@ -82,13 +98,15 @@ def main() -> int:
                 "warmup": 20, "repeats": 15, "iterations": 50}
     input_path = args.output / "input.json"
     input_path.write_text(json.dumps(manifest) + "\n")
-    gpu = source.to("mps")
-    callables = {name: operation(name, gpu) for name in CASES}
+    resident = source.to(args.backend)
+    synchronize = torch.mps.synchronize if args.backend == "mps" else lambda: None
+    callables = {name: operation(name, resident) for name in CASES}
     expected: dict[str, Any] = {}
     for name in CASES:
         cpu_result = operation(name, source)()
-        actual = callables[name]()
-        torch.testing.assert_close(actual.cpu(), cpu_result, atol=5e-5, rtol=5e-5)
+        if args.backend == "mps":
+            actual = callables[name]()
+            torch.testing.assert_close(actual.cpu(), cpu_result, atol=5e-5, rtol=5e-5)
         expected[name] = {"shape": list(cpu_result.shape), "values": cpu_result.flatten().tolist()}
 
     def native() -> dict[str, Any]:
@@ -110,14 +128,14 @@ def main() -> int:
         for name, call in callables.items():
             for _ in range(manifest["warmup"]):
                 call()
-            torch.mps.synchronize()
+            synchronize()
             samples = []
             for _ in range(manifest["repeats"]):
-                torch.mps.synchronize()
+                synchronize()
                 start = time.perf_counter_ns()
                 for _ in range(manifest["iterations"]):
                     result = call()
-                torch.mps.synchronize()
+                synchronize()
                 samples.append((time.perf_counter_ns() - start) / 1e6 / manifest["iterations"])
                 del result
             report[name] = {"samples_ms": samples, "median_ms": statistics.median(samples),
@@ -140,7 +158,7 @@ def main() -> int:
                     failures.append(f"round {index + 1}: {name} {metric}")
     if any(hashlib.sha256(path.read_bytes()).hexdigest() != hashes[str(path)] for path in artifacts):
         raise RuntimeError("Sources or native artifacts changed during measurement")
-    report = {"torch": torch.__version__, "python": sys.version,
+    report = {"torch": torch.__version__, "python": sys.version, "backend": args.backend,
               "input_sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
               "runner_sha256": hashlib.sha256(args.runner.read_bytes()).hexdigest(),
               "artifacts_sha256": hashes,

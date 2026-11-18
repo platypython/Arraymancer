@@ -70,6 +70,10 @@ type
     math*: proc(a: pointer; ad: AMDescriptor; b: pointer; bd: AMDescriptor;
       output: pointer; od: AMDescriptor; parameters: AMMathParameters;
       libraryDir: cstring): AMStatus {.cdecl, gcsafe, raises: [].}
+    productGradient*: proc(input: pointer; inputDescriptor: AMDescriptor;
+      product: pointer; productDescriptor: AMDescriptor; seed: pointer;
+      seedDescriptor: AMDescriptor; output: pointer; outputDescriptor: AMDescriptor;
+      axis: int32; libraryDir: cstring): AMStatus {.cdecl, gcsafe, raises: [].}
     mseBackward*: proc(upstream: pointer; upstreamDescriptor: AMDescriptor;
       prediction: pointer; predictionDescriptor: AMDescriptor;
       target: pointer; targetDescriptor: AMDescriptor; output: pointer;
@@ -138,6 +142,7 @@ proc metalApi*(): lent MetalApi {.gcsafe.} =
       resolve(copy, "am_copy")
       resolve(setElement, "am_set_element")
       resolve(math, "am_math")
+      resolve(productGradient, "am_product_gradient")
       resolve(mseBackward, "am_mse_backward")
       resolve(stream, "am_stream")
       resolve(streamSet, "am_stream_set")

@@ -924,3 +924,237 @@ kernel void math_product_tasks(
     if (lane == 0) task.output[0] = value;
   }
 }
+
+long productGradientAxisBase(ulong slice, constant Descriptor &descriptor,
+                             int axis) {
+  long base = descriptor.offset;
+  if (descriptor.rank == 0) return base;
+  for (int dim = descriptor.rank - 1; dim >= 0; --dim) {
+    if (dim == axis) continue;
+    const ulong coordinate = slice % ulong(descriptor.shape[dim]);
+    slice /= ulong(descriptor.shape[dim]);
+    base += long(coordinate) * descriptor.strides[dim];
+  }
+  return base;
+}
+
+ulong productGradientInnerSize(constant Descriptor &descriptor, int axis) {
+  ulong inner = 1;
+  for (int dim = descriptor.rank - 1; dim > axis; --dim)
+    inner *= ulong(descriptor.shape[dim]);
+  return inner;
+}
+
+ulong productGradientSlice(ulong index, constant Descriptor &descriptor,
+                           int axis) {
+  if (descriptor.rank == 0) return 0;
+  const ulong length = ulong(descriptor.shape[axis]);
+  const ulong inner = productGradientInnerSize(descriptor, axis);
+  return (index / (length * inner)) * inner + index % inner;
+}
+
+kernel void math_product_gradient_count_full(
+    device const float *input [[buffer(0)]],
+    device uint *counts [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]],
+    constant ulong &inputCount [[buffer(3)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint group [[threadgroup_position_in_grid]]) {
+  threadgroup uint partial[256];
+  const ulong start = ulong(group) * 65536ul;
+  const ulong end = min(inputCount, start + 65536ul);
+  uint zeros = 0;
+  for (ulong index = start + ulong(lane); index < end && zeros < 2;
+       index += 256ul) {
+    if (input[elementAddress(index, id)] == 0.0f) ++zeros;
+  }
+  partial[lane] = zeros;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint stride = 128; stride > 0; stride >>= 1) {
+    if (lane < stride)
+      partial[lane] = min(2u, partial[lane] + partial[lane + stride]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (lane == 0) counts[group] = partial[0];
+}
+
+kernel void math_product_gradient_finalize_full(
+    device uint *counts [[buffer(0)]],
+    constant ulong &partialCount [[buffer(1)]],
+    uint lane [[thread_index_in_threadgroup]]) {
+  threadgroup uint partial[256];
+  uint zeros = 0;
+  for (ulong index = ulong(lane); index < partialCount; index += 256ul)
+    zeros = min(2u, zeros + counts[index]);
+  partial[lane] = zeros;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint stride = 128; stride > 0; stride >>= 1) {
+    if (lane < stride)
+      partial[lane] = min(2u, partial[lane] + partial[lane + stride]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (lane == 0) counts[0] = partial[0];
+}
+
+kernel void math_product_gradient_count_axis(
+    device const float *input [[buffer(0)]],
+    device uint *counts [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]],
+    constant int &axis [[buffer(3)]],
+    constant ulong &axisLength [[buffer(4)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint group [[threadgroup_position_in_grid]]) {
+  threadgroup uint partial[256];
+  const long base = productGradientAxisBase(ulong(group), id, axis);
+  uint zeros = 0;
+  for (ulong index = ulong(lane); index < axisLength && zeros < 2;
+       index += 256ul) {
+    if (input[base + long(index) * id.strides[axis]] == 0.0f) ++zeros;
+  }
+  partial[lane] = zeros;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint stride = 128; stride > 0; stride >>= 1) {
+    if (lane < stride)
+      partial[lane] = min(2u, partial[lane] + partial[lane + stride]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (lane == 0) counts[group] = partial[0];
+}
+
+void productGradientFullScan(device const float *input,
+    device const float *seed, device float *output,
+    constant Descriptor &id, constant Descriptor &sd,
+    constant Descriptor &od, ulong inputCount) {
+  const float seedValue = seed[elementAddress(0, sd)];
+  float prefix = 1.0f;
+  for (ulong index = 0; index < inputCount; ++index) {
+    output[elementAddress(index, od)] = prefix;
+    prefix *= input[elementAddress(index, id)];
+  }
+  float suffix = 1.0f;
+  for (ulong remaining = inputCount; remaining > 0; --remaining) {
+    const ulong index = remaining - 1;
+    const float exclusivePrefix = output[elementAddress(index, od)];
+    output[elementAddress(index, od)] =
+        exclusivePrefix * suffix * seedValue;
+    suffix *= input[elementAddress(index, id)];
+  }
+}
+
+kernel void math_product_gradient_full(
+    device const float *input [[buffer(0)]],
+    device const float *product [[buffer(1)]],
+    device const float *seed [[buffer(2)]],
+    device float *output [[buffer(3)]],
+    device const uint *counts [[buffer(4)]],
+    constant Descriptor &id [[buffer(5)]],
+    constant Descriptor &pd [[buffer(6)]],
+    constant Descriptor &sd [[buffer(7)]],
+    constant Descriptor &od [[buffer(8)]],
+    constant ulong &inputCount [[buffer(9)]],
+    uint tid [[thread_position_in_grid]]) {
+  const ulong index = ulong(tid);
+  if (index >= inputCount) return;
+  const uint zeros = counts[0];
+  if (zeros == 1) {
+    if (index == 0)
+      productGradientFullScan(input, seed, output, id, sd, od, inputCount);
+    return;
+  }
+  if (zeros > 1) {
+    output[elementAddress(index, od)] = 0.0f;
+    return;
+  }
+  const float productValue = product[elementAddress(0, pd)];
+  const float seedValue = seed[elementAddress(0, sd)];
+  output[elementAddress(index, od)] =
+      (seedValue * productValue) / input[elementAddress(index, id)];
+}
+
+void productGradientAxisScan(device const float *input,
+    device const float *seed, device float *output,
+    constant Descriptor &id, constant Descriptor &sd,
+    constant Descriptor &od, ulong slice, int axis, ulong axisLength) {
+  const long inputBase = productGradientAxisBase(slice, id, axis);
+  const long outputBase = productGradientAxisBase(slice, od, axis);
+  const long inputStride = id.rank == 0 ? 0 : id.strides[axis];
+  const long outputStride = od.rank == 0 ? 0 : od.strides[axis];
+  const float seedValue = seed[elementAddress(slice, sd)];
+  float prefix = 1.0f;
+  for (ulong index = 0; index < axisLength; ++index) {
+    output[outputBase + long(index) * outputStride] = prefix;
+    prefix *= input[inputBase + long(index) * inputStride];
+  }
+  float suffix = 1.0f;
+  for (ulong remaining = axisLength; remaining > 0; --remaining) {
+    const ulong index = remaining - 1;
+    const float exclusivePrefix = output[outputBase + long(index) * outputStride];
+    output[outputBase + long(index) * outputStride] =
+        exclusivePrefix * suffix * seedValue;
+    suffix *= input[inputBase + long(index) * inputStride];
+  }
+}
+
+kernel void math_product_gradient_axis(
+    device const float *input [[buffer(0)]],
+    device const float *product [[buffer(1)]],
+    device const float *seed [[buffer(2)]],
+    device float *output [[buffer(3)]],
+    device const uint *counts [[buffer(4)]],
+    constant Descriptor &id [[buffer(5)]],
+    constant Descriptor &pd [[buffer(6)]],
+    constant Descriptor &sd [[buffer(7)]],
+    constant Descriptor &od [[buffer(8)]],
+    constant ulong &inputCount [[buffer(9)]],
+    constant ulong &outputCount [[buffer(10)]],
+    constant int &axis [[buffer(11)]],
+    constant ulong &axisLength [[buffer(12)]],
+    uint3 tid [[thread_position_in_grid]]) {
+  if (tid.y == 0) {
+    const ulong index = ulong(tid.x);
+    if (index >= inputCount) return;
+    const ulong slice = productGradientSlice(index, id, axis);
+    if (counts[slice] != 0) return;
+    const float productValue = product[elementAddress(slice, pd)];
+    const float seedValue = seed[elementAddress(slice, sd)];
+    output[elementAddress(index, od)] =
+        (seedValue * productValue) / input[elementAddress(index, id)];
+    return;
+  }
+  const ulong slice = ulong(tid.x);
+  if (slice >= outputCount || counts[slice] == 0) return;
+  productGradientAxisScan(input, seed, output, id, sd, od, slice, axis,
+                          axisLength);
+}
+
+kernel void math_product_gradient_scalar(
+    device const float *seed [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant Descriptor &sd [[buffer(2)]],
+    constant Descriptor &od [[buffer(3)]]) {
+  output[elementAddress(0, od)] = seed[elementAddress(0, sd)];
+}
+
+kernel void math_product_gradient_axis_singleton(
+    device const float *input [[buffer(0)]],
+    device const float *product [[buffer(1)]],
+    device const float *seed [[buffer(2)]],
+    device float *output [[buffer(3)]],
+    constant Descriptor &id [[buffer(4)]],
+    constant Descriptor &pd [[buffer(5)]],
+    constant Descriptor &sd [[buffer(6)]],
+    constant Descriptor &od [[buffer(7)]],
+    constant ulong &inputCount [[buffer(8)]],
+    uint tid [[thread_position_in_grid]]) {
+  const ulong index = ulong(tid);
+  if (index >= inputCount) return;
+  const float inputValue = input[elementAddress(index, id)];
+  const float seedValue = seed[elementAddress(index, sd)];
+  if (inputValue == 0.0f) {
+    output[elementAddress(index, od)] = seedValue;
+  } else {
+    const float productValue = product[elementAddress(index, pd)];
+    output[elementAddress(index, od)] =
+        (seedValue * productValue) / inputValue;
+  }
+}
