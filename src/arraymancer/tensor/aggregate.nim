@@ -384,14 +384,30 @@ proc iqr*[T](arg: Tensor[T]): float =
   result = percentile(tS, 75, isSorted = true) -
            percentile(tS, 25, isSorted = true)
 
-proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool]): Tensor[T] =
-  ## Read each prefix once; float32 carries stay wide even after rounded stores.
+template scanElement(T: typedesc, promoteIntegers: static[bool] = true): typedesc =
+  when promoteIntegers and (T is SomeInteger or T is bool): int64
+  else: T
+
+proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool],
+                promoteIntegers: static[bool] = true): Tensor[scanElement(T, promoteIntegers)] =
+  ## Promote integers while reading; float32 carries stay wide after rounded stores.
   mixin _
+  type U = scanElement(T, promoteIntegers)
+  template scanValue(value: untyped): untyped =
+    when not promoteIntegers: value
+    elif T is bool: int64(ord(value))
+    elif T is SomeUnsignedInt: cast[int64](uint64(value))
+    elif T is SomeInteger: int64(value)
+    else: value
   when T is float32 or T is float64:
     const identity = when multiply: 1.0 else: 0.0
   template accumulate(acc, value: untyped) =
-    when multiply: acc = acc * value
-    else: acc = acc + value
+    when promoteIntegers and (T is SomeInteger or T is bool):
+      when multiply: acc = acc *% value
+      else: acc = acc +% value
+    else:
+      when multiply: acc = acc * value
+      else: acc = acc + value
   let rank = arg.rank
   var scanAxis: int
   if rank == 0:
@@ -402,11 +418,11 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool]): Tensor[T] =
   else:
     raise newException(ValueError, "Cumulative axis is outside input rank")
 
-  result = newTensorUninit[T](arg.shape)
+  result = newTensorUninit[U](arg.shape)
   if arg.size == 0:
     return
   if rank == 0:
-    result.storage.raw_buffer[0] = arg.storage.raw_buffer[arg.offset]
+    result.storage.raw_buffer[0] = scanValue(arg.storage.raw_buffer[arg.offset])
     return
 
   var outer = 1'u
@@ -421,7 +437,7 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool]): Tensor[T] =
   let inputData = arg.storage.raw_buffer
   let output = result.storage.raw_buffer
   template writeOutput(index: uint; value: untyped) =
-    when T is KnownSupportsCopyMem:
+    when U is KnownSupportsCopyMem:
       output[index] = value
     else:
       output[int(index)] = value
@@ -442,6 +458,31 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool]): Tensor[T] =
             accumulate(accumulated, float64(inputData[inputOffset + flat]))
             output[flat] = T(accumulated)
       return
+  elif T is SomeInteger or T is bool:
+    if arg.is_C_contiguous:
+      let inputOffset = uint(arg.offset)
+      if inner == 1:
+        for group in 0'u ..< outer:
+          let base = group * axisLength
+          var accumulated = scanValue(inputData[inputOffset + base])
+          output[base] = accumulated
+          for index in 1'u ..< axisLength:
+            let flat = base + index
+            accumulate(accumulated, scanValue(inputData[inputOffset + flat]))
+            output[flat] = accumulated
+      else:
+        for group in 0'u ..< outer:
+          let base = group * axisLength * inner
+          for column in 0'u ..< inner:
+            output[base + column] = scanValue(inputData[inputOffset + base + column])
+          for index in 1'u ..< axisLength:
+            let row = base + index * inner
+            for column in 0'u ..< inner:
+              let flat = row + column
+              var accumulated = output[flat - inner]
+              accumulate(accumulated, scanValue(inputData[inputOffset + flat]))
+              output[flat] = accumulated
+      return
 
   var coordinates: Metadata
   coordinates.len = rank
@@ -457,10 +498,10 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool]): Tensor[T] =
         accumulate(accumulated, float64(inputData[inputBase + int(index) * arg.strides[scanAxis]]))
         writeOutput(outputBase + index * inner, T(accumulated))
     else:
-      var accumulated: T
+      var accumulated: U
       var hasValue = false
       for index in 0'u ..< axisLength:
-        let value = inputData[inputBase + int(index) * arg.strides[scanAxis]]
+        let value = scanValue(inputData[inputBase + int(index) * arg.strides[scanAxis]])
         if hasValue:
           accumulate(accumulated, value)
         else:
@@ -480,25 +521,27 @@ proc scanCPU[T](arg: Tensor[T], axis: int, multiply: static[bool]): Tensor[T] =
         inputBase -= (arg.shape[dim] - 1) * arg.strides[dim]
     inc group
 
-proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
+proc cumsum*[T](arg: Tensor[T], axis: int = 0): Tensor[scanElement(T)] =
   ## Return independent, same-shaped inclusive cumulative sums along ``axis``.
   ## Negative axes count from the end; scalars accept axes 0 and -1. Empty
   ## tensors retain their exact shape. Invalid axes raise ``ValueError``.
   ##
   ## Offset, reversed and broadcast views are read through their strides.
-  ## Float32 prefixes accumulate in float64 before rounding each output; other
-  ## element types retain their type and use their ordinary ``+`` operation.
+  ## Float32 prefixes accumulate in float64 before rounding each output.
+  ## Integers and booleans promote to int64 with modulo-2^64 arithmetic;
+  ## other element types retain their type and ordinary ``+`` operation.
   scanCPU(arg, axis, false)
 
-proc cumprod*[T](arg: Tensor[T], axis: int = 0): Tensor[T] =
+proc cumprod*[T](arg: Tensor[T], axis: int = 0): Tensor[scanElement(T)] =
   ## Return independent, same-shaped inclusive cumulative products along ``axis``.
   ## Negative axes count from the end; scalars accept axes 0 and -1. Empty
   ## tensors retain their exact shape. Invalid axes raise ``ValueError``.
   ##
   ## Offset, reversed and broadcast views are read through their strides.
   ## Float32 prefixes accumulate in float64, so an overflowed or underflowed
-  ## output does not replace the wider carry. Other types retain their type
-  ## and use their ordinary ``*`` operation; integer promotion is not provided.
+  ## output does not replace the wider carry. Integers and booleans promote
+  ## to int64 with modulo-2^64 arithmetic; other types retain their type
+  ## and ordinary ``*`` operation.
   scanCPU(arg, axis, true)
 
 proc diff_discrete*[T](arg: Tensor[T], n=1, axis: int = -1): Tensor[T] =
@@ -606,7 +649,8 @@ proc unwrap_period*[T: SomeNumber](t: Tensor[T], discont: T = -1, axis = -1, per
   var ph_correct = tdmod - td
   ph_correct[abs(td) <. discont] = 0
   result = t.clone()
-  let ph_correct_cumsum = ph_correct.cumsum(axis)
+  # Phase correction retains unwrap's input dtype without a conversion buffer.
+  let ph_correct_cumsum = scanCPU(ph_correct, axis, false, false)
   if t.rank == 1:
     result[1.._] = t[1.._] +. ph_correct_cumsum
   else:

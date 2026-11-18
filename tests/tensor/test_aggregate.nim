@@ -15,6 +15,46 @@
 import ../../src/arraymancer
 import std / [unittest, math]
 
+proc checkPromotedIntegerScans[T]() =
+  ## Check widening before arithmetic, including metadata-only input views.
+  let input =
+    when T is bool: [true, false, true].toTensor
+    else: [T(100), T(2), T(3)].toTensor
+  let sums: Tensor[int64] = input.cumsum()
+  let products: Tensor[int64] = input.cumprod()
+  when T is bool:
+    check sums == [1'i64, 1, 2].toTensor
+    check products == [1'i64, 0, 0].toTensor
+  else:
+    check sums == [100'i64, 102, 105].toTensor
+    check products == [100'i64, 200, 600].toTensor
+    check input[2..0|-1].cumsum() == [3'i64, 5, 105].toTensor
+    check input[2..0|-1].cumprod() == [3'i64, 6, 600].toTensor
+  let rows = input.reshape(1, 3).broadcast(2, 3)
+  when T is bool:
+    check rows.cumsum(0) == [[1'i64, 0, 1], [2'i64, 0, 2]].toTensor
+    check rows.cumprod(0) == [[1'i64, 0, 1], [1'i64, 0, 1]].toTensor
+  else:
+    check rows.cumsum(0) == [[100'i64, 2, 3], [200'i64, 4, 6]].toTensor
+    check rows.cumprod(0) == [[100'i64, 2, 3], [10000'i64, 4, 9]].toTensor
+  let scalar = newTensorWith[T]([], input[0])
+  var scalarSum: Tensor[int64] = scalar.cumsum(-1)
+  let scalarProduct: Tensor[int64] = scalar.cumprod()
+  check scalarSum.rank == 0
+  check scalarProduct.rank == 0
+  let first = when T is bool: 1'i64 else: 100'i64
+  check scalarSum.atContiguousIndex(0) == first
+  check scalarProduct.atContiguousIndex(0) == first
+  scalarSum.unsafe_raw_offset[0] = -7
+  check scalar.atContiguousIndex(0) == input[0]
+  let empty = newTensor[T](2, 0, 3)
+  let emptySum: Tensor[int64] = empty.cumsum(-2)
+  let emptyProduct: Tensor[int64] = empty.cumprod(1)
+  check emptySum.shape == [2, 0, 3]
+  check emptyProduct.shape == [2, 0, 3]
+  check emptySum.size == 0
+  check emptyProduct.size == 0
+
 proc main() =
   suite "[Core] Testing aggregation functions":
     let t = [[0, 1, 2],
@@ -324,11 +364,38 @@ proc main() =
 
         check: cumsum(a, 0) == [[0, 4,  7],
                                 [1, 13, 12],
-                                [4, 17, 13]].toTensor
+                                [4, 17, 13]].toTensor.asType(int64)
 
         check: cumsum(a, 1) == [[0, 4, 11],
                                 [1, 10, 15],
-                                [3, 7, 8]].toTensor
+                                [3, 7, 8]].toTensor.asType(int64)
+
+      test "integer and boolean scans promote before accumulating":
+        checkPromotedIntegerScans[bool]()
+        checkPromotedIntegerScans[int8]()
+        checkPromotedIntegerScans[int16]()
+        checkPromotedIntegerScans[int32]()
+        checkPromotedIntegerScans[int64]()
+        checkPromotedIntegerScans[int]()
+        checkPromotedIntegerScans[uint8]()
+        checkPromotedIntegerScans[uint16]()
+        checkPromotedIntegerScans[uint32]()
+        checkPromotedIntegerScans[uint64]()
+        checkPromotedIntegerScans[uint]()
+
+      test "int64 scans wrap and uint64 inputs convert by bit pattern":
+        check [high(int64), 1'i64, 1'i64].toTensor.cumsum() ==
+          [high(int64), low(int64), low(int64) + 1].toTensor
+        check [low(int64), -1'i64].toTensor.cumsum() ==
+          [low(int64), high(int64)].toTensor
+        check [high(int64), 2'i64, -1'i64].toTensor.cumprod() ==
+          [high(int64), -2'i64, 2'i64].toTensor
+        check [low(int64), -1'i64].toTensor.cumprod() ==
+          [low(int64), low(int64)].toTensor
+        let unsigned = [high(uint64), 1'u64, high(uint64) - 1].toTensor
+        check unsigned.cumsum() == [-1'i64, 0, -2].toTensor
+        check unsigned.cumprod() == [-1'i64, -1, 2].toTensor
+        check newTensorWith[uint64]([], high(uint64)).cumsum().atContiguousIndex(0) == -1'i64
 
       test "cumsum handles floating precision, scalar signs, and axes":
         check [100_000_000'f32, 1'f32, -100_000_000'f32].toTensor.cumsum ==
@@ -357,13 +424,13 @@ proc main() =
 
       test "cumsum reads offset, reversed, transposed, and broadcast views":
         let owner = [99, 1, 2, 3, 4, 99].toTensor
-        check owner[4..1|-1].cumsum == [4, 7, 9, 10].toTensor
+        check owner[4..1|-1].cumsum == [4, 7, 9, 10].toTensor.asType(int64)
 
         let transposed = [[1, 4], [2, 5], [3, 6]].toTensor.transpose
-        check transposed.cumsum(0) == [[1, 2, 3], [5, 7, 9]].toTensor
+        check transposed.cumsum(0) == [[1, 2, 3], [5, 7, 9]].toTensor.asType(int64)
 
         let rows = [10, 20].toTensor.reshape(1, 2).broadcast(3, 2)
-        check rows.cumsum(0) == [[10, 20], [20, 40], [30, 60]].toTensor
+        check rows.cumsum(0) == [[10, 20], [20, 40], [30, 60]].toTensor.asType(int64)
       test "cumprod":
         let a = [[0, 4, 7],
                  [1, 9, 5],
@@ -371,11 +438,11 @@ proc main() =
 
         check: cumprod(a, 0) == [[0, 4,   7],
                                  [0, 36,  35],
-                                 [0, 144, 35]].toTensor
+                                 [0, 144, 35]].toTensor.asType(int64)
 
         check: cumprod(a, 1) == [[0, 0, 0],
                                  [1, 9, 45],
-                                 [3, 12, 12]].toTensor
+                                 [3, 12, 12]].toTensor.asType(int64)
 
       test "cumprod keeps wide carries, scalar signs and empty shapes":
         let large = [1e20'f32, 1e20'f32, 1e-20'f32].toTensor
@@ -435,11 +502,11 @@ proc main() =
                   check cast[uint64](actual64[i, j, k]) == cast[uint64](expected)
 
         check [99, 1, 2, 3, 4, 99].toTensor[4..1|-1].cumprod() ==
-          [4, 12, 24, 24].toTensor
+          [4, 12, 24, 24].toTensor.asType(int64)
         check [[1, 4], [2, 5], [3, 6]].toTensor.transpose.cumprod(0) ==
-          [[1, 2, 3], [4, 10, 18]].toTensor
+          [[1, 2, 3], [4, 10, 18]].toTensor.asType(int64)
         check [2, -3].toTensor.reshape(1, 2).broadcast(3, 2).cumprod(0) ==
-          [[2, -3], [4, 9], [8, -27]].toTensor
+          [[2, -3], [4, 9], [8, -27]].toTensor.asType(int64)
 
     test "diff":
       let a = arange(12).reshape([3, 4])

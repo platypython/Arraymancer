@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Promote CPU integer and boolean cumulative sums/products to int64 before
+  arithmetic, with modulo-2^64 carries and bit-preserving uint64 conversion.
+  Keep scalar/empty shapes and signed/broadcast input views without a
+  conversion tensor. Preserve phase-unwrapping's input dtype internally.
 - Add native Metal float32 cumulative products and seeded first-order VJPs,
   including independent signed input/prefix/seed layouts, scalar/empty axes,
   broadcast reads and retained accumulation. Bound normal SIMD products away

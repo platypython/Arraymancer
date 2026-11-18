@@ -57,14 +57,15 @@ const
     "loss.mse_mean_broadcast", "loss.mse_sum_broadcast", "loss.mse_none_broadcast",
     "autograd.matmul_ranks", "autograd.singleton_views", "tensor.elementwise_shapes",
     "autograd.unary_math", "autograd.activation_math", "tensor.reduction_edges",
-    "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient"]
+    "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient",
+    "tensor.integer_scans"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
     "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
-    "api:autograd", "api:autograd", "api:autograd"]
+    "api:autograd", "api:autograd", "api:autograd", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -247,7 +248,7 @@ proc validateCapabilities*(capabilities, inventory, requirements: JsonNode) =
     for gap in row["gaps"]: discard text(gap, "Apple capability gap")
   require(got == reqIds, "Apple capability coverage incomplete")
 
-proc expectTensor(node: JsonNode, metadataOnly: bool) =
+proc expectTensor(node: JsonNode, metadataOnly: bool, expectedDtype = "float64") =
   let shape = field(node, "shape")
   require(shape.kind == JArray, "tensor shape must be array")
   var n = 1
@@ -258,18 +259,21 @@ proc expectTensor(node: JsonNode, metadataOnly: bool) =
       require(n <= high(int) div d.getInt, "tensor shape overflows")
       n *= d.getInt
   require(field(node, "numel").kind == JInt and node["numel"].getInt == n, "tensor numel/shape mismatch")
-  require(text(field(node, "dtype"), "tensor dtype") == "float64" and text(field(node, "device"), "tensor device") == "cpu",
-    "fixture tensors must be float64 CPU")
+  require(text(field(node, "dtype"), "tensor dtype") == expectedDtype and text(field(node, "device"), "tensor device") == "cpu",
+    "fixture tensor dtype/device mismatch")
   if metadataOnly:
     require(not node.hasKey("values"), "metadata-only tensor must omit values")
   else:
     let values = field(node, "values")
     require(values.kind == JArray and values.len == n, "tensor values count does not match shape")
     for value in values:
-      require((value.kind in {JInt, JFloat} and
-        classify(value.getFloat) notin {fcNan, fcInf, fcNegInf}) or
-        (value.kind == JString and value.getStr in ["nan", "+inf", "-inf"]),
-        "invalid tensor observation value")
+      if expectedDtype == "int64":
+        require(value.kind == JInt, "int64 fixture tensors require exact integer values")
+      else:
+        require((value.kind in {JInt, JFloat} and
+          classify(value.getFloat) notin {fcNan, fcInf, fcNegInf}) or
+          (value.kind == JString and value.getStr in ["nan", "+inf", "-inf"]),
+          "invalid tensor observation value")
 
 
 proc expectInputTensor(node: JsonNode) =
@@ -288,6 +292,42 @@ proc expectInputTensor(node: JsonNode) =
   for value in node["values"]:
     require(value.kind in {JInt, JFloat} and classify(value.getFloat) notin {fcNan, fcInf, fcNegInf},
       "fixture inputs must contain finite numbers")
+proc expectIntegerScanInput(node: JsonNode) =
+  let allowedDtypes = ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
+  require(text(field(node, "dtype"), "integer scan dtype") in allowedDtypes,
+    "unsupported integer scan input dtype")
+  let shapeNode = field(node, "shape")
+  require(shapeNode.kind == JArray, "integer scan shape must be an array")
+  var shape: seq[int]
+  var n = 1
+  for dim in shapeNode:
+    require(dim.kind == JInt and dim.getInt >= 0, "integer scan dimensions must be nonnegative integers")
+    let size = dim.getInt
+    shape.add size
+    if size == 0: n = 0
+    elif n != 0:
+      require(n <= high(int) div size, "integer scan input shape overflows")
+      n *= size
+  let words = field(node, "words")
+  require(words.kind == JArray and words.len == n, "integer scan words do not match shape")
+  for word in words:
+    require(word.kind == JInt, "integer scan words must be signed int64 JSON integers")
+  let layout = text(field(node, "layout"), "integer scan layout")
+  case layout
+  of "identity": discard
+  of "transpose": require(shape.len == 2, "transpose integer scan input must have rank 2")
+  of "offset": require(shape.len == 2 and shape[0] > 1, "offset integer scan input shape is invalid")
+  of "reverse": require(shape.len == 1, "reverse integer scan input must have rank 1")
+  of "broadcast": require(shape == @[1, 3], "broadcast integer scan input must have shape [1,3]")
+  else: invalid("unknown integer scan layout")
+  let axes = field(node, "axes")
+  require(axes.kind == JArray and axes.len > 0, "integer scan axes are required")
+  let dimensions = max(1, shape.len)
+  for axis in axes:
+    require(axis.kind == JInt and axis.getInt >= -dimensions and axis.getInt < dimensions,
+      "integer scan axis is out of bounds")
+
+
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
   requireSameReference(data, reference, "fixtures")
@@ -335,6 +375,11 @@ proc validateFixtureData*(data, reference: JsonNode) =
           n *= d.getInt
     of "tensor.broadcast_same_rank", "tensor.broadcast_leading_dims", "tensor.matmul_2d":
       expectInputTensor(field(inputs, "a")); expectInputTensor(field(inputs, "b"))
+    of "tensor.integer_scans":
+      require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
+        "integer scan fixtures require exact-value tolerances")
+      require(inputs.kind == JObject and inputs.len > 0, "integer scan inputs missing")
+      for _, spec in inputs: expectIntegerScanInput(spec)
     of "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient":
       let product = id == "autograd.product_gradient"
       require(inputs.kind == JObject and inputs.len > 0, "reduction gradient inputs missing")
@@ -381,6 +426,20 @@ proc validateFixtureData*(data, reference: JsonNode) =
     of "autograd.mean_gradient": expectTensor(field(expected, "grad"), false)
     of "loss.mse_mean": expectTensor(field(expected, "loss"), false); expectTensor(field(expected, "grad"), false)
     of "autograd.no_grad_exception": require(field(expected, "tracking_after_exception").kind == JBool, "no-grad expected value must be bool")
+    of "tensor.integer_scans":
+      require(expected.kind == JObject and expected.len == inputs.len,
+        "integer scan expected cases must match inputs")
+      for name, spec in inputs:
+        let byOperation = field(expected, name)
+        require(byOperation.kind == JObject and byOperation.len == 2,
+          "integer scan must include cumsum and cumprod observations")
+        for operation in ["cumsum", "cumprod"]:
+          let byAxis = field(byOperation, operation)
+          require(byAxis.kind == JObject and byAxis.len == spec["axes"].len,
+            "integer scan axis observations are incomplete")
+          for axis in spec["axes"]:
+            let key = $axis.getInt
+            expectTensor(field(byAxis, key), false, "int64")
     else: discard
   require(ids.len == RequiredCaseIds.len, "missing required fixture case")
 

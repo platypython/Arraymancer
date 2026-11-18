@@ -42,20 +42,72 @@ proc tensorObservation[T](t: Tensor[T], includeValues = true): JsonNode =
   when T is float64: result["dtype"] = %"float64"
   elif T is float32: result["dtype"] = %"float32"
   elif T is bool: result["dtype"] = %"bool"
+  elif T is int64: result["dtype"] = %"int64"
   else: {.error: "unsupported CPU oracle observation dtype".}
   result["device"] = %"cpu"
   if includeValues:
     var values = newJArray()
     for _, value in enumerate(t):
       when T is bool: values.add %value
+      elif T is int64: values.add %value
       else: values.add floatNode(value.float64)
     result["values"] = values
+
+proc getIntegerTensor[T](desc: JsonNode): Tensor[T] =
+  ## Signed words preserve unsigned bit patterns without range-checked casts.
+  let shapeNode = desc["shape"]
+  if shapeNode.len > LASER_MAXRANK: raise newException(ValueError, "input rank exceeds LASER_MAXRANK")
+  var shape = newSeq[int](shapeNode.len)
+  for i in 0 ..< shapeNode.len: shape[i] = shapeNode[i].getInt
+  result = newTensorUninit[T](toMetadata(shape))
+  let words = desc["words"]
+  if words.len != result.size: raise newException(ValueError, "integer scan word count mismatch")
+  var raw = result.unsafe_raw_offset
+  for i in 0 ..< words.len:
+    let word = words[i].getBiggestInt
+    when T is bool: raw[i] = word != 0
+    else: raw[i] = cast[T](word)
+
+proc integerScanCase[T](spec: JsonNode): JsonNode =
+  var source = getIntegerTensor[T](spec)
+  case spec["layout"].getStr
+  of "transpose": source = source.transpose
+  of "offset": source = source.transpose[_, 1..^1]
+  of "reverse": source = source[^1..0|-1]
+  of "broadcast": source = source.broadcast(4, 3)
+  else: discard
+  result = newJObject()
+  for operation in ["cumsum", "cumprod"]:
+    var observations = newJObject()
+    for axisNode in spec["axes"]:
+      let axis = axisNode.getInt
+      let output = if operation == "cumsum": source.cumsum(axis) else: source.cumprod(axis)
+      observations[$axis] = tensorObservation(output)
+    result[operation] = observations
+
+proc integerScans(spec: JsonNode): JsonNode =
+  result = newJObject()
+  for name, input in spec:
+    result[name] = case input["dtype"].getStr
+      of "bool": integerScanCase[bool](input)
+      of "int8": integerScanCase[int8](input)
+      of "int16": integerScanCase[int16](input)
+      of "int32": integerScanCase[int32](input)
+      of "int64": integerScanCase[int64](input)
+      of "uint8": integerScanCase[uint8](input)
+      of "uint16": integerScanCase[uint16](input)
+      of "uint32": integerScanCase[uint32](input)
+      of "uint64": integerScanCase[uint64](input)
+      else: raise newException(ValueError, "unsupported integer scan dtype: " & input["dtype"].getStr)
+
 
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
   result = newJObject()
   case id
+  of "tensor.integer_scans":
+    result = integerScans(inputs)
   of "tensor.transpose_alias":
     var base = getTensor(inputs["a"])
     var view = base.transpose

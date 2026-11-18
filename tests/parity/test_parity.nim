@@ -34,6 +34,36 @@ suite "Pinned PyTorch conformance foundation":
       check compareObservations(caseData["expected"], runCase(caseData),
         caseData["atol"].getFloat(), caseData["rtol"].getFloat()).len == 0
 
+  test "Integer scans cover default promotion and exact outputs":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var scanCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.integer_scans": scanCase = caseData
+    doAssert scanCase.kind == JObject
+    check scanCase["atol"].getFloat == 0
+    check scanCase["rtol"].getFloat == 0
+    for dtype in ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]:
+      check scanCase["inputs"].hasKey(dtype)
+      for operation in ["cumsum", "cumprod"]:
+        let observation = scanCase["expected"][dtype][operation]["-1"]
+        check observation["dtype"].getStr == "int64"
+        for value in observation["values"]:
+          check value.kind == JInt
+    check scanCase["inputs"]["uint64"]["words"][2].getBiggestInt == low(int64)
+    check scanCase["inputs"]["uint64"]["words"][3].getBiggestInt == -1
+    for operation in ["cumsum", "cumprod"]:
+      check scanCase["expected"]["scalar"][operation]["-1"]["shape"].len == 0
+      check scanCase["expected"]["empty"][operation]["1"]["shape"] == %*[2, 0, 3]
+      check scanCase["expected"]["empty"][operation]["1"]["values"].len == 0
+    for view in ["transpose", "offset", "reverse", "broadcast", "overflow"]:
+      check scanCase["inputs"].hasKey(view)
+    var malformed = duplicate(fixtures)
+    for index in 0 ..< malformed["cases"].len:
+      if malformed["cases"][index]["id"].getStr == "tensor.integer_scans":
+        let values: JsonNode = malformed["cases"][index]["expected"]["bool"]["cumsum"]["0"]["values"]
+        values.elems[0] = %0.0
+    expect ValueError: validateFixtureData(malformed, reference)
+
   test "Shape differs even when flattened values match":
     let expected = %*{"result": {"shape": [2, 2], "values": [1.0, 2.0, 3.0, 4.0]}}
     let actual = %*{"result": {"shape": [4], "values": [1.0, 2.0, 3.0, 4.0]}}
