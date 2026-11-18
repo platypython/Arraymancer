@@ -663,6 +663,28 @@ kernel void math_reduce(
   }
 }
 
+kernel void math_product(
+    device const float *input [[buffer(0)]], device float *output [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]], constant Descriptor &od [[buffer(3)]],
+    constant MathParameters &parameters [[buffer(4)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint group [[threadgroup_position_in_grid]]) {
+  threadgroup float partial[256];
+  const ulong count = elementCount(id);
+  const bool small = count <= 65536ul;
+  float value = 1.0f;
+  const ulong end = small ? count : min(count, (ulong(group) + 1ul) * 256ul);
+  for (ulong index = ulong(group) * 256ul + lane; index < end; index += 256ul)
+    value *= input[parameters.axis ? id.offset + long(index) : elementAddress(index, id)];
+  partial[lane] = value;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint stride = 128; stride > 0; stride >>= 1) {
+    if (lane < stride) partial[lane] *= partial[lane + stride];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (lane == 0) output[elementAddress(group, od)] = partial[0];
+}
+
 kernel void math_axis_sum(
     device const float *input [[buffer(0)]],
     device float *output [[buffer(1)]],
@@ -674,36 +696,141 @@ kernel void math_axis_sum(
   threadgroup float partial[256];
   const ulong outputIndex = ulong(group);
   ulong remainder = outputIndex;
-  ulong coordinates[8];
+  long base = id.offset;
   for (int axis = od.rank - 1; axis >= 0; --axis) {
-    const ulong dimension = ulong(od.shape[axis]);
-    coordinates[axis] = remainder % dimension;
-    remainder /= dimension;
+    const ulong coordinate = remainder % ulong(od.shape[axis]);
+    remainder /= ulong(od.shape[axis]);
+    base += long(coordinate) * id.strides[axis];
   }
-
   const int reducedAxis = parameters.axis;
-  ulong baseIndex = 0;
-  ulong inputStride = 1;
-  ulong axisStride = 1;
-  for (int axis = id.rank - 1; axis >= 0; --axis) {
-    if (axis == reducedAxis)
-      axisStride = inputStride;
-    else
-      baseIndex += coordinates[axis] * inputStride;
-    inputStride *= ulong(id.shape[axis]);
-  }
-
   const ulong axisLength = ulong(id.shape[reducedAxis]);
-  float value = 0.0f;
-  for (ulong index = ulong(lane); index < axisLength; index += 256ul)
-    value += input[elementAddress(baseIndex + index * axisStride, id)];
+  const bool multiply = parameters.operation == 26;
+  float value = multiply ? 1.0f : 0.0f;
+  for (ulong index = ulong(lane); index < axisLength; index += 256ul) {
+    const float item = input[base + long(index) * id.strides[reducedAxis]];
+    value = multiply ? value * item : value + item;
+  }
   partial[lane] = value;
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
   for (uint stride = 128; stride > 0; stride >>= 1) {
-    if (lane < stride) partial[lane] += partial[lane + stride];
+    if (lane < stride)
+      partial[lane] = multiply ? partial[lane] * partial[lane + stride] :
+          partial[lane] + partial[lane + stride];
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
-  if (lane == 0)
-    output[elementAddress(outputIndex, od)] = partial[0];
+  if (lane == 0) {
+    value = partial[0];
+    if (parameters.operation == 27) value /= float(axisLength);
+    output[elementAddress(outputIndex, od)] = value;
+  }
 }
+
+long reductionBase(ulong outputIndex, constant Descriptor &id,
+                   constant Descriptor &od) {
+  long base = id.offset;
+  for (int axis = od.rank - 1; axis >= 0; --axis) {
+    base += long(outputIndex % ulong(od.shape[axis])) * id.strides[axis];
+    outputIndex /= ulong(od.shape[axis]);
+  }
+  return base;
+}
+
+kernel void math_axis_simd(
+    device const float *input [[buffer(0)]], device float *output [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]], constant Descriptor &od [[buffer(3)]],
+    constant MathParameters &parameters [[buffer(4)]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint width [[threads_per_simdgroup]],
+    uint tid [[thread_position_in_grid]]) {
+  const ulong outputIndex = tid / width;
+  if (outputIndex >= elementCount(od)) return;
+  const long base = reductionBase(outputIndex, id, od);
+  const ulong count = ulong(id.shape[parameters.axis]);
+  const long stride = id.strides[parameters.axis];
+  const bool multiply = parameters.operation == 26;
+  float value = multiply ? 1.0f : 0.0f;
+  for (ulong index = lane; index < count; index += width) {
+    const float item = input[base + long(index) * stride];
+    value = multiply ? value * item : value + item;
+  }
+  if (multiply) {
+    for (uint mask = width / 2; mask > 0; mask >>= 1)
+      value *= simd_shuffle_xor(value, ushort(mask));
+  } else {
+    value = simd_sum(value);
+  }
+  if (lane == 0) {
+    if (parameters.operation == 27) value /= float(count);
+    output[elementAddress(outputIndex, od)] = value;
+  }
+}
+
+kernel void math_axis_serial(
+    device const float *input [[buffer(0)]], device float *output [[buffer(1)]],
+    constant Descriptor &id [[buffer(2)]], constant Descriptor &od [[buffer(3)]],
+    constant MathParameters &parameters [[buffer(4)]],
+    uint tid [[thread_position_in_grid]]) {
+  const ulong outputIndex = tid;
+  if (outputIndex >= elementCount(od)) return;
+  const long base = reductionBase(outputIndex, id, od);
+  const ulong count = ulong(id.shape[parameters.axis]);
+  const long stride = id.strides[parameters.axis];
+  const bool multiply = parameters.operation == 26;
+  float value = multiply ? 1.0f : 0.0f;
+  for (ulong index = 0; index < count; ++index) {
+    const float item = input[base + long(index) * stride];
+    value = multiply ? value * item : value + item;
+  }
+  if (parameters.operation == 27) value /= float(count);
+  output[elementAddress(outputIndex, od)] = value;
+}
+
+struct PackedReductionTask {
+  device const float *input;
+  ulong reserved;
+  device float *output;
+  uint inner, outputs;
+};
+static_assert(sizeof(PackedReductionTask) == 32, "Metal reduction task layout");
+
+template<int operation, bool columns>
+void packedReduction(constant PackedReductionTask &task, uint tid,
+                     uint lane, uint width) {
+  const uint outputIndex = columns ? tid : tid / width;
+  if (outputIndex >= task.outputs) return;
+  float value = operation == 26 ? 1.0f : 0.0f;
+  const ulong base = columns ? outputIndex : ulong(outputIndex) * task.inner;
+  const uint stride = columns ? task.outputs : 1u;
+  for (uint index = columns ? 0u : lane; index < task.inner;
+       index += columns ? 1u : width) {
+    const float item = task.input[base + ulong(index) * stride];
+    value = operation == 26 ? value * item : value + item;
+  }
+  if (!columns) {
+    if (operation == 26) {
+      for (uint mask = width / 2; mask > 0; mask >>= 1)
+        value *= simd_shuffle_xor(value, ushort(mask));
+    } else {
+      value = simd_sum(value);
+    }
+  }
+  if (columns || lane == 0) {
+    if (operation == 27) value /= float(task.inner);
+    task.output[outputIndex] = value;
+  }
+}
+
+#define PACKED_REDUCTION_KERNEL(NAME, OPERATION, COLUMNS) \
+kernel void NAME(constant PackedReductionTask *tasks [[buffer(0)]], \
+    uint3 tid [[thread_position_in_grid]], \
+    uint lane [[thread_index_in_simdgroup]], \
+    uint width [[threads_per_simdgroup]]) { \
+  packedReduction<OPERATION, COLUMNS>(tasks[tid.z], tid.x, lane, width); \
+}
+PACKED_REDUCTION_KERNEL(math_sum_rows_tasks, 22, false)
+PACKED_REDUCTION_KERNEL(math_mean_rows_tasks, 27, false)
+PACKED_REDUCTION_KERNEL(math_prod_rows_tasks, 26, false)
+PACKED_REDUCTION_KERNEL(math_sum_columns_tasks, 22, true)
+PACKED_REDUCTION_KERNEL(math_mean_columns_tasks, 27, true)
+PACKED_REDUCTION_KERNEL(math_prod_columns_tasks, 26, true)

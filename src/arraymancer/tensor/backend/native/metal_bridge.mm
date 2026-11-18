@@ -127,7 +127,7 @@ static AMCapture *activeCapture;
 static void ensureCustomLeaseLock(void);
 static BOOL releaseBufferLease(AMBufferLease *lease);
 
-// Row kernels consume K/N; unary kernels consume element count/zero.
+// Matrix/reduction kernels consume inner/output counts; unary kernels consume count/zero.
 struct AMPackedMathTask {
   uint64_t a, b, output;
   uint32_t count, columns;
@@ -2197,7 +2197,7 @@ static AMStatus runMathCommand(AMCompute *context,
                                uint64_t outputCount, MTLSize groups,
                                MTLSize threads, int32_t operation,
                                bool packedUnary, bool packedUnaryTasks,
-                               bool packedDot, bool packedVectorMatrix) {
+                               bool packedDot, bool packedVectorMatrix, bool packedAxis) {
   AMStream *stream = nil;
   AMStatus status = selectedStream(output.buffer.device, context.state, &stream);
   if (status.code) return status;
@@ -2207,7 +2207,7 @@ static AMStatus runMathCommand(AMCompute *context,
     // Single-output contractions trade no useful work for concurrent scheduling.
     const bool dot = operation == 20 && od.rank == 2 && ad.shape[ad.rank - 2] == 1 &&
         bd.shape[bd.rank - 1] == 1;
-    const bool packedMath = packedUnaryTasks || packedVectorMatrix;
+    const bool packedMath = packedUnaryTasks || packedVectorMatrix || packedAxis;
     // Packed tasks already expose their parallel work inside one dispatch.
     id<MTLComputeCommandEncoder> encoder = mathComputeEncoder(stream, command, output,
         dot || packedMath);
@@ -2239,7 +2239,7 @@ static AMStatus runMathCommand(AMCompute *context,
           stream.packedPipeline = pipeline;
           stream->packedGroups = groups;
           stream->packedThreads = threads;
-          stream->packedRows = packedVectorMatrix;
+          stream->packedRows = packedVectorMatrix || packedAxis;
           stream->packedRepeatedWrites = false;
         }
         if (orderedWrites && stream->packedTaskCount)
@@ -2248,8 +2248,9 @@ static AMStatus runMathCommand(AMCompute *context,
           a.gpuAddress + (uint64_t)ad.offset * sizeof(float),
           packedVectorMatrix ? b.gpuAddress + (uint64_t)bd.offset * sizeof(float) : 0,
           packedOutputAddress,
-          packedVectorMatrix ? (uint32_t)ad.shape[1] : (uint32_t)outputCount,
-          packedVectorMatrix ? (uint32_t)bd.shape[1] : 0};
+          packedVectorMatrix ? (uint32_t)ad.shape[1] :
+              (packedAxis ? (uint32_t)ad.shape[parameters.axis] : (uint32_t)outputCount),
+          packedVectorMatrix ? (uint32_t)bd.shape[1] : (packedAxis ? (uint32_t)outputCount : 0)};
         if (!stream.aggregateMath) flushPackedMath(stream, encoder);
         return finishMathEncoding(stream);
       }
@@ -2292,7 +2293,7 @@ static AMStatus runMathCommand(AMCompute *context,
             [encoder setBytes:&od length:sizeof(od) atIndex:5];
           }
           break;
-        case 21: case 22:
+        case 21: case 22: case 25: case 26: case 27:
           [encoder setBuffer:a.buffer offset:0 atIndex:0];
           [encoder setBuffer:output.buffer offset:0 atIndex:1];
           [encoder setBytes:&ad length:sizeof(ad) atIndex:2];
@@ -2590,7 +2591,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
 
     const int operation = parameters.operation;
     const bool elementwise = (operation >= 1 && operation <= 19) || operation == 23;
-    if (!elementwise && operation != 20 && operation != 21 && operation != 22 && operation != 24)
+    if (!elementwise && (operation < 20 || operation > 27))
       return failure(2, "unsupported Metal math operation");
 
     uint64_t aCount = 0, bCount = 0;
@@ -2616,6 +2617,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     bool packedUnaryTasks = false;
     bool packedDot = false;
     bool packedVectorMatrix = false;
+    bool packedAxis = false;
 
     if (elementwise) {
       if (operation == 13 || operation == 15 || operation == 17 || operation == 19 || operation == 23) {
@@ -2720,15 +2722,16 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
       if (groups.width > UINT32_MAX || groups.height > UINT32_MAX ||
           groups.depth > UINT32_MAX)
         return failure(2, "matmul grid exceeds Metal limits");
-    } else if (operation == 21) {
-      if (b)
-        return failure(2, "full sum accepts one tensor input");
+    } else if (operation == 21 || operation == 25) {
+      if (b || (operation == 25 && parameters.scalar_input))
+        return failure(2, "full reduction accepts one tensor input");
       const bool small = aCount <= 65536;
       const uint64_t partialCount = small ? 1 : (aCount + 255) / 256;
       if (outputCount != partialCount || partialCount > UINT32_MAX ||
           (parameters.scalar_input && partialCount != 1))
-        return failure(2, "full-sum output must contain one value per reduction group");
-      kernelName = small ? @"math_reduce_small" : @"math_reduce";
+        return failure(2, "full-reduction output must contain one value per group");
+      kernelName = operation == 25 ? @"math_product" :
+          (small ? @"math_reduce_small" : @"math_reduce");
       parameters.axis = small && packedMathInput(ad);
       threads = MTLSizeMake(256, 1, 1);
       groups = MTLSizeMake(partialCount, 1, 1);
@@ -2743,18 +2746,39 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     } else {
       if (b || parameters.scalar_input || parameters.axis < 0 ||
           parameters.axis >= ad.rank || od.rank != ad.rank)
-        return failure(2, "invalid axis-sum arguments");
+        return failure(2, "invalid axis-reduction arguments");
       for (int axis = 0; axis < ad.rank; ++axis) {
         const int64_t expected = axis == parameters.axis ? 1 : ad.shape[axis];
         if (od.shape[axis] != expected)
-          return failure(2, "axis-sum output must keep the reduced dimension");
+          return failure(2, "axis-reduction output must keep the reduced dimension");
       }
       if (outputCount > UINT32_MAX)
-        return failure(2, "axis-sum output exceeds Metal grid limits");
+        return failure(2, "axis-reduction output exceeds Metal grid limits");
       if (!outputCount) return ok();
       kernelName = @"math_axis_sum";
       threads = MTLSizeMake(256, 1, 1);
       groups = MTLSizeMake(outputCount, 1, 1);
+      // Short axes share a SIMD group, or coalesce adjacent strided outputs.
+      if (ad.shape[parameters.axis] <= 4096 &&
+          (ad.strides[parameters.axis] == 1 || ad.strides[parameters.axis] == -1)) {
+        kernelName = @"math_axis_simd";
+        // Resolve the actual pipeline SIMD width after pipeline creation.
+      } else if (ad.shape[parameters.axis] <= 256) {
+        kernelName = @"math_axis_serial";
+        groups.width = (outputCount + 255) / 256;
+      }
+      if (output.state.supportsIndirectMath && ad.rank == 2 &&
+          packedMathInput(ad) && packedMathInput(od) &&
+          ((parameters.axis == 1 && ad.shape[1] <= 4096) ||
+           (parameters.axis == 0 && ad.shape[0] <= 256))) {
+        packedAxis = true;
+        if (parameters.axis == 1)
+          kernelName = operation == 22 ? @"math_sum_rows_tasks" :
+              (operation == 26 ? @"math_prod_rows_tasks" : @"math_mean_rows_tasks");
+        else
+          kernelName = operation == 22 ? @"math_sum_columns_tasks" :
+              (operation == 26 ? @"math_prod_columns_tasks" : @"math_mean_columns_tasks");
+      }
     }
 
     NSError *error = nil;
@@ -2767,6 +2791,19 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     if (!pipeline)
       return failure(error ? 7 : 8,
                      error ? error.localizedDescription.UTF8String : "missing Metal math kernel");
+    if ([kernelName isEqualToString:@"math_axis_simd"] ||
+        (packedAxis && parameters.axis == 1)) {
+      const NSUInteger simdWidth = pipeline.threadExecutionWidth;
+      if (!simdWidth || simdWidth > 256 || (simdWidth & (simdWidth - 1)))
+        return failure(7, "axis reduction pipeline has an unsupported SIMD width");
+      const uint64_t outputsPerGroup = 256 / simdWidth;
+      groups.width = (outputCount + outputsPerGroup - 1) / outputsPerGroup;
+      if (groups.width * threads.width > UINT32_MAX)
+        return failure(2, "axis reduction grid exceeds Metal index limits");
+    }
+    if (([kernelName isEqualToString:@"math_axis_serial"] ||
+         (packedAxis && parameters.axis == 0)) && groups.width * threads.width > UINT32_MAX)
+      return failure(2, "axis reduction grid exceeds Metal index limits");
     if (operation >= 20 &&
         pipeline.maxTotalThreadsPerThreadgroup < threads.width * threads.height * threads.depth)
       return failure(7, "Metal math pipeline cannot run its required threadgroup");
@@ -2792,7 +2829,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     return runMathCommand(context, pipeline, a, b, output,
                           ad, bd, od, parameters, outputCount,
                           groups, threads, operation, packedUnary, packedUnaryTasks,
-                          packedDot, packedVectorMatrix);
+                          packedDot, packedVectorMatrix, packedAxis);
   }
 }
 AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,

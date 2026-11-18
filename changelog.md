@@ -1,6 +1,11 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add native Metal float32 full/axis products and axis means. Sum, product and
+  mean accept negative and scalar axes, preserve unreduced empty dimensions,
+  and use zero/one/NaN for empty sum/product/mean. Read signed and broadcast
+  strides without copying. Coalesce independent dense row/column reductions
+  while preserving dependency ordering and pending buffer ownership.
 - Use cooperative native Metal dot/reduction kernels, packed and inner-span math,
   direct MPS dense matrix products and one-dispatch broadcast matrix batches.
   Keep signed strides, offsets, empty contractions and GPU-resident fallbacks.

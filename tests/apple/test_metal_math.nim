@@ -176,6 +176,89 @@ suite "Native Metal float32 math":
     check empty.sum(axis = 1).cpu == zeros[float32](2, 1, 3)
     let scalar = newTensorWith[float32]([], 4'f32).metal
     check scalar.mean.cpu == newTensorWith[float32]([], 4'f32)
+  test "Axis reductions preserve signed layouts, scalar axes and empty identities":
+    let owner = [99'f32, 1, 2, 3, 4, 5, 6, 99].toTensor.metal
+    let x = owner.metalView([2, 3].toMetadata, [3, -1].toMetadata, 3)
+    check x.sum(-1).cpu == [[6'f32], [15'f32]].toTensor
+    check x.mean(-2).cpu == [[4.5'f32, 3.5, 2.5]].toTensor
+    check x.prod(-1).cpu == [[6'f32], [120'f32]].toTensor
+    check x.transpose.prod(-1).cpu == [[18'f32], [10'f32], [4'f32]].toTensor
+    check x.prod.cpu == newTensorWith[float32]([], 720'f32)
+    check owner.cpu == [99'f32, 1, 2, 3, 4, 5, 6, 99].toTensor
+    let broadcast = [2'f32, 3].toTensor.metal.metalView(
+      [2, 3].toMetadata, [1, 0].toMetadata, 0)
+    check broadcast.prod(-1).cpu == [[8'f32], [27'f32]].toTensor
+    let empty = newMetalTensorUninit[float32](2, 0, 3)
+    check empty.prod.cpu == newTensorWith[float32]([], 1'f32)
+    check empty.prod(-2).cpu == ones[float32](2, 1, 3)
+    let emptyMean = empty.mean(-2).cpu
+    for value in emptyMean: check value.classify == fcNan
+    for output in [empty.sum(-1), empty.mean(-1), empty.prod(-1)]:
+      check output.shape == [2, 0, 1].toMetadata
+      check output.size == 0
+    let scalar = newTensorWith[float32]([], -4'f32).metal
+    for axis in [-1, 0]:
+      for output in [scalar.sum(axis), scalar.mean(axis), scalar.prod(axis)]:
+        check output.cpu == newTensorWith[float32]([], -4'f32)
+        check output.storage != scalar.storage
+    for axis in [-3, 2]:
+      expect MetalError: discard x.mean(axis)
+      expect MetalError: discard x.prod(axis)
+      expect MetalError: discard x.sum(axis)
+    expect MetalError: discard scalar.prod(1)
+  test "Product groups preserve tails, zeros and nonfinite inputs":
+    for count in [255, 256, 257, 65536, 65537]:
+      var data = ones[float32](count + 2)
+      data[1] = -2'f32
+      data[count] = 3'f32
+      let input = data.metal.metalView([count].toMetadata, [-1].toMetadata, count)
+      check input.prod.cpu == newTensorWith[float32]([], -6'f32)
+    let zero = [2'f32, -0'f32].toTensor.metal.prod.cpu
+    check cast[ptr float32](zero.get_offset_ptr)[].signbit
+    for data in [[NaN.float32, 1'f32], [Inf.float32, 0'f32]]:
+      let actual = data.toTensor.metal.prod.cpu
+      check cast[ptr float32](actual.get_offset_ptr)[].classify == fcNan
+    var wideData = ones[float32](2, 5001)
+    wideData[0, 5000] = 2'f32
+    wideData[1, 5000] = 3'f32
+    let wide = wideData.metal
+    check wide.prod(-1).cpu == [[2'f32], [3'f32]].toTensor
+    check wide.mean(-1).cpu.mean_relative_error(wideData.mean(1)) < 2e-6
+    var tallData = ones[float32](513, 3)
+    tallData[512, 0] = 2'f32
+    tallData[512, 1] = 3'f32
+    tallData[512, 2] = 4'f32
+    let tall = tallData.metal
+    check tall.prod(0).cpu == [[2'f32, 3, 4]].toTensor
+    check tall.mean(0).cpu.mean_relative_error(tallData.mean(0)) < 2e-6
+  test "Reduction packets preserve mixed shapes, guards and dependent reads":
+    for operation in [22'i32, 26, 27]:
+      var inputs: seq[MetalTensor[float32]]
+      var owners, outputs: seq[MetalTensor[float32]]
+      for index in 0 ..< 40:
+        let rows = 3 + index mod 2
+        inputs.add newTensorWith[float32]([rows, 7], float32(1 + index mod 2)).metal
+        owners.add newTensorWith[float32]([rows + 2], -99'f32).metal
+        outputs.add owners[^1].metalView([rows, 1].toMetadata, [1, 1].toMetadata, 1)
+      var dependent: MetalTensor[float32]
+      for index in 0 ..< 40:
+        dispatchMetalMath(inputs[index], default(MetalTensor[float32]), outputs[index],
+          operation, axis = 1)
+        if index == 7: dependent = outputs[index] + 1'f32
+      inputs.setLen(0)
+      for index in 0 ..< 40:
+        let item = float32(1 + index mod 2)
+        let expected = if operation == 22: item * 7'f32
+                       elif operation == 26: pow(item, 7'f32)
+                       else: item
+        let actual = owners[index].cpu
+        check actual[0] == -99'f32
+        check actual[actual.size - 1] == -99'f32
+        check outputs[index].cpu == newTensorWith[float32]([3 + index mod 2, 1], expected)
+      let expected = if operation == 22: 15'f32
+                     elif operation == 26: 129'f32
+                     else: 3'f32
+      check dependent.cpu == newTensorWith[float32]([4, 1], expected)
   test "Queued snapshots survive later input mutation and dependent writes":
     var state = ones[float32](257).metal
     let before = state + 2'f32
