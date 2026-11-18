@@ -40,16 +40,25 @@ func innerSpan*[N: static int](shape: Metadata; strides: array[N, Metadata]): In
     result.length *= shape[axis]
     result.outerRank = axis
 
-func spanOffsets*[N: static int](shape: Metadata; strides: array[N, Metadata];
-    origins: array[N, int]; outerRank, span: int): array[N, int] {.inline.} =
-  ## Decode outer coordinates once, not once per output element.
-  result = origins
-  var remaining = span
-  for axis in countdown(outerRank - 1, 0):
-    let coordinate = remaining mod shape[axis]
-    remaining = remaining div shape[axis]
-    for operand in 0 ..< N:
-      result[operand] += coordinate * strides[operand][axis]
+iterator spanOffsets*[N: static int](shape: Metadata; strides: array[N, Metadata];
+    origins: array[N, int]; outerRank, count: int):
+    tuple[index: int, offsets: array[N, int]] =
+  ## Carry outer coordinates forward without dividing at every span.
+  var coordinates: Metadata
+  coordinates.len = outerRank
+  var offsets = origins
+  for index in 0 ..< count:
+    yield (index, offsets)
+    if index + 1 < count:
+      for axis in countdown(outerRank - 1, 0):
+        if coordinates[axis] + 1 < shape[axis]:
+          inc coordinates[axis]
+          for operand in 0 ..< N:
+            offsets[operand] += strides[operand][axis]
+          break
+        coordinates[axis] = 0
+        for operand in 0 ..< N:
+          offsets[operand] -= (shape[axis] - 1) * strides[operand][axis]
 
 func disjointOwnedStorage*[T, U: KnownSupportsCopyMem](a: Tensor[T], b: Tensor[U]): bool =
   ## Foreign buffers may overlap even when their storage wrappers differ.

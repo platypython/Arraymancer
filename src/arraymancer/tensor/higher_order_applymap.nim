@@ -69,8 +69,8 @@ template apply2_inline*[T: KnownSupportsCopyMem; U](dest: var Tensor[T],
       let destination = output[].storage.raw_buffer
       let source = input.storage.raw_buffer
       if span.length > 1 or output[].size == 1:
-        for outer in 0 ..< output[].size div span.length:
-          let offsets = spanOffsets(output[].shape, strides, origins, span.outerRank, outer)
+        for _, offsets in spanOffsets(output[].shape, strides, origins,
+            span.outerRank, output[].size div span.length):
           withSpanStep(span.steps[1], sourceStep):
             for cursor in 0'u ..< uint(span.length):
               let i = cast[int](cursor)
@@ -120,8 +120,8 @@ template apply3_inline*[T: KnownSupportsCopyMem;U,V](dest: var Tensor[T],
       let source1 = input1.storage.raw_buffer
       let source2 = input2.storage.raw_buffer
       if span.length > 1 or output[].size == 1:
-        for outer in 0 ..< output[].size div span.length:
-          let offsets = spanOffsets(output[].shape, strides, origins, span.outerRank, outer)
+        for _, offsets in spanOffsets(output[].shape, strides, origins,
+            span.outerRank, output[].size div span.length):
           withSpanStep(span.steps[1], firstStep):
             withSpanStep(span.steps[2], secondStep):
               for cursor in 0'u ..< uint(span.length):
@@ -251,8 +251,8 @@ template map2_inline*[T, U](t1: Tensor[T], t2: Tensor[U], op:untyped): untyped =
             let y {.inject, used.} = source2[z2.offset +% i]
             data[i] = op
       elif span.length > 1 or z1.size == 1:
-        for outer in 0 ..< z1.size div span.length:
-          let offsets = spanOffsets(z1.shape, strides, origins, span.outerRank, outer)
+        for outer, offsets in spanOffsets(z1.shape, strides, origins,
+            span.outerRank, z1.size div span.length):
           let firstOffset = offsets[0]
           let secondOffset = offsets[1]
           let outputOffset = outer *% span.length
@@ -314,8 +314,8 @@ template map3_inline*[T, U, V](t1: Tensor[T], t2: Tensor[U], t3: Tensor[V], op:u
             let z {.inject, used.} = source3[z3.offset +% i]
             data[i] = op
       elif span.length > 1 or z1.size == 1:
-        for outer in 0 ..< z1.size div span.length:
-          let offsets = spanOffsets(z1.shape, strides, origins, span.outerRank, outer)
+        for outer, offsets in spanOffsets(z1.shape, strides, origins,
+            span.outerRank, z1.size div span.length):
           let firstOffset = offsets[0]
           let secondOffset = offsets[1]
           let thirdOffset = offsets[2]

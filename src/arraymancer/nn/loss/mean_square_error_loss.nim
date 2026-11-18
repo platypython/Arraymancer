@@ -40,8 +40,8 @@ proc mseForward[T: SomeFloat](prediction, target: Tensor[T], reduction: MseReduc
   let origins = [p.offset, t.offset]
   let predictionData = p.storage.raw_buffer
   let targetData = t.storage.raw_buffer
-  for outer in 0 ..< p.size div span.length:
-    let offsets = spanOffsets(p.shape, strides, origins, span.outerRank, outer)
+  for _, offsets in spanOffsets(p.shape, strides, origins,
+      span.outerRank, p.size div span.length):
     let predictionOffset = offsets[0]
     let targetOffset = offsets[1]
     let count = uint(span.length)
@@ -92,8 +92,8 @@ proc mseBackwardCpu[T: SomeFloat](upstream, prediction, target: Tensor[T],
   let targetData = t.storage.raw_buffer
   let upstreamData = gradient.storage.raw_buffer
   let norm = if reduction == mseMean: T(2) / T(p.size) else: T(2)
-  for outer in 0 ..< p.size div span.length:
-    let offsets = spanOffsets(p.shape, strides, origins, span.outerRank, outer)
+  for _, offsets in spanOffsets(p.shape, strides, origins,
+      span.outerRank, p.size div span.length):
     for cursor in 0'u ..< uint(span.length):
       let i = cast[int](cursor)
       let difference = predictionData[offsets[0] +% (i *% span.steps[0])] -

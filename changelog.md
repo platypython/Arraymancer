@@ -5,11 +5,14 @@ Arraymancer v0.7.x
   directly in their original shapes, without expanded-gradient temporaries.
 - Add storage-reusing `applyUnary` for float32 exp/ln/sqrt; allocating tensor
   functions share bulk vForce exp/log and hardware sqrt paths on macOS while
-  retaining scalar, empty and alias behavior.
+  retaining scalar, empty, complex and alias behavior. Keep the packed hardware
+  square-root loop separate from generic traversal to avoid per-vector outlining.
 - Use system Accelerate for contiguous macOS float32 sums and means, and avoid
   vector-promotion/layout setup for dense rank-two matrix multiplication.
 - Speed up CPU map/apply loops for contiguous tensors and compatible broadcast
-  spans while preserving offset views, aliases and managed-element traversal.
+  spans while preserving offset views, aliases and managed-element traversal;
+  mark only fresh or checked-disjoint output pointers as nonaliasing.
+  Advance outer-span coordinates incrementally instead of decoding each with divisions.
 - Preserve CPU empty-axis reduction shapes and neutral elements for sum/product,
   including a scalar empty product of one. Sum, product and mean accept negative
   axes and rank-zero scalars; floating-point empty means produce NaNs. Preserve
