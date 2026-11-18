@@ -1303,6 +1303,224 @@ def prod_dtype(torch: Any) -> dict[str, Any]:
     return _real_dtype_reductions(torch, "prod")
 
 
+_INTEGER_OUTPUT_DTYPE_NAMES = (
+    "bool", "uint8", "int8", "int16", "int32", "int64", "uint16", "uint32", "uint64"
+)
+_INTEGER_OUTPUT_SOURCE_NAMES = (*_INTEGER_DTYPE_NAMES, "float32", "float64")
+_INTEGER_OUTPUT_TORCH_NAMES = {
+    "bool": "Bool", "uint8": "Byte", "int8": "Char", "int16": "Short",
+    "int32": "Int", "int64": "Long", "uint16": "UInt16", "uint32": "UInt32",
+    "uint64": "UInt64",
+}
+
+
+def _observe_integer_output(tensor: Any) -> dict[str, Any]:
+    """Record every integer exactly; uint64 values use signed two's-complement words."""
+    observation = _observe(tensor, include_values=False)
+    dtype_name = observation["dtype"]
+    values = tensor.detach().reshape(-1).tolist()
+    if dtype_name == "bool":
+        observation["values"] = [bool(value) for value in values]
+    elif dtype_name == "uint64":
+        observation["word_encoding"] = "signed_twos_complement"
+        observation["values"] = [
+            int(value) if int(value) < (1 << 63) else int(value) - (1 << 64)
+            for value in values
+        ]
+    else:
+        observation["values"] = [int(value) for value in values]
+    return observation
+
+
+def _unsupported_integer_output(
+    call: Callable[[], Any], operation: str, dtype_name: str, should_reject: bool, label: str
+) -> dict[str, Any]:
+    if should_reject:
+        try:
+            call()
+        except RuntimeError as error:
+            operator = {
+                "sum": '"sum_cpu"',
+                "prod": '"prod_out_cpu"',
+                "cumsum": '"cumsum_out_cpu"',
+                "cumprod": '"cumprod_out_cpu"',
+            }[operation]
+            expected = f"{operator} not implemented for '{_INTEGER_OUTPUT_TORCH_NAMES[dtype_name]}'"
+            if expected not in str(error):
+                raise
+            return {"error": "unsupported_output_dtype"}
+        raise ValueError(f"{label} unexpectedly accepted output dtype {dtype_name}")
+    return _observe_integer_output(call())
+
+
+def _integer_mean_rejection(call: Callable[[], Any], label: str) -> dict[str, str]:
+    try:
+        call()
+    except RuntimeError as error:
+        message = str(error)
+        if not message.startswith("mean():") or "floating point or complex dtype" not in message:
+            raise
+        return {"error": "integer_mean_dtype_rejected"}
+    raise ValueError(f"{label} unexpectedly accepted an integer mean dtype")
+
+
+def _integer_invalid_scan_axis(
+    call: Callable[[], Any], label: str
+) -> dict[str, str]:
+    try:
+        call()
+    except (IndexError, RuntimeError) as error:
+        if "dimension out of range" not in str(error).lower():
+            raise
+        return {"error": "invalid_axis"}
+    raise ValueError(f"{label} unexpectedly accepted an invalid scan axis")
+
+
+def _integer_output_call(
+    torch: Any, source: Any, operation: str, dtype: Any, axis: int | None, reverse: bool = False
+) -> Any:
+    if operation in ("sum", "prod"):
+        reducer = source.sum if operation == "sum" else source.prod
+        if axis is None:
+            return reducer(dtype=dtype)
+        return reducer(dim=axis, keepdim=True, dtype=dtype)
+    if operation in ("cumsum", "cumprod"):
+        scan_source = source
+        if reverse and source.ndim:
+            scan_source = torch.flip(source.to(dtype=dtype), dims=[axis])
+        output = getattr(scan_source, operation)(dim=axis, dtype=dtype)
+        if reverse and source.ndim:
+            output = torch.flip(output, dims=[axis])
+        return output
+    raise ValueError(f"unsupported integer output operation: {operation}")
+
+
+def _integer_output_case_for_input(torch: Any, spec: dict[str, Any], label: str) -> dict[str, Any]:
+    source = _real_dtype_source(torch, spec)
+    targets = spec.get("output_dtypes", _INTEGER_OUTPUT_DTYPE_NAMES)
+    expected: dict[str, Any] = {"reductions": {}, "scans": {}, "mean": {}}
+    nonempty = source.numel() > 0
+    scan_rejects_nonempty = nonempty and source.ndim > 0
+    for operation in ("sum", "prod"):
+        by_operation: dict[str, Any] = {"all": {}, "axes": {}}
+        for output_name in targets:
+            output_dtype = getattr(torch, output_name)
+            reject = output_name in ("uint16", "uint32", "uint64") and nonempty
+            by_operation["all"][output_name] = _unsupported_integer_output(
+                lambda: _integer_output_call(torch, source, operation, output_dtype, None),
+                operation, output_name, reject, f"{label}.{operation}.all",
+            )
+            for axis in spec["axes"]:
+                by_operation["axes"].setdefault(str(axis), {})[output_name] = _unsupported_integer_output(
+                    lambda axis=axis: _integer_output_call(
+                        torch, source, operation, output_dtype, axis
+                    ),
+                    operation, output_name, reject, f"{label}.{operation}.{axis}",
+                )
+        expected["reductions"][operation] = by_operation
+
+    for operation in ("cumsum", "cumprod"):
+        by_operation = {"axes": {}}
+        for axis in spec["axes"]:
+            for output_name in targets:
+                output_dtype = getattr(torch, output_name)
+                reject = output_name in ("bool", "uint16", "uint32", "uint64") and scan_rejects_nonempty
+                directions = {}
+                for reverse in (False, True):
+                    key = "reverse" if reverse else "forward"
+                    directions[key] = _unsupported_integer_output(
+                        lambda axis=axis, reverse=reverse: _integer_output_call(
+                            torch, source, operation, output_dtype, axis, reverse
+                        ),
+                        operation, output_name, reject,
+                        f"{label}.{operation}.{axis}.{key}",
+                    )
+                by_operation["axes"].setdefault(str(axis), {})[output_name] = directions
+        expected["scans"][operation] = by_operation
+
+    mean: dict[str, Any] = {"all": {}, "axes": {}}
+    for output_name in targets:
+        output_dtype = getattr(torch, output_name)
+        mean["all"][output_name] = _integer_mean_rejection(
+            lambda: source.mean(dtype=output_dtype), f"{label}.mean.all.{output_name}"
+        )
+        for axis in spec["axes"]:
+            mean["axes"].setdefault(str(axis), {})[output_name] = _integer_mean_rejection(
+                lambda axis=axis: source.mean(dim=axis, keepdim=True, dtype=output_dtype),
+                f"{label}.mean.{axis}.{output_name}",
+            )
+    expected["mean"] = mean
+
+    if "invalid_axes" in spec:
+        invalid_axes = {}
+        for operation in ("cumsum", "cumprod"):
+            by_operation = {}
+            for axis in spec["invalid_axes"]:
+                by_axis = {}
+                for output_name in targets:
+                    output_dtype = getattr(torch, output_name)
+                    by_axis[output_name] = _integer_invalid_scan_axis(
+                        lambda: _integer_output_call(
+                            torch, source, operation, output_dtype, axis
+                        ),
+                        f"{label}.{operation}.{axis}.{output_name}",
+                    )
+                by_operation[str(axis)] = by_axis
+            invalid_axes[operation] = by_operation
+        expected["invalid_scan_axes"] = invalid_axes
+    return expected
+
+
+
+
+
+
+def integer_output_dtype(torch: Any) -> dict[str, Any]:
+    """Observe every explicit CPU integer/bool output dtype across source and shape classes."""
+    inputs = {
+        name: {**_REAL_DTYPE_SPECS[name]}
+        for name in _INTEGER_OUTPUT_SOURCE_NAMES
+    }
+    inputs["float32"]["values"] = [1.9, 2.9, 3.4, 4.1, 0.25, 5.8]
+    inputs["float64"]["values"] = [0.1, 1.5, 2.0, 3.25, 4.5, 0.5]
+    inputs["int64"]["words"] = [-(1 << 63), (1 << 63) - 1, -1, 1, 2, 3]
+    inputs["transpose"] = {**_REAL_DTYPE_SPECS["transpose"]}
+    inputs["offset"] = {**_REAL_DTYPE_SPECS["offset"]}
+    inputs["reverse"] = {**_REAL_DTYPE_SPECS["reverse"]}
+    inputs["broadcast"] = {**_REAL_DTYPE_SPECS["broadcast"]}
+    inputs["wrap"] = {
+        "dtype": "int64", "shape": [2, 3], "words": [127, 3, 255, 2, -128, -1],
+        "layout": "identity", "axes": [0, 1, -1],
+    }
+    inputs["scalar"] = {
+        "dtype": "uint64", "shape": [], "words": [-1], "layout": "identity",
+        "axes": [0, -1], "invalid_axes": [1],
+    }
+    inputs["empty"] = {
+        "dtype": "uint64", "shape": [2, 0, 3], "words": [], "layout": "identity",
+        "axes": [0, 1, 2, -1, -2, -3], "invalid_axes": [3],
+    }
+    inputs["singleton"] = {
+        "dtype": "int32", "shape": [1], "words": [2], "layout": "identity",
+        "axes": [0, -1],
+    }
+    inputs["bool_nan"] = {
+        "dtype": "float64", "shape": [3], "values": [0.0, 1.0, 0.0],
+        "layout": "identity", "axes": [0, -1], "output_dtypes": ["bool"],
+        "nonfinite": [{"index": 1, "value": "nan"}],
+    }
+    inputs["float_signed"] = {
+        "dtype": "float64", "shape": [4], "values": [-128.9, 127.9, -1.9, 2.9],
+        "layout": "identity", "axes": [0, -1],
+        "output_dtypes": ["int8", "int16", "int32", "int64"],
+    }
+    expected = {
+        name: _integer_output_case_for_input(torch, spec, name)
+        for name, spec in inputs.items()
+    }
+    return _case("tensor.integer_output_dtype", "api:torch", inputs, expected, tolerance=0.0)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -1313,6 +1531,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
     cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
+    integer_output_dtype,
 )
 
 

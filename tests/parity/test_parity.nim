@@ -107,6 +107,131 @@ suite "Pinned PyTorch conformance foundation":
         malformed["cases"][index]["inputs"]["uint64"] = newJNull()
     expect ValueError: validateFixtureData(malformed, reference)
 
+  test "Explicit integer output dtypes preserve exact casts and shape rules":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var caseIndex = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "tensor.integer_output_dtype":
+        caseIndex = index
+    doAssert caseIndex >= 0
+    let dtypeCase = fixtures["cases"][caseIndex]
+    check dtypeCase["id"].getStr == "tensor.integer_output_dtype"
+    check dtypeCase["atol"].getFloat == 0
+    check dtypeCase["rtol"].getFloat == 0
+    let inputs = dtypeCase["inputs"]
+    let expected = dtypeCase["expected"]
+    let sourceDtypes = ["bool", "int8", "int16", "int32", "int64", "uint8",
+      "uint16", "uint32", "uint64", "float32", "float64"]
+    let outputDtypes = ["bool", "uint8", "int8", "int16", "int32", "int64",
+      "uint16", "uint32", "uint64"]
+    for source in sourceDtypes:
+      check inputs.hasKey(source)
+      for operation in ["sum", "prod"]:
+        let allOutputs = expected[source]["reductions"][operation]["all"]
+        check allOutputs.len == outputDtypes.len
+        for dtype in outputDtypes:
+          check allOutputs.hasKey(dtype)
+          let meanError = expected[source]["mean"]["all"][dtype]
+          check meanError.len == 1
+          check meanError["error"].getStr == "integer_mean_dtype_rejected"
+          check expected[source]["reductions"][operation]["axes"]["0"].hasKey(dtype)
+      for operation in ["cumsum", "cumprod"]:
+        let scanOutputs = expected[source]["scans"][operation]["axes"]["0"]
+        check scanOutputs.len == outputDtypes.len
+        for dtype in outputDtypes:
+          check scanOutputs.hasKey(dtype)
+          check scanOutputs[dtype].len == 2
+      for operation in ["sum", "prod"]:
+        for dtype in ["uint16", "uint32", "uint64"]:
+          check expected[source]["reductions"][operation]["all"][dtype]["error"].getStr ==
+            "unsupported_output_dtype"
+      for dtype in ["bool", "uint16", "uint32", "uint64"]:
+        check expected[source]["scans"]["cumsum"]["axes"]["0"][dtype]["forward"]["error"].getStr ==
+          "unsupported_output_dtype"
+    for view in ["transpose", "offset", "reverse", "broadcast", "wrap",
+        "scalar", "empty", "singleton", "bool_nan", "float_signed"]:
+      check inputs.hasKey(view)
+    check inputs["int64"]["words"][0].getBiggestInt == low(int64)
+    check inputs["int64"]["words"][1].getBiggestInt == high(int64)
+    check inputs["uint64"]["words"][2].getBiggestInt == low(int64)
+    check inputs["uint64"]["words"][3].getBiggestInt == -1
+    check expected["int64"]["scans"]["cumsum"]["axes"]["0"]["int64"]["forward"]["values"][0].getBiggestInt ==
+      low(int64)
+
+    check expected["bool"]["reductions"]["sum"]["all"]["bool"]["values"][0].getBool
+    check not expected["bool"]["reductions"]["prod"]["all"]["bool"]["values"][0].getBool
+    check expected["wrap"]["reductions"]["sum"]["all"]["int8"]["values"][0].getBiggestInt == 2
+    check expected["float_signed"]["scans"]["cumsum"]["axes"]["0"]["int8"]["forward"]["values"] ==
+      %*[-128, -1, -2, 0]
+    check expected["float64"]["reductions"]["sum"]["all"]["uint8"]["values"][0].getBiggestInt >= 0
+
+    let uint64ScalarScan =
+      expected["scalar"]["scans"]["cumsum"]["axes"]["0"]["uint64"]["forward"]
+    check uint64ScalarScan["word_encoding"].getStr == "signed_twos_complement"
+    check uint64ScalarScan["values"][0].getBiggestInt == -1
+    for dtype in outputDtypes:
+      let emptySum = expected["empty"]["reductions"]["sum"]["all"][dtype]["values"][0]
+      let emptyProduct = expected["empty"]["reductions"]["prod"]["all"][dtype]["values"][0]
+      if dtype == "bool":
+        check not emptySum.getBool
+        check emptyProduct.getBool
+      else:
+        check emptySum.getBiggestInt == 0
+        check emptyProduct.getBiggestInt == 1
+      let scalarScan = expected["scalar"]["scans"]["cumsum"]["axes"]["0"][dtype]["forward"]
+      check not scalarScan.hasKey("error")
+      check scalarScan["shape"].len == 0
+      let emptyScan = expected["empty"]["scans"]["cumsum"]["axes"]["1"][dtype]["forward"]
+      check not emptyScan.hasKey("error")
+      check emptyScan["values"].len == 0
+    check expected["singleton"]["scans"]["cumsum"]["axes"]["0"]["bool"]["forward"]["error"].getStr ==
+      "unsupported_output_dtype"
+    check expected["scalar"]["reductions"]["sum"]["all"]["uint64"]["error"].getStr ==
+      "unsupported_output_dtype"
+    check expected["float_signed"]["reductions"]["sum"]["all"].len == 4
+    check expected["bool_nan"]["reductions"]["sum"]["all"]["bool"]["values"][0].getBool
+    check not expected["bool_nan"]["reductions"]["prod"]["all"]["bool"]["values"][0].getBool
+    for inputName in ["scalar", "empty"]:
+      for operation in ["cumsum", "cumprod"]:
+        for axis in inputs[inputName]["invalid_axes"]:
+          for dtype in outputDtypes:
+            check expected[inputName]["invalid_scan_axes"][operation][$axis.getInt][dtype]["error"].getStr ==
+              "invalid_axis"
+
+    check compareObservations(expected, runCase(dtypeCase), 0, 0).len == 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["expected"]["bool"]["reductions"]["sum"]["all"].delete("uint8")
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["inputs"]["float32"]["values"].elems[0] = %(-1.9)
+    expect ValueError: validateFixtureData(malformed, reference)
+
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["expected"]["wrap"]["reductions"]["sum"]["all"]["int8"]["values"].elems[0] =
+      %2.0
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["expected"]["empty"]["scans"]["cumsum"]["axes"]["1"]["uint64"]["forward"]["word_encoding"] =
+      %"unsigned"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["expected"]["scalar"]["reductions"]["sum"]["all"]["uint64"]["error"] =
+      %"unsupported_dtype"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    let corruptedValues: JsonNode =
+      malformed["cases"][caseIndex]["expected"]["wrap"]["reductions"]["sum"]["all"]["int8"]["values"]
+    let value = corruptedValues[0].getInt
+    corruptedValues.elems[0] = newJInt(value + 1)
+    validateFixtureData(malformed, reference)
+    check compareObservations(malformed["cases"][caseIndex]["expected"],
+      runCase(malformed["cases"][caseIndex]), 0, 0).len > 0
+
   test "Reject explicit mean fixtures with invalid scalar, axis or rejection contracts":
     let fixtures = loadFixtures(parityRoot & "fixtures.json")
     var malformed = duplicate(fixtures)

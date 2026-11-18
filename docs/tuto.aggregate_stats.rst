@@ -29,9 +29,9 @@ Axis reductions keep the reduced dimension with length one. Empty sums produce
 zeros, empty products produce ones, and empty floating means produce NaNs;
 other empty dimensions remain empty.
 
-Products multiply in the requested dtype, including intermediate overflow and
-underflow. Packed reductions group terms and can round differently from scalar
-products.
+Floating products multiply in the requested dtype, including intermediate
+overflow and underflow. Packed reductions group terms and can round differently
+from scalar products.
 
 ``cumsum`` and ``cumprod`` also accept explicit floating dtypes for real CPU
 inputs. They retain the input shape, cast each value before accumulating, and
@@ -44,6 +44,28 @@ are supported; the output is independent of its input.
    let precise = [16777217'i32, -16777216'i32].toTensor
    doAssert precise.cumsum(dtype = float32) == [16777216'f32, 0].toTensor
    doAssert precise.cumsum(dtype = float64) == [16777217.0, 1].toTensor
+
+Integer output dtypes ``uint8``, ``int8``, ``int16``, ``int32`` and ``int64``
+work with ``sum``, ``product``, ``cumsum`` and ``cumprod``. Arithmetic wraps
+modulo the output bit width. Boolean sums are logical OR; boolean products
+are logical AND.
+
+.. code-block:: nim
+
+   let signed = [129'i64, -130, 3].toTensor
+   doAssert signed.sum(dtype = int8) == 2'i8
+   doAssert signed.cumsum(dtype = uint8) == [129'u8, 255, 2].toTensor
+   doAssert signed.cumprod(dtype = int8) == [-127'i8, 126, 122].toTensor
+
+Floating inputs truncate before integer arithmetic. The truncated value must
+fit the requested integer dtype; like PyTorch, out-of-range and nonfinite
+float-to-integer casts have no portable result.
+
+Empty sums, products and scans also accept ``uint16``, ``uint32`` and
+``uint64``. Nonempty reductions in these dtypes raise ``ValueError``.
+Scans with these dtypes or ``bool`` accept scalars and empty tensors only;
+even a one-element vector raises ``ValueError``. All means reject an integer
+or boolean output dtype, including on empty inputs.
 
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

@@ -1,13 +1,29 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
-## Measures allocating CPU reductions and cumulative scans with explicit float32/float64 output dtypes.
+## Measures allocating CPU reductions and scans with explicit output dtypes.
 import std/[algorithm, json, math, monotimes, os, times]
 import arraymancer
 
-const cases = [
+const floatCases = [
   "mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns",
   "prod", "prod_rows", "prod_columns",
   "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
 ]
+const integerCases = [
+  "sum", "sum_rows", "sum_columns", "prod", "prod_rows", "prod_columns",
+  "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
+]
+const boolCases = ["sum", "sum_rows", "sum_columns", "prod", "prod_rows", "prod_columns"]
+
+iterator actionNames[OutputT](): string =
+  when OutputT is bool:
+    for name in boolCases:
+      yield name
+  elif OutputT is SomeInteger:
+    for name in integerCases:
+      yield name
+  else:
+    for name in floatCases:
+      yield name
 
 proc nativeValue[T](word: int64): T =
   ## Match Torch's signed-word cast, including unsigned wraparound.
@@ -82,7 +98,12 @@ proc observe[T](input: Tensor[T]; inputDtype: string): JsonNode =
     shape.add %dimension
   var values = newJArray()
   for value in input:
-    values.add jsonFloat(float64(value))
+    when T is bool:
+      values.add %value
+    elif T is SomeInteger:
+      values.add %($value)
+    else:
+      values.add jsonFloat(float64(value))
   %*{"input_dtype": inputDtype, "dtype": dtype, "shape": shape, "values": values}
 
 proc consume[T](input: Tensor[T]) =
@@ -101,7 +122,7 @@ proc run[InputT, OutputT](manifest: JsonNode): JsonNode =
   let repeats = manifest["repeats"].getInt
   let warmup = manifest["warmup"].getInt
   var report = newJObject()
-  for name in cases:
+  for name in actionNames[OutputT]():
     let observation = observe(execute[InputT, OutputT](name, input), dtypeName[InputT]())
     for _ in 0 ..< warmup:
       consume(execute[InputT, OutputT](name, input))
@@ -126,6 +147,12 @@ proc run[InputT, OutputT](manifest: JsonNode): JsonNode =
 
 proc runForInput[InputT](manifest: JsonNode): JsonNode =
   case manifest["output_dtype"].getStr
+  of "bool": run[InputT, bool](manifest)
+  of "uint8": run[InputT, uint8](manifest)
+  of "int8": run[InputT, int8](manifest)
+  of "int16": run[InputT, int16](manifest)
+  of "int32": run[InputT, int32](manifest)
+  of "int64": run[InputT, int64](manifest)
   of "float32": run[InputT, float32](manifest)
   of "float64": run[InputT, float64](manifest)
   else: raise newException(ValueError, "Unsupported reduction output dtype")

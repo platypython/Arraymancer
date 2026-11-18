@@ -60,7 +60,7 @@ const
     "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient",
     "tensor.integer_scans", "tensor.integer_reductions", "tensor.float64_reductions",
     "tensor.mean_dtype", "tensor.sum_dtype", "tensor.cumsum_dtype", "tensor.cumprod_dtype",
-    "tensor.prod_dtype"]
+    "tensor.prod_dtype", "tensor.integer_output_dtype"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
@@ -68,7 +68,7 @@ const
     "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
     "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
     "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch", "api:autograd",
-    "api:torch", "api:torch", "api:torch", "api:torch", "api:torch"]
+    "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -814,6 +814,270 @@ proc expectRealDtypeScanExpected(expected, inputs: JsonNode) =
             "real dtype scan output shape must match input for " & name & "." & $axis & "." & direction)
 
 
+const
+  IntegerOutputDtypeNames = ["bool", "uint8", "int8", "int16", "int32", "int64",
+    "uint16", "uint32", "uint64"]
+  IntegerOutputSourceNames = ["bool", "int8", "int16", "int32", "int64", "uint8",
+    "uint16", "uint32", "uint64", "float32", "float64", "transpose", "offset",
+    "reverse", "broadcast", "wrap", "scalar", "empty", "singleton", "bool_nan",
+    "float_signed"]
+
+proc integerOutputAxes(values: openArray[int]): JsonNode =
+  result = newJArray()
+  for value in values: result.add newJInt(value)
+
+proc integerOutputWords(values: openArray[int64]): JsonNode =
+  result = newJArray()
+  for value in values: result.add newJInt(value)
+
+proc integerOutputNumel(shape: openArray[int]): int =
+  result = 1
+  for dimension in shape:
+    if dimension == 0: return 0
+    result *= dimension
+
+proc expectIntegerOutputInput(spec: JsonNode, name: string) =
+  let expectedDtype = case name
+    of "transpose": "uint16"
+    of "offset": "uint32"
+    of "reverse": "int64"
+    of "broadcast": "uint8"
+    of "wrap": "int64"
+    of "scalar", "empty": "uint64"
+    of "singleton": "int32"
+    of "bool_nan", "float_signed": "float64"
+    else: name
+  let expectedShape = case name
+    of "offset": @[3, 4]
+    of "reverse": @[5]
+    of "broadcast": @[1, 3]
+    of "scalar": @[]
+    of "empty": @[2, 0, 3]
+    of "singleton": @[1]
+    of "bool_nan": @[3]
+    of "float_signed": @[4]
+    else: @[2, 3]
+  let expectedLayout = case name
+    of "float64": "transpose"
+    of "transpose", "offset", "reverse", "broadcast": name
+    else: "identity"
+  let expectedAxes = case name
+    of "transpose", "offset", "reverse", "scalar", "singleton", "bool_nan",
+        "float_signed": @[0, -1]
+    of "broadcast", "wrap": @[0, 1, -1]
+    of "empty": @[0, 1, 2, -1, -2, -3]
+    else: @[0, 1, -1]
+  let extras = (if name in ["scalar", "empty"]: 1 else: 0) +
+    (if name == "bool_nan": 2 else: 0) +
+    (if name == "float_signed": 1 else: 0)
+  require(spec.kind == JObject and spec.len == 5 + extras,
+    "integer output input fields are incomplete for " & name)
+  require(text(field(spec, "dtype"), "integer output input dtype") == expectedDtype,
+    "integer output input dtype mismatch for " & name)
+  require(field(spec, "shape") == jsonShape(expectedShape),
+    "integer output input shape mismatch for " & name)
+  require(text(field(spec, "layout"), "integer output input layout") == expectedLayout,
+    "integer output input layout mismatch for " & name)
+  require(field(spec, "axes") == integerOutputAxes(expectedAxes),
+    "integer output axes mismatch for " & name)
+  if expectedDtype in ["bool", "int8", "int16", "int32", "int64",
+      "uint8", "uint16", "uint32", "uint64"]:
+    expectIntegerWordsInput(spec, "integer output " & name, false)
+  else:
+    expectInputTensor(spec)
+  if name in ["scalar", "empty"]:
+    let expectedInvalid = if name == "scalar": @[1] else: @[3]
+    require(field(spec, "invalid_axes") == integerOutputAxes(expectedInvalid),
+      "integer output invalid-axis fixture mismatch for " & name)
+  else:
+    require(not spec.hasKey("invalid_axes"),
+      "unexpected integer output invalid axes for " & name)
+  if name == "bool_nan":
+    require(field(spec, "output_dtypes") == %*["bool"] and
+      field(spec, "nonfinite") == %*[{"index": 1, "value": "nan"}],
+      "bool integer output nonfinite fixture mismatch")
+  elif name == "float_signed":
+    require(field(spec, "output_dtypes") == %*["int8", "int16", "int32", "int64"] and
+      not spec.hasKey("nonfinite"), "signed float output target subset mismatch")
+  else:
+    require(not spec.hasKey("output_dtypes") and not spec.hasKey("nonfinite"),
+      "unexpected restricted or nonfinite integer output input " & name)
+
+proc expectIntegerOutputInputs(inputs: JsonNode) =
+  require(inputs.kind == JObject and inputs.len == IntegerOutputSourceNames.len,
+    "integer output inputs do not match required source and shape cases")
+  for name in IntegerOutputSourceNames:
+    require(inputs.hasKey(name), "missing integer output input " & name)
+    expectIntegerOutputInput(inputs[name], name)
+  require(inputs["uint64"]["words"] ==
+    integerOutputWords([0'i64, high(int64), low(int64), -1, -2, 1]) and
+    inputs["int64"]["words"] ==
+    integerOutputWords([low(int64), high(int64), -1, 1, 2, 3]) and
+    inputs["wrap"]["words"] == %*[127, 3, 255, 2, -128, -1],
+    "integer output fixtures must retain signed/unsigned high-bit and wrapping words")
+  require(inputs["float32"]["values"] == %*[1.9, 2.9, 3.4, 4.1, 0.25, 5.8] and
+    inputs["float64"]["values"] == %*[0.1, 1.5, 2.0, 3.25, 4.5, 0.5] and
+    inputs["float_signed"]["values"] == %*[-128.9, 127.9, -1.9, 2.9],
+    "integer output float fixtures must keep unsigned casts in-range and exercise signed truncation")
+
+proc expectIntegerOutputTensor(node: JsonNode, expectedShape: seq[int], dtype: string) =
+  let expectedFields = if dtype == "uint64": 6 else: 5
+  require(node.kind == JObject and node.len == expectedFields,
+    "integer output tensor observation fields are incomplete")
+  require(field(node, "shape") == jsonShape(expectedShape),
+    "integer output tensor shape mismatch")
+  require(field(node, "numel").kind == JInt and
+    node["numel"].getInt == integerOutputNumel(expectedShape),
+    "integer output tensor numel mismatch")
+  require(text(field(node, "dtype"), "integer output tensor dtype") == dtype and
+    text(field(node, "device"), "integer output tensor device") == "cpu",
+    "integer output tensor dtype/device mismatch")
+  if dtype == "uint64":
+    require(text(field(node, "word_encoding"), "uint64 word encoding") ==
+      "signed_twos_complement", "uint64 output words must preserve exact bit patterns")
+  else:
+    require(not node.hasKey("word_encoding"), "word encoding is only valid for uint64 outputs")
+  let values = field(node, "values")
+  require(values.kind == JArray and values.len == integerOutputNumel(expectedShape),
+    "integer output tensor values do not match shape")
+  for value in values:
+    if dtype == "bool":
+      require(value.kind == JBool, "bool output tensors require boolean values")
+    else:
+      require(value.kind == JInt, "integer output tensors require exact integer words")
+      let word = value.getBiggestInt
+      case dtype
+      of "int8": require(word >= low(int8).int64 and word <= high(int8).int64, "int8 output is out of range")
+      of "int16": require(word >= low(int16).int64 and word <= high(int16).int64, "int16 output is out of range")
+      of "int32": require(word >= low(int32).int64 and word <= high(int32).int64, "int32 output is out of range")
+      of "uint8": require(word >= 0 and word <= high(uint8).int64, "uint8 output is out of range")
+      of "uint16": require(word >= 0 and word <= high(uint16).int64, "uint16 output is out of range")
+      of "uint32": require(word >= 0 and word <= high(uint32).int64, "uint32 output is out of range")
+      of "int64", "uint64": discard
+      else: invalid("unknown integer output dtype " & dtype)
+
+proc expectIntegerOutputResult(node: JsonNode, shape: seq[int], dtype: string,
+                               rejected: bool, errorCode, label: string) =
+  if rejected:
+    require(node.kind == JObject and node.len == 1 and
+      text(field(node, "error"), label & " error") == errorCode,
+      label & " must record the expected normalized error")
+  else:
+    expectIntegerOutputTensor(node, shape, dtype)
+
+proc integerOutputTargets(name: string): seq[string] =
+  if name == "bool_nan":
+    result = @["bool"]
+  elif name == "float_signed":
+    result = @["int8", "int16", "int32", "int64"]
+  else:
+    for dtype in IntegerOutputDtypeNames: result.add dtype
+
+proc expectIntegerOutputExpected(expected, inputs: JsonNode) =
+  require(expected.kind == JObject and expected.len == inputs.len,
+    "integer output observations do not match inputs")
+  for name, spec in inputs:
+    let observations = field(expected, name)
+    let hasInvalidAxes = spec.hasKey("invalid_axes")
+    require(observations.kind == JObject and observations.len == (if hasInvalidAxes: 4 else: 3),
+      "integer output observation groups are incomplete for " & name)
+    let logicalShape = float64LogicalShape(spec, spec["layout"].getStr)
+    let nonempty = integerOutputNumel(logicalShape) > 0
+    let scanRejectsNonempty = nonempty and logicalShape.len > 0
+    let targets = integerOutputTargets(name)
+
+    let reductions = field(observations, "reductions")
+    require(reductions.kind == JObject and reductions.len == 2,
+      "integer output reductions are incomplete for " & name)
+    for operation in ["sum", "prod"]:
+      let byOperation = field(reductions, operation)
+      require(byOperation.kind == JObject and byOperation.len == 2,
+        "integer output reduction groups are incomplete for " & name & "." & operation)
+      let whole = field(byOperation, "all")
+      require(whole.kind == JObject and whole.len == targets.len,
+        "integer output whole reductions are incomplete for " & name & "." & operation)
+      for dtype in targets:
+        let rejected = dtype in ["uint16", "uint32", "uint64"] and nonempty
+        expectIntegerOutputResult(field(whole, dtype), @[], dtype, rejected,
+          "unsupported_output_dtype", name & "." & operation & ".all." & dtype)
+      let axes = field(byOperation, "axes")
+      require(axes.kind == JObject and axes.len == spec["axes"].len,
+        "integer output axis reductions are incomplete for " & name & "." & operation)
+      for axisNode in spec["axes"]:
+        let axis = axisNode.getInt
+        let byDtype = field(axes, $axis)
+        require(byDtype.kind == JObject and byDtype.len == targets.len,
+          "integer output reduction dtypes are incomplete for " & name & "." & operation & "." & $axis)
+        let shape = realDtypeOutputShape(logicalShape, axis)
+        for dtype in targets:
+          let rejected = dtype in ["uint16", "uint32", "uint64"] and nonempty
+          expectIntegerOutputResult(field(byDtype, dtype), shape, dtype, rejected,
+            "unsupported_output_dtype", name & "." & operation & "." & $axis & "." & dtype)
+
+    let scans = field(observations, "scans")
+    require(scans.kind == JObject and scans.len == 2,
+      "integer output scans are incomplete for " & name)
+    for operation in ["cumsum", "cumprod"]:
+      let byOperation = field(scans, operation)
+      require(byOperation.kind == JObject and byOperation.len == 1,
+        "integer output scan groups are incomplete for " & name & "." & operation)
+      let axes = field(byOperation, "axes")
+      require(axes.kind == JObject and axes.len == spec["axes"].len,
+        "integer output scan axes are incomplete for " & name & "." & operation)
+      for axisNode in spec["axes"]:
+        let axis = axisNode.getInt
+        let byDtype = field(axes, $axis)
+        require(byDtype.kind == JObject and byDtype.len == targets.len,
+          "integer output scan dtypes are incomplete for " & name & "." & operation & "." & $axis)
+        for dtype in targets:
+          let directions = field(byDtype, dtype)
+          require(directions.kind == JObject and directions.len == 2,
+            "integer output scan directions are incomplete for " & name & "." & operation & "." & $axis)
+          let rejected = dtype in ["bool", "uint16", "uint32", "uint64"] and scanRejectsNonempty
+          for direction in ["forward", "reverse"]:
+            expectIntegerOutputResult(field(directions, direction), logicalShape, dtype,
+              rejected, "unsupported_output_dtype",
+              name & "." & operation & "." & $axis & "." & dtype & "." & direction)
+
+    let mean = field(observations, "mean")
+    require(mean.kind == JObject and mean.len == 2,
+      "integer output mean rejection groups are incomplete for " & name)
+    let meanAll = field(mean, "all")
+    require(meanAll.kind == JObject and meanAll.len == targets.len,
+      "integer output whole mean rejections are incomplete for " & name)
+    for dtype in targets:
+      expectIntegerOutputResult(field(meanAll, dtype), @[], dtype, true,
+        "integer_mean_dtype_rejected", name & ".mean.all." & dtype)
+    let meanAxes = field(mean, "axes")
+    require(meanAxes.kind == JObject and meanAxes.len == spec["axes"].len,
+      "integer output axis mean rejections are incomplete for " & name)
+    for axisNode in spec["axes"]:
+      let axis = $axisNode.getInt
+      let byDtype = field(meanAxes, axis)
+      require(byDtype.kind == JObject and byDtype.len == targets.len,
+        "integer output axis mean dtypes are incomplete for " & name & "." & axis)
+      for dtype in targets:
+        expectIntegerOutputResult(field(byDtype, dtype), @[], dtype, true,
+          "integer_mean_dtype_rejected", name & ".mean." & axis & "." & dtype)
+
+    if hasInvalidAxes:
+      let invalidAxes = field(observations, "invalid_scan_axes")
+      require(invalidAxes.kind == JObject and invalidAxes.len == 2,
+        "integer output invalid scan-axis observations are incomplete for " & name)
+      for operation in ["cumsum", "cumprod"]:
+        let byOperation = field(invalidAxes, operation)
+        require(byOperation.kind == JObject and byOperation.len == spec["invalid_axes"].len,
+          "integer output invalid scan axes are incomplete for " & name & "." & operation)
+        for axisNode in spec["invalid_axes"]:
+          let axis = $axisNode.getInt
+          let byDtype = field(byOperation, axis)
+          require(byDtype.kind == JObject and byDtype.len == targets.len,
+            "integer output invalid-axis dtypes are incomplete for " & name & "." & operation)
+          for dtype in targets:
+            expectIntegerOutputResult(field(byDtype, dtype), @[], dtype, true,
+              "invalid_axis", name & "." & operation & "." & axis & "." & dtype)
+
+
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
   requireSameReference(data, reference, "fixtures")
@@ -905,6 +1169,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
           else: "identity"
         require(text(field(spec, "layout"), "integer reduction layout") == expectedLayout,
           "integer reduction layout mismatch for " & name)
+    of "tensor.integer_output_dtype":
+      require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
+        "integer output dtype fixtures require exact-value tolerances")
+      expectIntegerOutputInputs(inputs)
     of "tensor.mean_dtype", "tensor.sum_dtype":
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "real dtype fixtures require 1e-6 tolerances")
@@ -997,6 +1265,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
           for axis in spec["axes"]:
             let key = if axis.kind == JNull: "all" else: $axis.getInt
             expectTensor(field(byAxis, key), false, "int64")
+    of "tensor.integer_output_dtype":
+      expectIntegerOutputExpected(expected, inputs)
     of "tensor.float64_reductions":
       expectFloat64Reductions(expected, inputs)
     of "tensor.mean_dtype", "tensor.sum_dtype":

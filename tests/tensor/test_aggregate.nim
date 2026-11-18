@@ -847,6 +847,97 @@ proc main() =
         output[0, 0, 0] = 99
         check input[0, 0, 0] == 1
 
+      test "Integer output dtypes truncate before arithmetic and wrap every prefix":
+        let signed = [129'i64, -130, 3].toTensor
+        check signed.sum(dtype = int8) == 2'i8
+        check signed.product(dtype = int8) == 122'i8
+        check signed.cumsum(dtype = int8) == [-127'i8, -1, 2].toTensor
+        check signed.cumprod(dtype = int8) == [-127'i8, 126, 122].toTensor
+        check signed.cumsum(dtype = uint8) == [129'u8, 255, 2].toTensor
+        let upper = [high(uint64), high(uint64) - 1, 0'u64].toTensor
+        check upper.sum(dtype = uint8) == 253'u8
+        check upper.cumsum(dtype = int8) == [-1'i8, -3, -3].toTensor
+        check upper.cumprod(dtype = uint8) == [255'u8, 2, 0].toTensor
+        check [0.9, 0.9, -0.1].toTensor.sum(dtype = int8) == 0'i8
+        check [1.9, -2.9, 3.9].toTensor.product(dtype = int16) == -6'i16
+        check [127.9, -128.9, 1.9].toTensor.cumsum(dtype = int8) ==
+          [127'i8, -1, 0].toTensor
+        check [255.9, 0.9, 1.9].toTensor.cumsum(dtype = uint8) ==
+          [255'u8, 255, 0].toTensor
+        check [high(int64), 1'i64].toTensor.cumsum(dtype = int64) ==
+          [high(int64), low(int64)].toTensor
+        check [128'i64, 2, 3, 9].toTensor.cumprod(dtype = int8) ==
+          [-128'i8, 0, 0, 0].toTensor
+        check [9'i64, 3, 2, 128].toTensor.cumprod(dtype = uint8, reverse = true) ==
+          [0'u8, 0, 0, 128].toTensor
+        let edge = [[0.0, 0.0], [-2147483648.9, 2147483647.9]].toTensor
+        check edge.sum(0, dtype = int32) == [[low(int32), high(int32)]].toTensor
+        check edge.cumsum(0, dtype = int32) ==
+          [[0'i32, 0], [low(int32), high(int32)]].toTensor
+
+      test "Boolean reductions and unsupported integer kernels retain shape exceptions":
+        check [0.0, 2.0, -3.0].toTensor.sum(dtype = bool)
+        check not [0.0, 2.0, -3.0].toTensor.product(dtype = bool)
+        check [NaN, Inf, -Inf].toTensor.product(dtype = bool)
+        check not [-0.0].toTensor.sum(dtype = bool)
+        template checkTruthBits(T, Word: typedesc) =
+          block:
+            var truth = newTensorWith[T](37, cast[T](Word(1)))
+            check truth.product(dtype = bool)
+            truth[4] = T(NaN)
+            check truth.reshape(1, 37).product(1, dtype = bool)[0, 0]
+            truth[36] = T(-0.0)
+            check not truth.product(dtype = bool)
+            truth[36] = T(Inf)
+            truth[31] = T(0.0)
+            check not truth.product(dtype = bool)
+        checkTruthBits(float32, uint32)
+        checkTruthBits(float64, uint64)
+        let scalar = newTensorWith[float64]([], 3.9)
+        let wide = newTensorWith[float64]([], 1.8e19).cumsum(dtype = uint64)
+        check wide.rank == 0
+        check wide.atContiguousIndex(0) == 18000000000000000000'u64
+        check scalar.cumprod(-1, dtype = uint16).atContiguousIndex(0) == 3'u16
+        check scalar.cumsum(dtype = bool).atContiguousIndex(0)
+        let empty = newTensor[float64](2, 0, 3)
+        check empty.sum(dtype = uint64) == 0'u64
+        check empty.product(dtype = uint64) == 1'u64
+        check empty.sum(1, dtype = uint32) == newTensor[uint32](2, 1, 3)
+        check empty.product(1, dtype = bool) == newTensorWith[bool]([2, 1, 3], true)
+        check empty.product(2, dtype = uint16).shape == [2, 0, 1]
+        check empty.cumsum(1, dtype = bool).shape == [2, 0, 3]
+        check empty.cumprod(-1, dtype = uint64).shape == [2, 0, 3]
+        expect ValueError: discard scalar.sum(dtype = uint64)
+        expect ValueError: discard scalar.product(-1, dtype = uint16)
+        expect ValueError: discard [1].toTensor.cumsum(dtype = bool)
+        expect ValueError: discard [1].toTensor.cumprod(dtype = uint32)
+        expect ValueError: discard empty.cumsum(3, dtype = bool)
+        expect ValueError: discard scalar.cumprod(1, dtype = uint64)
+        expect ValueError: discard empty.mean(dtype = int8)
+        expect ValueError: discard empty.mean(1, dtype = bool)
+        expect IndexDefect: discard empty.sum(3, dtype = uint64)
+
+      test "Integer output dtypes preserve signed views and independent scan storage":
+        let owner = [0'i64, 129, -130, 3, 127, 2, -1, 0].toTensor
+        let input = owner[1..6].reshape(2, 3)
+        let reversed = input[_, 2..0|-1]
+        check reversed.sum(1, dtype = int8) == [[2'i8], [-128'i8]].toTensor
+        check reversed.cumsum(1, dtype = int8) ==
+          [[3'i8, -127, 2], [-1'i8, 1, -128]].toTensor
+        check input.cumprod(1, dtype = int8, reverse = true) ==
+          [[122'i8, 122, 3], [2'i8, -2, -1]].toTensor
+        check input.transpose.sum(0, dtype = int8) == [[2'i8, -128]].toTensor
+        check input.transpose.product(0, dtype = int8) == [[122'i8, 2]].toTensor
+        let broadcast = input[0..0, _].broadcast(2, 3)
+        check broadcast.cumsum(0, dtype = int8) ==
+          [[-127'i8, 126, 3], [2'i8, -4, 6]].toTensor
+        let fractional = [[1.9, -2.9, 3.9], [2.9, 2.9, -1.9]].toTensor.transpose
+        check fractional.cumprod(0, dtype = int8) ==
+          [[1'i8, 2], [-2'i8, 4], [-6'i8, -4]].toTensor
+        var output = input.cumsum(1, dtype = int8)
+        output[0, 0] = 0
+        check owner[1] == 129'i64
+
       test "Explicit scan dtypes cast before wide ordered carries":
         let narrow = [16777217'i32, -16777216'i32].toTensor
         check narrow.cumsum(dtype = float32) == [16777216'f32, 0].toTensor

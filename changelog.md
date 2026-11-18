@@ -1,6 +1,12 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add explicit integer/bool CPU reduction and scan output dtypes without input
+  conversion buffers. Preserve narrowing, wrapping prefixes and logical
+  boolean reductions; reject unsupported kernels while retaining scalar/empty
+  exceptions. Integer and boolean mean output dtypes raise ValueError.
+  Vectorize narrow wrapping sums and boolean truth reductions; stream integer
+  column prefixes and bulk-fill absorbing zero product tails.
 - Add explicit float32/float64 output dtypes to CPU real-valued products.
   Cast views on read and multiply in the requested dtype without conversion
   buffers. Preserve empty identities and scalar signs; fix ARM64 horizontal

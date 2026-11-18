@@ -13,7 +13,7 @@
 # limitations under the License.
 
 ## Observes fixture-driven CPU operations without replacing native semantics.
-import std/[json, math]
+import std/[json, math, strutils]
 import ../../src/arraymancer
 
 proc getTensor(desc: JsonNode): Tensor[float64] =
@@ -42,7 +42,16 @@ proc tensorObservation[T](t: Tensor[T], includeValues = true): JsonNode =
   when T is float64: result["dtype"] = %"float64"
   elif T is float32: result["dtype"] = %"float32"
   elif T is bool: result["dtype"] = %"bool"
+  elif T is int8: result["dtype"] = %"int8"
+  elif T is int16: result["dtype"] = %"int16"
+  elif T is int32: result["dtype"] = %"int32"
   elif T is int64: result["dtype"] = %"int64"
+  elif T is uint8: result["dtype"] = %"uint8"
+  elif T is uint16: result["dtype"] = %"uint16"
+  elif T is uint32: result["dtype"] = %"uint32"
+  elif T is uint64:
+    result["dtype"] = %"uint64"
+    result["word_encoding"] = %"signed_twos_complement"
   else: {.error: "unsupported CPU oracle observation dtype".}
   result["device"] = %"cpu"
   if includeValues:
@@ -50,6 +59,8 @@ proc tensorObservation[T](t: Tensor[T], includeValues = true): JsonNode =
     for _, value in enumerate(t):
       when T is bool: values.add %value
       elif T is int64: values.add %value
+      elif T is uint64: values.add %(cast[int64](value))
+      elif T is SomeInteger: values.add %(value.int64)
       else: values.add floatNode(value.float64)
     result["values"] = values
 
@@ -307,6 +318,220 @@ proc realDtypeScans(inputs: JsonNode, operation: string): JsonNode =
 
 
 
+proc integerOutputSource[T](spec: JsonNode): Tensor[T] =
+  var source =
+    when T is float32: realDtypeFloat32Tensor(spec)
+    elif T is float64: getTensor(spec)
+    else: getIntegerTensor[T](spec)
+  if spec.hasKey("nonfinite"):
+    realDtypeSpecials(source, spec["nonfinite"])
+  result = realDtypeLayout(source, spec["layout"].getStr)
+
+proc integerOutputUnsupported(): JsonNode =
+  %*{"error": "unsupported_output_dtype"}
+
+proc integerOutputReductionScalar[T, U](source: Tensor[T], dtype: typedesc[U],
+                                         operation: string, reject: bool,
+                                         label: string): JsonNode =
+  if reject:
+    try:
+      discard realDtypeScalar(source, dtype, operation)
+    except ValueError:
+      return integerOutputUnsupported()
+    raise newException(ValueError, label & " unexpectedly accepted unsupported output dtype")
+  result = tensorObservation(newTensorWith[U]([], realDtypeScalar(source, dtype, operation)))
+
+proc integerOutputReductionAxis[T, U](source: Tensor[T], axis: int,
+                                       dtype: typedesc[U], operation: string,
+                                       reject: bool, label: string): JsonNode =
+  if reject:
+    try:
+      discard realDtypeAxis(source, axis, dtype, operation)
+    except ValueError:
+      return integerOutputUnsupported()
+    raise newException(ValueError, label & " unexpectedly accepted unsupported output dtype")
+  result = tensorObservation(realDtypeAxis(source, axis, dtype, operation))
+
+proc integerOutputMeanError[T, U](source: Tensor[T], dtype: typedesc[U],
+                                   label: string): JsonNode =
+  try:
+    discard source.mean(dtype = dtype)
+  except ValueError:
+    return %*{"error": "integer_mean_dtype_rejected"}
+  raise newException(ValueError, label & " unexpectedly accepted an integer mean dtype")
+
+proc integerOutputMeanAxisError[T, U](source: Tensor[T], axis: int,
+                                       dtype: typedesc[U], label: string): JsonNode =
+  try:
+    discard source.mean(axis = axis, dtype = dtype)
+  except ValueError:
+    return %*{"error": "integer_mean_dtype_rejected"}
+  raise newException(ValueError, label & " unexpectedly accepted an integer mean dtype")
+
+proc integerOutputScan[T, U](source: Tensor[T], axis: int, dtype: typedesc[U],
+                              operation: string, reverse, reject: bool,
+                              errorCode, label: string): JsonNode =
+  if reject:
+    try:
+      discard realDtypeScanAxis(source, axis, dtype, operation, reverse)
+    except ValueError as error:
+      if errorCode == "invalid_axis":
+        let message = error.msg.toLowerAscii
+        if not (message.contains("axis") or message.contains("dimension") or
+                message.contains("index") or message.contains("range")):
+          raise
+      return %*{"error": errorCode}
+    raise newException(ValueError, label & " unexpectedly accepted a rejected scan")
+  result = tensorObservation(realDtypeScanAxis(source, axis, dtype, operation, reverse))
+
+proc integerOutputDtypeCase[T, U](source: Tensor[T], spec: JsonNode,
+                                  dtype: typedesc[U], dtypeName: string): JsonNode =
+  let nonempty = source.size > 0
+  let rejectsReduction = dtypeName in ["uint16", "uint32", "uint64"] and nonempty
+  let rejectsScan = dtypeName in ["bool", "uint16", "uint32", "uint64"] and
+    nonempty and source.shape.len > 0
+  result = newJObject()
+
+  var reductions = newJObject()
+  for operation in ["sum", "prod"]:
+    var byOperation = newJObject()
+    byOperation["all"] = integerOutputReductionScalar(
+      source, dtype, operation, rejectsReduction, dtypeName & "." & operation & ".all")
+    var axes = newJObject()
+    for axisNode in spec["axes"]:
+      let axis = axisNode.getInt
+      axes[$axis] = integerOutputReductionAxis(
+        source, axis, dtype, operation, rejectsReduction,
+        dtypeName & "." & operation & "." & $axis)
+    byOperation["axes"] = axes
+    reductions[operation] = byOperation
+  result["reductions"] = reductions
+
+  var scans = newJObject()
+  for operation in ["cumsum", "cumprod"]:
+    var byOperation = newJObject()
+    var axes = newJObject()
+    for axisNode in spec["axes"]:
+      let axis = axisNode.getInt
+      var byDtype = newJObject()
+      for reverse in [false, true]:
+        let direction = if reverse: "reverse" else: "forward"
+        byDtype[direction] = integerOutputScan(source, axis, dtype, operation,
+          reverse, rejectsScan, "unsupported_output_dtype",
+          dtypeName & "." & operation & "." & $axis & "." & direction)
+      axes[$axis] = byDtype
+    byOperation["axes"] = axes
+    scans[operation] = byOperation
+  result["scans"] = scans
+
+  var mean = newJObject()
+  var meanAll = newJObject()
+  meanAll[dtypeName] = integerOutputMeanError(source, dtype, dtypeName & ".mean.all")
+  mean["all"] = meanAll
+  var meanAxes = newJObject()
+  for axisNode in spec["axes"]:
+    let axis = axisNode.getInt
+    var byDtype = newJObject()
+    byDtype[dtypeName] = integerOutputMeanAxisError(
+      source, axis, dtype, dtypeName & ".mean." & $axis)
+    meanAxes[$axis] = byDtype
+  mean["axes"] = meanAxes
+  result["mean"] = mean
+
+  if spec.hasKey("invalid_axes"):
+    var invalid = newJObject()
+    for operation in ["cumsum", "cumprod"]:
+      var byOperation = newJObject()
+      for axisNode in spec["invalid_axes"]:
+        let axis = axisNode.getInt
+        byOperation[$axis] = integerOutputScan(source, axis, dtype, operation,
+          false, true, "invalid_axis",
+          dtypeName & "." & operation & ".invalid_axis." & $axis)
+      invalid[operation] = byOperation
+    result["invalid_scan_axes"] = invalid
+
+proc integerOutputForDtype[T](source: Tensor[T], spec: JsonNode,
+                               dtypeName: string): JsonNode =
+  case dtypeName
+  of "bool": integerOutputDtypeCase[T, bool](source, spec, bool, dtypeName)
+  of "uint8": integerOutputDtypeCase[T, uint8](source, spec, uint8, dtypeName)
+  of "int8": integerOutputDtypeCase[T, int8](source, spec, int8, dtypeName)
+  of "int16": integerOutputDtypeCase[T, int16](source, spec, int16, dtypeName)
+  of "int32": integerOutputDtypeCase[T, int32](source, spec, int32, dtypeName)
+  of "int64": integerOutputDtypeCase[T, int64](source, spec, int64, dtypeName)
+  of "uint16": integerOutputDtypeCase[T, uint16](source, spec, uint16, dtypeName)
+  of "uint32": integerOutputDtypeCase[T, uint32](source, spec, uint32, dtypeName)
+  of "uint64": integerOutputDtypeCase[T, uint64](source, spec, uint64, dtypeName)
+  else: raise newException(ValueError, "unsupported integer output dtype: " & dtypeName)
+
+proc integerOutputCaseForSource[T](spec: JsonNode): JsonNode =
+  let source = integerOutputSource[T](spec)
+  let outputDtypes = if spec.hasKey("output_dtypes"): spec["output_dtypes"]
+                     else: %*["bool", "uint8", "int8", "int16", "int32", "int64",
+                              "uint16", "uint32", "uint64"]
+  result = newJObject()
+  result["reductions"] = newJObject()
+  result["scans"] = newJObject()
+  result["mean"] = %*{"all": newJObject(), "axes": newJObject()}
+  if spec.hasKey("invalid_axes"): result["invalid_scan_axes"] = newJObject()
+  for dtypeNode in outputDtypes:
+    let dtype = dtypeNode.getStr
+    let observations = integerOutputForDtype(source, spec, dtype)
+    for operation in ["sum", "prod"]:
+      if not result["reductions"].hasKey(operation):
+        result["reductions"][operation] = %*{"all": newJObject(), "axes": newJObject()}
+      result["reductions"][operation]["all"][dtype] = observations["reductions"][operation]["all"]
+      for axisNode in spec["axes"]:
+        let key = $axisNode.getInt
+        if not result["reductions"][operation]["axes"].hasKey(key):
+          result["reductions"][operation]["axes"][key] = newJObject()
+        result["reductions"][operation]["axes"][key][dtype] =
+          observations["reductions"][operation]["axes"][key]
+    for operation in ["cumsum", "cumprod"]:
+      if not result["scans"].hasKey(operation):
+        result["scans"][operation] = %*{"axes": newJObject()}
+      for axisNode in spec["axes"]:
+        let key = $axisNode.getInt
+        if not result["scans"][operation]["axes"].hasKey(key):
+          result["scans"][operation]["axes"][key] = newJObject()
+        result["scans"][operation]["axes"][key][dtype] =
+          observations["scans"][operation]["axes"][key]
+    result["mean"]["all"][dtype] = observations["mean"]["all"][dtype]
+    for axisNode in spec["axes"]:
+      let key = $axisNode.getInt
+      if not result["mean"]["axes"].hasKey(key):
+        result["mean"]["axes"][key] = newJObject()
+      result["mean"]["axes"][key][dtype] = observations["mean"]["axes"][key][dtype]
+    if spec.hasKey("invalid_axes"):
+      for operation in ["cumsum", "cumprod"]:
+        if not result["invalid_scan_axes"].hasKey(operation):
+          result["invalid_scan_axes"][operation] = newJObject()
+        for axisNode in spec["invalid_axes"]:
+          let key = $axisNode.getInt
+          if not result["invalid_scan_axes"][operation].hasKey(key):
+            result["invalid_scan_axes"][operation][key] = newJObject()
+          result["invalid_scan_axes"][operation][key][dtype] =
+            observations["invalid_scan_axes"][operation][key]
+
+proc integerOutputBySource(spec: JsonNode): JsonNode =
+  case spec["dtype"].getStr
+  of "bool": integerOutputCaseForSource[bool](spec)
+  of "int8": integerOutputCaseForSource[int8](spec)
+  of "int16": integerOutputCaseForSource[int16](spec)
+  of "int32": integerOutputCaseForSource[int32](spec)
+  of "int64": integerOutputCaseForSource[int64](spec)
+  of "uint8": integerOutputCaseForSource[uint8](spec)
+  of "uint16": integerOutputCaseForSource[uint16](spec)
+  of "uint32": integerOutputCaseForSource[uint32](spec)
+  of "uint64": integerOutputCaseForSource[uint64](spec)
+  of "float32": integerOutputCaseForSource[float32](spec)
+  of "float64": integerOutputCaseForSource[float64](spec)
+  else: raise newException(ValueError, "unsupported integer output source dtype: " & spec["dtype"].getStr)
+
+proc integerOutputDtype(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = integerOutputBySource(spec)
 proc float64Layout(source: Tensor[float64], layout: string): Tensor[float64] =
   case layout
   of "transpose": result = source.transpose
@@ -425,6 +650,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = integerScans(inputs)
   of "tensor.integer_reductions":
     result = integerReductions(inputs)
+  of "tensor.integer_output_dtype":
+    result = integerOutputDtype(inputs)
   of "tensor.mean_dtype":
     result = realDtype(inputs, "mean")
   of "tensor.sum_dtype":

@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""Check and time all 286 CPU reduction and scan dtype actions against pinned PyTorch.
+"""Check and time CPU reduction and scan dtype actions against pinned PyTorch.
 
 Build the native runner from the repository root with:
   nim c -d:release --path:src --out:build/reduction_dtype_runner benchmarks/pytorch_head_to_head/reduction_dtype_runner.nim
-Then run the full benchmark (no filters; optional --output and --runner):
+Then run the floating-output benchmark (the default; optional --output and --runner):
   python benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.py
-The 22 input/output dtype groups each contain thirteen actions: mean, mean_rows,
-mean_columns, sum, sum_rows, sum_columns, prod, prod_rows, prod_columns,
-cumsum_rows, cumsum_columns, cumprod_rows and cumprod_columns. Each paired
+Run just the six supported integer/bool outputs with:
+  python benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.py --output-dtypes uint8 int8 int16 int32 int64 bool
+The 22 floating input/output groups each contain thirteen actions, for 286 actions
+and 1,716 median/p95 comparisons across three paired rounds. Integer outputs have
+ten supported sum/product/scan actions; bool outputs have six sum/product actions,
+for 616 actions and 3,696 comparisons across all eleven input dtypes. Each paired
 round alternates backend order; all 100 samples of 50 allocating calls are
-retained. The 286 actions produce 1,716 median/p95 comparisons across three
-paired rounds, and every comparison must win. Inputs stay resident and explicit
-output-dtype casting is part of each timed reduction or scan call.
+retained. Inputs stay resident and explicit output-dtype casting is part of each
+timed reduction or scan call.
+
+Integer and bool outputs are validated exactly, including dtype, shape and value
+count. Float outputs retain the existing tolerance checks. Every action must win
+both median and p95 in every paired round.
 """
 from __future__ import annotations
 
@@ -38,11 +44,29 @@ INPUT_DTYPES = (
 )
 INTEGER_DTYPES = frozenset(INPUT_DTYPES[:9])
 OUTPUT_DTYPES = ("float32", "float64")
+INTEGER_OUTPUT_DTYPES = ("uint8", "int8", "int16", "int32", "int64")
+BOOL_OUTPUT_DTYPES = ("bool",)
+SELECTABLE_OUTPUT_DTYPES = OUTPUT_DTYPES + INTEGER_OUTPUT_DTYPES + BOOL_OUTPUT_DTYPES
 CASES = (
     "mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns",
     "prod", "prod_rows", "prod_columns",
     "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
 )
+INTEGER_CASES = (
+    "sum", "sum_rows", "sum_columns", "prod", "prod_rows", "prod_columns",
+    "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
+)
+BOOL_CASES = ("sum", "sum_rows", "sum_columns", "prod", "prod_rows", "prod_columns")
+
+def actions_for_output(output_dtype: str) -> tuple[str, ...]:
+    if output_dtype == "bool":
+        return BOOL_CASES
+    if output_dtype in INTEGER_OUTPUT_DTYPES:
+        return INTEGER_CASES
+    if output_dtype in OUTPUT_DTYPES:
+        return CASES
+    raise ValueError(f"Unsupported reduction output dtype: {output_dtype}")
+
 TORCH_DTYPES: dict[str, torch.dtype] = {
     "bool": torch.bool, "int8": torch.int8, "int16": torch.int16, "int32": torch.int32,
     "int64": torch.int64, "uint8": torch.uint8, "uint16": torch.uint16,
@@ -121,6 +145,7 @@ def run_group(
     input_hashes: dict[str, str],
     failures: list[str],
 ) -> dict[str, Any]:
+    action_names = actions_for_output(output_dtype)
     group = f"{input_dtype}_to_{output_dtype}"
     manifest: dict[str, Any] = {
         "dtype": input_dtype,
@@ -128,6 +153,7 @@ def run_group(
         "rows": ROWS,
         "columns": COLUMNS,
         **source_payload,
+        "actions": list(action_names),
         "warmup": WARMUP,
         "repeats": REPEATS,
         "iterations": ITERATIONS,
@@ -137,7 +163,7 @@ def run_group(
     input_hash = hashlib.sha256(input_path.read_bytes()).hexdigest()
     input_hashes[group] = input_hash
 
-    callables = {name: operation(name, source, output_dtype) for name in CASES}
+    callables = {name: operation(name, source, output_dtype) for name in action_names}
     expected = {name: call() for name, call in callables.items()}
     native_command = [str(args.runner), str(input_path.resolve())]
     tolerance = 5e-6 if output_dtype == "float32" else 1e-12
@@ -153,7 +179,7 @@ def run_group(
         raw_path = args.output / f"native_{group}_{native_runs}.json"
         raw_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         native_runs += 1
-        for name in CASES:
+        for name in action_names:
             actual = report[name]["observation"]
             if actual.get("input_dtype") != input_dtype:
                 raise RuntimeError(f"{group}/{name}: input dtype mismatch")
@@ -163,16 +189,29 @@ def run_group(
             expected_dtype = str(reference.dtype).removeprefix("torch.")
             if actual.get("dtype") != expected_dtype:
                 raise RuntimeError(f"{group}/{name}: dtype mismatch")
-            actual_values = torch.tensor(
-                [float(value) for value in actual["values"]], dtype=reference.dtype,
-            )
-            if actual_values.numel() != reference.numel():
+            raw_values = actual["values"]
+            if len(raw_values) != reference.numel():
                 raise RuntimeError(f"{group}/{name}: value count mismatch")
-            actual_values = actual_values.reshape(actual["shape"])
-            torch.testing.assert_close(
-                actual_values, reference, atol=tolerance, rtol=tolerance, equal_nan=True,
-                msg=lambda message: f"{group}/{name}: {message}",
-            )
+            expected_values = reference.flatten().tolist()
+            if output_dtype == "bool":
+                if any(type(value) is not bool for value in raw_values):
+                    raise RuntimeError(f"{group}/{name}: bool values must be JSON booleans")
+                if raw_values != expected_values:
+                    raise RuntimeError(f"{group}/{name}: exact bool values mismatch")
+            elif output_dtype in INTEGER_OUTPUT_DTYPES:
+                if any(not isinstance(value, str) for value in raw_values):
+                    raise RuntimeError(f"{group}/{name}: integer values must be exact decimal strings")
+                actual_values = [int(value, 10) for value in raw_values]
+                if actual_values != expected_values:
+                    raise RuntimeError(f"{group}/{name}: exact integer values mismatch")
+            else:
+                actual_values = torch.tensor(
+                    [float(value) for value in raw_values], dtype=reference.dtype,
+                ).reshape(actual["shape"])
+                torch.testing.assert_close(
+                    actual_values, reference, atol=tolerance, rtol=tolerance, equal_nan=True,
+                    msg=lambda message: f"{group}/{name}: {message}",
+                )
         return report
 
     def reference() -> dict[str, Any]:
@@ -214,7 +253,7 @@ def run_group(
         (args.output / f"rounds_{group}.json").write_text(
             json.dumps(rounds, indent=2) + "\n", encoding="utf-8",
         )
-        for name in CASES:
+        for name in action_names:
             for metric in ("median_ms", "p95_ms"):
                 if native_result[name][metric] >= torch_result[name][metric]:
                     failures.append(
@@ -224,6 +263,7 @@ def run_group(
     return {
         "input_dtype": input_dtype,
         "output_dtype": output_dtype,
+        "actions": list(action_names),
         "input_sha256": input_hash,
         "correctness": "passed",
         "rounds": rounds,
@@ -234,7 +274,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runner", type=Path, default=Path("build/reduction_dtype_runner"))
     parser.add_argument("--output", type=Path, default=Path("build/reduction_dtype_benchmark"))
+    parser.add_argument(
+        "--output-dtypes", nargs="+", choices=SELECTABLE_OUTPUT_DTYPES,
+        default=list(OUTPUT_DTYPES),
+        help="Output dtypes to benchmark (default: float32 float64)",
+    )
     args = parser.parse_args()
+    if len(set(args.output_dtypes)) != len(args.output_dtypes):
+        parser.error("--output-dtypes must not contain duplicates")
     args.runner = (ROOT / args.runner).resolve() if not args.runner.is_absolute() else args.runner
     args.output = (ROOT / args.output).resolve() if not args.output.is_absolute() else args.output
 
@@ -267,7 +314,7 @@ def main() -> int:
     groups: list[dict[str, Any]] = []
     for input_dtype in INPUT_DTYPES:
         source, payload = make_source(input_dtype)
-        for output_dtype in OUTPUT_DTYPES:
+        for output_dtype in args.output_dtypes:
             groups.append(run_group(
                 args, input_dtype, output_dtype, source, payload, input_hashes, failures,
             ))
@@ -284,24 +331,32 @@ def main() -> int:
         if hashlib.sha256(input_path.read_bytes()).hexdigest() != digest:
             raise RuntimeError(f"Input manifest changed during measurement: {group}")
 
-    comparison_count = len(groups) * len(CASES) * 3 * 2
+    action_count = sum(len(group["actions"]) for group in groups)
+    comparison_count = action_count * 3 * 2
+    actions_by_output_dtype = {
+        output_dtype: list(actions_for_output(output_dtype))
+        for output_dtype in args.output_dtypes
+    }
+    protocol: dict[str, Any] = {
+        "input_dtypes": list(INPUT_DTYPES),
+        "output_dtypes": list(args.output_dtypes),
+        "actions_per_output_dtype": actions_by_output_dtype,
+        "group_count": len(groups),
+        "action_count": action_count,
+        "warmup_calls_per_action": WARMUP,
+        "samples_per_action_per_round": REPEATS,
+        "allocating_calls_per_sample": ITERATIONS,
+        "paired_rounds_per_group": 3,
+        "comparisons": comparison_count,
+    }
+    if all(dtype in OUTPUT_DTYPES for dtype in args.output_dtypes):
+        protocol["actions_per_group"] = list(CASES)
     report = {
         "torch": torch.__version__,
         "torch_git_revision": torch.version.git_version,
         "python": sys.version,
         "backend": "cpu",
-        "protocol": {
-            "input_dtypes": list(INPUT_DTYPES),
-            "output_dtypes": list(OUTPUT_DTYPES),
-            "actions_per_group": list(CASES),
-            "group_count": len(groups),
-            "action_count": len(groups) * len(CASES),
-            "warmup_calls_per_action": WARMUP,
-            "samples_per_action_per_round": REPEATS,
-            "allocating_calls_per_sample": ITERATIONS,
-            "paired_rounds_per_group": 3,
-            "comparisons": comparison_count,
-        },
+        "protocol": protocol,
         "source_sha256": {
             label: digest for label, digest in artifacts_sha256.items()
             if label != "native_runner"
@@ -321,7 +376,7 @@ def main() -> int:
     results_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({
         "groups": len(groups),
-        "actions": len(groups) * len(CASES),
+        "actions": action_count,
         "comparisons": comparison_count,
         "failures": failures,
         "passed": not failures,

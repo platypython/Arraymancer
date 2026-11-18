@@ -17,9 +17,58 @@ import std/math
 import ../../laser/compiler_optim_hints
 
 template convertedReductionValue*(value: untyped; U: typedesc): untyped =
-  ## Cast bools numerically without reinterpreting unsigned source words.
-  when typeof(value) is bool: U(ord(value))
+  ## Integer narrowing keeps low bits; defined floating casts truncate first.
+  when U is bool:
+    when typeof(value) is bool: value
+    else: value != typeof(value)(0)
+  elif typeof(value) is bool: U(ord(value))
+  elif U is SomeInteger:
+    when typeof(value) is SomeFloat:
+      when U is SomeUnsignedInt and sizeof(U) == 8: U(value)
+      else: cast[U](int64(value))
+    elif typeof(value) is SomeUnsignedInt: cast[U](uint64(value))
+    else: cast[U](int64(value))
   else: U(value)
+
+template convertedIntegerWord*(value: untyped; Word: typedesc): untyped =
+  ## Signed conversion precedes the unsigned carry, so negative floats keep bits.
+  when typeof(value) is SomeFloat:
+    when typeof(value) is float32 and sizeof(Word) <= 4: cast[Word](int32(value))
+    else: cast[Word](int64(value))
+  else: convertedReductionValue(value, Word)
+
+proc reduceConvertedIntegerSumSpan*[T, U](input: ptr UncheckedArray[T], base, count: uint;
+                                          dtype: typedesc[U]): U =
+  ## Unsigned narrow carries let the compiler vectorize modulo-width sums.
+  when T is float64 or sizeof(U) == 8:
+    type Word = uint64
+  elif T is float32 or sizeof(U) == 4:
+    type Word = uint32
+  elif sizeof(U) == 2:
+    type Word = uint16
+  else:
+    type Word = uint8
+  var word: Word
+  for index in 0'u ..< count:
+    word += convertedIntegerWord(input[base + index], Word)
+  cast[U](word)
+
+proc reducePackedFloatTruth*[T: SomeFloat](input: ptr UncheckedArray[T],
+                                          base, count: uint): bool =
+  ## Magnitude bits distinguish both zeros from every nonzero, including NaNs.
+  when T is float32:
+    type Word = uint32
+  else:
+    type Word = uint64
+  const magnitude = high(Word) shr 1
+  let head = min(4'u, count)
+  for index in 0'u ..< head:
+    if (cast[Word](input[base + index]) and magnitude) == 0:
+      return false
+  var anyZero: Word
+  for index in head ..< count:
+    anyZero = anyZero or Word(ord((cast[Word](input[base + index]) and magnitude) == 0))
+  anyZero == 0
 
 when defined(macosx):
   {.passL: "-framework Accelerate".}

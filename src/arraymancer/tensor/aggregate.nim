@@ -70,33 +70,91 @@ proc reducePackedIntegers[T](input: ptr UncheckedArray[T], base, count: uint;
     combineInteger(result, input[base + index], multiply)
     inc index
 
-proc reduceIntegers[T](arg: Tensor[T], multiply: static[bool]): int64 =
-  ## Convert on read, including unsigned upper-half bit patterns.
-  const identity = when multiply: 1'i64 else: 0'i64
-  result = identity
+template integerOutputIdentity(U: typedesc; multiply: static[bool]): untyped =
+  when U is bool: multiply
+  else: U(ord(multiply))
+
+template requireIntegerReductionDtype(U: typedesc; size: int) =
+  when U is SomeUnsignedInt and sizeof(U) > 1:
+    if size != 0:
+      raise newException(ValueError, "CPU reductions do not support this unsigned output dtype")
+
+template combineIntegerOutput(acc, value: untyped; U: typedesc;
+                              multiply: static[bool]) =
+  # Low-bit stores commute with integer sums/products, including narrowed inputs.
+  when U is bool:
+    let truth = convertedReductionValue(value, bool)
+    when multiply: acc = (ord(acc) and ord(truth)) != 0
+    else: acc = (ord(acc) or ord(truth)) != 0
+  elif sizeof(U) <= 4:
+    var word = convertedIntegerWord(acc, uint32)
+    when multiply: word *= convertedIntegerWord(value, uint32)
+    else: word += convertedIntegerWord(value, uint32)
+    acc = cast[U](word)
+  else:
+    var word = promotedInteger(acc)
+    combineInteger(word, value, multiply)
+    acc = cast[U](word)
+
+proc reducePackedIntegerOutput[T, U](input: ptr UncheckedArray[T], base, count: uint;
+                                     multiply: static[bool]; dtype: typedesc[U]): U =
+  ## Numeric zero and decisive boolean values finish these exact reductions.
+  when U is bool:
+    when T is SomeFloat and multiply:
+      result = reducePackedFloatTruth(input, base, count)
+    else:
+      result = multiply
+      for index in 0'u ..< count:
+        if convertedReductionValue(input[base + index], bool) != multiply:
+          return not multiply
+  elif multiply:
+    var word = 1'i64
+    for index in 0'u ..< count:
+      when T is bool:
+        if not input[base + index]: return U(0)
+      else:
+        combineInteger(word, input[base + index], true)
+        if cast[U](word) == U(0): return U(0)
+    result = cast[U](word)
+  else:
+    result = reduceConvertedIntegerSumSpan(input, base, count, U)
+
+proc reduceIntegers[T, U](arg: Tensor[T], multiply: static[bool];
+                          dtype: typedesc[U]): U =
+  ## Cast on read; narrowing and carries preserve the requested low bits.
+  requireIntegerReductionDtype(U, arg.size)
+  result = integerOutputIdentity(U, multiply)
   if arg.size == 0: return
   if arg.is_C_contiguous:
     let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
-    return reducePackedIntegers(input, 0'u, arg.size.uint, multiply)
+    return reducePackedIntegerOutput(input, 0'u, arg.size.uint, multiply, U)
   for value in arg:
-    combineInteger(result, value, multiply)
+    when U is bool:
+      if convertedReductionValue(value, bool) != multiply:
+        return not multiply
+    else:
+      combineIntegerOutput(result, value, U, multiply)
+      when multiply:
+        if result == U(0): return
 
-proc reduceIntegerAxis[T](arg: Tensor[T], axis: int;
-                          multiply: static[bool]): Tensor[int64] =
-  ## Allocate only the final output; views keep their original storage.
-  const identity = when multiply: 1'i64 else: 0'i64
+proc reduceIntegerAxis[T, U](arg: Tensor[T], axis: int;
+                             multiply: static[bool]; dtype: typedesc[U]): Tensor[U] =
+  ## Only the final output is allocated; its low bits are the running carries.
+  withCompilerOptimHints()
+  requireIntegerReductionDtype(U, arg.size)
+  const identity = integerOutputIdentity(U, multiply)
   if arg.rank == 0:
-    if arg.size == 0: return newTensor[int64](0)
+    if arg.size == 0: return newTensor[U](0)
     let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
-    return newTensorWith[int64]([], promotedInteger(input[0]))
+    return newTensorWith[U]([], convertedReductionValue(input[0], U))
   var shape = arg.shape
   shape[axis] = 1
   let axisLength = arg.shape[axis]
-  if axisLength == 0: return newTensorWith[int64](shape, identity)
-  result = newTensorUninit[int64](shape)
+  if axisLength == 0: return newTensorWith[U](shape, identity)
+  result = newTensorUninit[U](shape)
   if result.size == 0: return
   let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
-  let output = cast[ptr UncheckedArray[int64]](result.get_offset_ptr)
+  let output {.restrict.} = cast[ptr UncheckedArray[U]](result.get_offset_ptr)
   if arg.is_C_contiguous:
     var outer = 1'u
     for dimension in 0 ..< axis: outer *= arg.shape[dimension].uint
@@ -106,16 +164,16 @@ proc reduceIntegerAxis[T](arg: Tensor[T], axis: int;
     for batch in 0'u ..< outer:
       let base = batch * length * inner
       if inner == 1:
-        output[batch] = reducePackedIntegers(input, base, length, multiply)
+        output[batch] = reducePackedIntegerOutput(input, base, length, multiply, U)
       else:
         let destination = batch * inner
         for column in 0'u ..< inner:
-          output[destination + column] = promotedInteger(input[base + column])
+          output[destination + column] = convertedReductionValue(input[base + column], U)
         for position in 1'u ..< length:
           let source = base + position * inner
           for column in 0'u ..< inner:
             let index = destination + column
-            combineInteger(output[index], input[source + column], multiply)
+            combineIntegerOutput(output[index], input[source + column], U, multiply)
     return
   for index in 0 ..< result.size:
     var remainder = index
@@ -126,7 +184,7 @@ proc reduceIntegerAxis[T](arg: Tensor[T], axis: int;
         remainder = remainder div shape[dimension]
     var value = identity
     for position in 0 ..< axisLength:
-      combineInteger(value, input[base + position * arg.strides[axis]], multiply)
+      combineIntegerOutput(value, input[base + position * arg.strides[axis]], U, multiply)
     output[index] = value
 
 func reductionAxis(rank, axis: int): int =
@@ -190,7 +248,7 @@ proc sum*[T](arg: Tensor[T]): sumProductElement(T) =
   ## Compute the sum of all elements.
   ## Integers and booleans promote to int64 before modulo-2^64 arithmetic.
   when T is SomeInteger or T is bool:
-    reduceIntegers(arg, false)
+    reduceIntegers(arg, false, int64)
   else:
     when T is float64:
       if arg.size == 0: return 0.0
@@ -210,7 +268,7 @@ proc sum*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noinit.}
   ## Integers and booleans promote to int64 with modulo-2^64 arithmetic.
   let axis = reductionAxis(arg.rank, axis)
   when T is SomeInteger or T is bool:
-    reduceIntegerAxis(arg, axis, false)
+    reduceIntegerAxis(arg, axis, false, int64)
   else:
     sumAlongAxis(arg, axis)
 
@@ -220,7 +278,7 @@ proc product*[T](arg: Tensor[T]): sumProductElement(T) =
   ## Packed float32/float64 products use partial carries; rounding and overflow
   ## can depend on their grouping rather than a left-to-right multiplication order.
   when T is SomeInteger or T is bool:
-    reduceIntegers(arg, true)
+    reduceIntegers(arg, true, int64)
   else:
     if arg.size == 0: return productIdentity[T]()
     when T is float64:
@@ -240,7 +298,7 @@ proc product*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noin
   ## Integers and booleans promote to int64 with modulo-2^64 arithmetic.
   let axis = reductionAxis(arg.rank, axis)
   when T is SomeInteger or T is bool:
-    reduceIntegerAxis(arg, axis, true)
+    reduceIntegerAxis(arg, axis, true, int64)
   else:
     if arg.rank == 0:
       if arg.size == 0: return newTensor[T](0)
@@ -576,6 +634,48 @@ proc product*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T], axis: int;
       return arg.product(axis)
   reduceConvertedAxis(arg, axis, U, false, true)
 
+proc mean*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T];
+                                                         dtype: typedesc[U]): U =
+  ## Integer and boolean output dtypes are invalid for means, including empties.
+  raise newException(ValueError, "Mean output dtype must be floating point")
+
+proc mean*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T], axis: int;
+                                                         dtype: typedesc[U]): Tensor[U] =
+  ## Integer and boolean output dtypes are invalid for axis means.
+  raise newException(ValueError, "Mean output dtype must be floating point")
+
+proc sum*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T];
+                                                        dtype: typedesc[U]): U =
+  ## Cast on read and sum modulo the output bit width; bool sums are logical OR.
+  ## Numeric outputs support uint8 and signed integers. Wider unsigned outputs
+  ## raise ValueError unless the input is empty. Empty sums are zero/false.
+  ## Floating inputs truncate; out-of-range/nonfinite integer casts are undefined.
+  reduceIntegers(arg, false, U)
+
+proc sum*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T], axis: int;
+                                                        dtype: typedesc[U]): Tensor[U] =
+  ## Retained-axis integer sums or boolean ORs, with only an output allocation.
+  ## Views and negative/scalar axes follow sum. Numeric carries wrap to dtype;
+  ## wider unsigned outputs reject nonempty inputs, even scalars.
+  ## Floating inputs must truncate to a value representable in dtype.
+  let axis = reductionAxis(arg.rank, axis)
+  reduceIntegerAxis(arg, axis, false, U)
+
+proc product*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T];
+                                                            dtype: typedesc[U]): U =
+  ## Cast on read and multiply modulo dtype; bool products are logical AND.
+  ## Empty products are one/true. Wider unsigned outputs reject nonempty inputs.
+  ## Floating inputs must truncate to a value representable in dtype.
+  reduceIntegers(arg, true, U)
+
+proc product*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T], axis: int;
+                                                            dtype: typedesc[U]): Tensor[U] =
+  ## Retained-axis wrapping products or boolean ANDs; views are read in place.
+  ## Empty reduced axes yield one/true. Wider unsigned outputs reject nonempty
+  ## inputs, including scalars. Floating casts must fit the requested dtype.
+  let axis = reductionAxis(arg.rank, axis)
+  reduceIntegerAxis(arg, axis, true, U)
+
 proc min*[T](arg: Tensor[T]): T =
   ## Compute the min of all elements
   reduce_inline(arg):
@@ -802,40 +902,44 @@ proc iqr*[T](arg: Tensor[T]): float =
   result = percentile(tS, 75, isSorted = true) -
            percentile(tS, 25, isSorted = true)
 
+func cumulativeAxis(rank, axis: int): int =
+  ## Scalars keep rank zero while accepting the same two axis spellings.
+  let dimensions = max(1, rank)
+  if axis < -dimensions or axis >= dimensions:
+    raise newException(ValueError, "Cumulative axis is outside input rank")
+  if axis < 0: axis + dimensions else: axis
+
 proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
                    dtype: typedesc[U]; promoteIntegers: static[bool] = true;
                    reverse: bool = false): Tensor[U] =
   ## Cast on read; floating carries stay wide after rounded output stores.
+  withCompilerOptimHints()
   mixin _
   template scanValue(value: untyped): untyped =
     when U is SomeFloat: convertedReductionValue(value, U)
     elif not promoteIntegers: value
-    elif T is SomeInteger or T is bool: promotedInteger(value)
+    elif U is SomeInteger: promotedInteger(value)
     else: value
   when U is SomeFloat:
     const identity = when multiply: 1.0 else: 0.0
   template accumulate(acc, value: untyped) =
-    when promoteIntegers and (T is SomeInteger or T is bool) and U isnot SomeFloat:
+    when promoteIntegers and U is SomeInteger:
       when multiply: acc = acc *% value
       else: acc = acc +% value
     else:
       when multiply: acc = acc * value
       else: acc = acc + value
   let rank = arg.rank
-  var scanAxis: int
-  if rank == 0:
-    if axis != 0 and axis != -1:
-      raise newException(ValueError, "Cumulative axis is outside input rank")
-  elif axis >= -rank and axis < rank:
-    scanAxis = if axis < 0: axis + rank else: axis
-  else:
-    raise newException(ValueError, "Cumulative axis is outside input rank")
+  let scanAxis = cumulativeAxis(rank, axis)
 
   result = newTensorUninit[U](arg.shape)
   if arg.size == 0:
     return
   if rank == 0:
-    result.storage.raw_buffer[0] = scanValue(arg.storage.raw_buffer[arg.offset])
+    when U is SomeInteger:
+      result.storage.raw_buffer[0] = convertedReductionValue(arg.storage.raw_buffer[arg.offset], U)
+    else:
+      result.storage.raw_buffer[0] = scanValue(arg.storage.raw_buffer[arg.offset])
     return
 
   var outer = 1'u
@@ -851,11 +955,14 @@ proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
 
   let inputData = arg.storage.raw_buffer
   let output = result.storage.raw_buffer
+  template scanOutput(value: untyped): untyped =
+    when promoteIntegers and U is SomeInteger: cast[U](value)
+    else: value
   template writeOutput(index: uint; value: untyped) =
     when U is KnownSupportsCopyMem:
-      output[index] = value
+      output[index] = scanOutput(value)
     else:
-      output[int(index)] = value
+      output[int(index)] = scanOutput(value)
 
   when U is SomeFloat:
     if arg.is_C_contiguous:
@@ -885,7 +992,7 @@ proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
             accumulate(accumulated, float64(scanValue(inputData[inputOffset + flat])))
             output[flat] = U(accumulated)
       return
-  elif T is SomeInteger or T is bool:
+  elif T is SomeInteger or T is bool or U is SomeInteger:
     if arg.is_C_contiguous:
       let inputOffset = uint(arg.offset)
       if inner == 1:
@@ -893,23 +1000,48 @@ proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
           let base = group * axisLength
           let first = base + scanCoordinate(0'u)
           var accumulated = scanValue(inputData[inputOffset + first])
-          output[first] = accumulated
-          for step in 1'u ..< axisLength:
+          writeOutput(first, accumulated)
+          var step = 1'u
+          while step < axisLength:
+            when multiply and promoteIntegers and U is SomeInteger:
+              if cast[U](accumulated) == U(0):
+                # Integer zero is absorbing even when a wider carry had other bits.
+                let start = if reverse: base else: base + step
+                zeroMem(addr output[start], int(axisLength - step) * sizeof(U))
+                break
             let flat = base + scanCoordinate(step)
             accumulate(accumulated, scanValue(inputData[inputOffset + flat]))
-            output[flat] = accumulated
+            writeOutput(flat, accumulated)
+            inc step
+      elif promoteIntegers and U is SomeInteger:
+        # Stored integer prefixes are exact modulo dtype, so rows can stream.
+        let integerOutput {.restrict.} = cast[ptr UncheckedArray[U]](result.get_offset_ptr)
+        for group in 0'u ..< outer:
+          let base = group * axisLength * inner
+          var previous = base + scanCoordinate(0'u) * inner
+          for column in 0'u ..< inner:
+            integerOutput[previous + column] = cast[U](
+              scanValue(inputData[inputOffset + previous + column]))
+          for step in 1'u ..< axisLength:
+            let current = base + scanCoordinate(step) * inner
+            for column in 0'u ..< inner:
+              var accumulated = integerOutput[previous + column]
+              combineIntegerOutput(accumulated, inputData[inputOffset + current + column],
+                                   U, multiply)
+              integerOutput[current + column] = accumulated
+            previous = current
       else:
         for group in 0'u ..< outer:
           let base = group * axisLength * inner
           for column in 0'u ..< inner:
             let first = base + scanCoordinate(0'u) * inner + column
             var accumulated = scanValue(inputData[inputOffset + first])
-            output[first] = accumulated
+            writeOutput(first, accumulated)
             for step in 1'u ..< axisLength:
               let coordinate = scanCoordinate(step)
               let flat = base + coordinate * inner + column
               accumulate(accumulated, scanValue(inputData[inputOffset + flat]))
-              output[flat] = accumulated
+              writeOutput(flat, accumulated)
       return
 
   var coordinates: Metadata
@@ -928,7 +1060,10 @@ proc scanCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool],
                    float64(scanValue(inputData[inputBase + int(coordinate) * arg.strides[scanAxis]])))
         writeOutput(outputBase + coordinate * inner, U(accumulated))
     else:
-      var accumulated: U
+      when promoteIntegers and U is SomeInteger:
+        var accumulated: int64
+      else:
+        var accumulated: U
       var hasValue = false
       for step in 0'u ..< axisLength:
         let coordinate = scanCoordinate(step)
@@ -994,6 +1129,35 @@ proc cumprod*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T], axis: int = 0
   ## Unsigned values convert numerically. Only the independent output is allocated.
   ## Views, scalar/negative axes, empty shapes and ``reverse`` follow ``cumprod``.
   scanCPU(arg, axis, true, U, reverse = reverse)
+
+proc scanIntegerCPU[T, U](arg: Tensor[T], axis: int, multiply: static[bool];
+                           dtype: typedesc[U]; reverse: bool): Tensor[U] =
+  ## Unsupported scan kernels still permit scalar copies and empty outputs.
+  when U is bool or (U is SomeUnsignedInt and sizeof(U) > 1):
+    discard cumulativeAxis(arg.rank, axis)
+    if arg.rank > 0 and arg.size > 0:
+      raise newException(ValueError, "CPU cumulative scans do not support this output dtype")
+    result = newTensorUninit[U](arg.shape)
+    if arg.size > 0:
+      result.storage.raw_buffer[0] = convertedReductionValue(arg.storage.raw_buffer[arg.offset], U)
+  else:
+    result = scanCPU(arg, axis, multiply, U, reverse = reverse)
+
+proc cumsum*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T], axis: int = 0;
+    dtype: typedesc[U]; reverse: bool = false): Tensor[U] =
+  ## Cast on read and retain dtype with modulo-width inclusive sums.
+  ## Numeric kernels support uint8 and signed outputs; bool and wider unsigned
+  ## outputs support only scalars and empties. Invalid axes raise ValueError.
+  ## Floating casts must fit dtype. Only the independent output is allocated.
+  scanIntegerCPU(arg, axis, false, U, reverse)
+
+proc cumprod*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T], axis: int = 0;
+    dtype: typedesc[U]; reverse: bool = false): Tensor[U] =
+  ## Cast on read and retain dtype with modulo-width inclusive products.
+  ## Bool and wider unsigned outputs support only scalars and empty tensors;
+  ## uint8 and signed outputs support views, negative axes and reverse scans.
+  ## Floating casts must fit dtype. Only the independent output is allocated.
+  scanIntegerCPU(arg, axis, true, U, reverse)
 
 proc diff_discrete*[T](arg: Tensor[T], n=1, axis: int = -1): Tensor[T] =
   ## Calculate the n-th discrete difference along the given axis.
