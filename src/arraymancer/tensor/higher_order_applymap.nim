@@ -157,13 +157,8 @@ proc applyUnary*(dest: var Tensor[float32]; src: Tensor[float32];
   when defined(macosx):
     if dest.is_C_contiguous and src.is_C_contiguous and disjointOwnedStorage(dest, src):
       when operation == unarySqrt:
-        let destination = dest.storage.raw_buffer
-        let source = src.storage.raw_buffer
-        let destinationOffset = dest.offset
-        let sourceOffset = src.offset
-        for cursor in 0'u ..< uint(src.size):
-          let i = cast[int](cursor)
-          destination[destinationOffset +% i] = math.sqrt(source[sourceOffset +% i])
+        sqrtFloat32(addr dest.storage.raw_buffer[dest.offset],
+            addr src.storage.raw_buffer[src.offset], src.size)
       else:
         var offset = 0
         while offset < src.size:

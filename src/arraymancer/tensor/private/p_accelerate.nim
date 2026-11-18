@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-## Provides private system-Accelerate float32 bulk operations.
+## Provides private macOS float32 bulk operations.
+import std/math
+import ../../laser/compiler_optim_hints
 when defined(macosx):
   {.passL: "-framework Accelerate".}
 
@@ -23,3 +25,13 @@ when defined(macosx):
     {.importc, header: "<Accelerate/Accelerate.h>".}
   proc vvlogf*(output, input: ptr float32; count: ptr cint)
     {.importc, header: "<Accelerate/Accelerate.h>".}
+
+  proc sqrtFloat32*(output, input: ptr float32; count: int) =
+    ## Write nonnegative-count, disjoint packed spans using hardware square roots.
+    ## A separate translation unit keeps fallback fragments out of this hot loop.
+    withCompilerOptimHints()
+    let destination {.restrict.} = cast[ptr UncheckedArray[float32]](output)
+    let source = cast[ptr UncheckedArray[float32]](input)
+    for cursor in 0'u ..< uint(count):
+      let i = cast[int](cursor)
+      destination[i] = math.sqrt(source[i])
