@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Reduce packed Metal rows in four-value SIMD subgroups and load adjacent
+  factors together for full products, including float-aligned offset views.
+  Keep short-row tails within their SIMD subgroup and avoid separated-factor
+  overflow in the covered balanced-product cases.
 - Add seeded full/axis product autograd for CPU float32/float64 and native
   Metal float32, including negative axes, keepdim, empty/scalar tensors and
   strided views. Preserve zero/nonfinite derivative distinctions between full

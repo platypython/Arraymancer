@@ -31,6 +31,8 @@ proc mean*(t: MetalTensor[float32]): MetalTensor[float32] =
 
 proc prod*(t: MetalTensor[float32]): MetalTensor[float32] =
   ## Full product returns an independent native scalar; empty products are one.
+  ## Packed groups combine adjacent factors before reducing across GPU lanes;
+  ## floating-point grouping can differ from host reductions.
   reduce(t, false, true)
 
 proc reduceAxis(t: MetalTensor[float32]; axis: int;
@@ -56,6 +58,7 @@ proc sum*(t: MetalTensor[float32]; axis: int): MetalTensor[float32] =
 
 proc prod*(t: MetalTensor[float32]; axis: int): MetalTensor[float32] =
   ## Allocate a keepdim product; empty axes produce one. Accept negative axes.
+  ## Packed rows combine adjacent factors within SIMD subgroups.
   reduceAxis(t, axis, 26)
 
 proc mean*(t: MetalTensor[float32]; axis: int): MetalTensor[float32] =

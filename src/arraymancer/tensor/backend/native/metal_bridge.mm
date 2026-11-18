@@ -2631,6 +2631,7 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
     bool packedVectorMatrix = false;
     bool packedAxis = false;
     bool packedAxisColumns4 = false;
+    bool packedAxisRows4 = false;
     bool packedFullProduct = false;
 
     if (elementwise) {
@@ -2756,7 +2757,9 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
       groups = MTLSizeMake(partialCount, 1, 1);
       packedFullProduct = operation == 25 && parameters.axis &&
           output.state.supportsIndirectMath;
-      if (packedFullProduct) kernelName = @"math_product_tasks";
+      if (packedFullProduct)
+        kernelName = aCount % 4 == 0 ?
+            @"math_product4_tasks" : @"math_product_tasks";
     } else if (operation == 24) {
       if (!b || parameters.scalar_input || !sameShape(ad, bd) ||
           aCount != bCount || od.rank != 0 || outputCount != 1)
@@ -2794,10 +2797,15 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
           ((parameters.axis == 1 && ad.shape[1] <= 4096) ||
            (parameters.axis == 0 && ad.shape[0] <= 256))) {
         packedAxis = true;
-        if (parameters.axis == 1)
-          kernelName = operation == 22 ? @"math_sum_rows_tasks" :
-              (operation == 26 ? @"math_prod_rows_tasks" : @"math_mean_rows_tasks");
-        else
+        if (parameters.axis == 1) {
+          packedAxisRows4 = ad.shape[1] % 4 == 0;
+          if (packedAxisRows4)
+            kernelName = operation == 22 ? @"math_sum_rows4_tasks" :
+                (operation == 26 ? @"math_prod_rows4_tasks" : @"math_mean_rows4_tasks");
+          else
+            kernelName = operation == 22 ? @"math_sum_rows_tasks" :
+                (operation == 26 ? @"math_prod_rows_tasks" : @"math_mean_rows_tasks");
+        } else
           kernelName = operation == 22 ? @"math_sum_columns_tasks" :
               (operation == 26 ? @"math_prod_columns_tasks" : @"math_mean_columns_tasks");
         packedAxisColumns4 = parameters.axis == 0 && ad.shape[1] % 4 == 0 &&
@@ -2823,7 +2831,8 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
       const NSUInteger simdWidth = pipeline.threadExecutionWidth;
       if (!simdWidth || simdWidth > 256 || (simdWidth & (simdWidth - 1)))
         return failure(7, "axis reduction pipeline has an unsupported SIMD width");
-      const uint64_t outputsPerGroup = 256 / simdWidth;
+      const uint64_t outputsPerGroup = 256 /
+          (packedAxisRows4 ? MIN((NSUInteger)8, simdWidth) : simdWidth);
       groups.width = (outputCount + outputsPerGroup - 1) / outputsPerGroup;
       if (groups.width * threads.width > UINT32_MAX)
         return failure(2, "axis reduction grid exceeds Metal index limits");

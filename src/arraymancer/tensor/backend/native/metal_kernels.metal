@@ -866,6 +866,46 @@ PACKED_REDUCTION_KERNEL(math_mean_columns_tasks, 27, true)
 PACKED_REDUCTION_KERNEL(math_prod_columns_tasks, 26, true)
 
 template<int operation>
+void packedRowReduction4(constant PackedReductionTask &task, uint tid,
+                         uint lane, uint width) {
+  // Keep each row inside a SIMD subgroup while loading adjacent values together.
+  const uint rowLanes = min(8u, width);
+  const uint outputIndex = tid / rowLanes;
+  if (outputIndex >= task.outputs) return;
+  const uint localLane = lane % rowLanes;
+  const uint vectors = task.inner / 4u;
+  device const packed_float4 *input =
+      reinterpret_cast<device const packed_float4 *>(task.input);
+  const ulong base = ulong(outputIndex) * vectors;
+  float value = operation == 26 ? 1.0f : 0.0f;
+  for (uint index = localLane; index < vectors; index += rowLanes) {
+    const float4 item = input[base + index];
+    const float reduced = operation == 26 ?
+        ((item.x * item.y) * item.z) * item.w :
+        ((item.x + item.y) + item.z) + item.w;
+    value = operation == 26 ? value * reduced : value + reduced;
+  }
+  for (uint mask = rowLanes / 2u; mask > 0; mask >>= 1u)
+    value = operation == 26 ? value * simd_shuffle_xor(value, mask) :
+        value + simd_shuffle_xor(value, mask);
+  if (localLane == 0) {
+    if (operation == 27) value /= float(task.inner);
+    task.output[outputIndex] = value;
+  }
+}
+
+#define PACKED_ROW_REDUCTION4_KERNEL(NAME, OPERATION) \
+kernel void NAME(constant PackedReductionTask *tasks [[buffer(0)]], \
+    uint3 tid [[thread_position_in_grid]], \
+    uint lane [[thread_index_in_simdgroup]], \
+    uint width [[threads_per_simdgroup]]) { \
+  packedRowReduction4<OPERATION>(tasks[tid.z], tid.x, lane, width); \
+}
+PACKED_ROW_REDUCTION4_KERNEL(math_sum_rows4_tasks, 22)
+PACKED_ROW_REDUCTION4_KERNEL(math_prod_rows4_tasks, 26)
+PACKED_ROW_REDUCTION4_KERNEL(math_mean_rows4_tasks, 27)
+
+template<int operation>
 void packedColumnReduction(constant PackedReductionTask &task, uint group,
                            uint lane, uint width) {
   const uint columnLanes = min(4u, width);
@@ -899,18 +939,22 @@ PACKED_COLUMN_REDUCTION_KERNEL(math_sum_columns4_tasks, 22)
 PACKED_COLUMN_REDUCTION_KERNEL(math_prod_columns4_tasks, 26)
 PACKED_COLUMN_REDUCTION_KERNEL(math_mean_columns4_tasks, 27)
 
-kernel void math_product_tasks(
-    constant PackedReductionTask *tasks [[buffer(0)]],
-    uint3 group [[threadgroup_position_in_grid]],
-    uint tid [[thread_index_in_threadgroup]],
-    uint lane [[thread_index_in_simdgroup]],
-    uint simdGroup [[simdgroup_index_in_threadgroup]],
-    uint width [[threads_per_simdgroup]]) {
-  constant PackedReductionTask &task = tasks[group.z];
-  threadgroup float partial[256];
+template<bool vectorized>
+void packedFullProduct(constant PackedReductionTask &task,
+                       uint tid, uint lane, uint simdGroup, uint width,
+                       threadgroup float *partial) {
   float value = 1.0f;
-  for (uint index = tid; index < task.inner; index += 256u)
-    value *= task.input[index];
+  if (vectorized) {
+    device const packed_float4 *input =
+        reinterpret_cast<device const packed_float4 *>(task.input);
+    for (uint index = tid; index < task.inner / 4u; index += 256u) {
+      const float4 item = input[index];
+      value *= ((item.x * item.y) * item.z) * item.w;
+    }
+  } else {
+    for (uint index = tid; index < task.inner; index += 256u)
+      value *= task.input[index];
+  }
   for (uint mask = width / 2; mask > 0; mask >>= 1)
     value *= simd_shuffle_xor(value, ushort(mask));
   if (lane == 0) partial[simdGroup] = value;
@@ -924,6 +968,19 @@ kernel void math_product_tasks(
     if (lane == 0) task.output[0] = value;
   }
 }
+
+#define PACKED_FULL_PRODUCT_KERNEL(NAME, VECTORIZED) \
+kernel void NAME(constant PackedReductionTask *tasks [[buffer(0)]], \
+    uint3 group [[threadgroup_position_in_grid]], \
+    uint tid [[thread_index_in_threadgroup]], \
+    uint lane [[thread_index_in_simdgroup]], \
+    uint simdGroup [[simdgroup_index_in_threadgroup]], \
+    uint width [[threads_per_simdgroup]]) { \
+  threadgroup float partial[256]; \
+  packedFullProduct<VECTORIZED>(tasks[group.z], tid, lane, simdGroup, width, partial); \
+}
+PACKED_FULL_PRODUCT_KERNEL(math_product_tasks, false)
+PACKED_FULL_PRODUCT_KERNEL(math_product4_tasks, true)
 
 long productGradientAxisBase(ulong slice, constant Descriptor &descriptor,
                              int axis) {

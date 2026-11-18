@@ -4,6 +4,32 @@ import std/[unittest, math]
 import ../../src/arraymancer
 
 suite "Native Metal float32 math":
+  test "Packed row reductions preserve SIMD tails and aligned offset bounds":
+    let pattern = [0.5'f32, 2'f32, -1'f32, -1'f32]
+    for rows in [1, 7, 8, 9, 31, 32, 33]:
+      for columns in [4, 28, 32, 36, 128, 4096]:
+        for offset in [0, 1, 4]:
+          var source = zeros[float32](rows * columns + offset + 4)
+          for index in 0 ..< rows * columns:
+            source[offset + index] = pattern[index mod 4]
+          var expectedSum = newTensorUninit[float32](rows, 1)
+          var expectedProduct = newTensorUninit[float32](rows, 1)
+          var fullProduct = 1'f32
+          for row in 0 ..< rows:
+            let factor = float32(1 shl (row mod 3))
+            source[offset + row * columns] *= factor
+            expectedSum[row, 0] = float32(columns div 4) * 0.5'f32 +
+                0.5'f32 * (factor - 1'f32)
+            expectedProduct[row, 0] = factor
+            fullProduct *= factor
+          let input = source.metal.metalView(
+              [rows, columns].toMetadata, [columns, 1].toMetadata, offset)
+          check input.sum(1).cpu == expectedSum
+          check input.prod(1).cpu == expectedProduct
+          check input.mean(1).cpu.mean_relative_error(
+              expectedSum / float32(columns)) < 2e-6
+          check input.prod.cpu == newTensorWith[float32]([], fullProduct)
+
   test "Unary kernels preserve negative strides, scalars and empty shapes":
     let packed = [0.25'f32, 1, 4, 9].toTensor.metal
     let reverse = packed.metalView([4].toMetadata, [-1].toMetadata, 3)
