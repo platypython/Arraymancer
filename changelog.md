@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add explicit float32/float64 output dtypes to CPU real-valued means,
+  casting views on read without a converted input tensor. Integer/bool means
+  now require a floating dtype instead of using legacy integer division.
+  Bound long float32 carries and use exact small-integer blocks for throughput.
 - Add packed CPU float64 sum/product/mean kernels and ordered cumulative scans.
   Vectorize independent ARM64 lanes and zero-free product-gradient columns;
   retain strided fallbacks, scalar/empty shapes and nonfinite derivative masks.

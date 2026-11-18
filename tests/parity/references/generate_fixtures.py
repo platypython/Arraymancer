@@ -1022,6 +1022,159 @@ def integer_reductions(torch: Any) -> dict[str, Any]:
         expected[name] = operations
     return _case("tensor.integer_reductions", "api:torch", inputs, expected, tolerance=0.0)
 
+def _default_mean_dtype_rejection(source: Any, axis: int | None, label: str) -> dict[str, str]:
+    try:
+        if axis is None:
+            source.mean()
+        else:
+            source.mean(dim=axis)
+    except RuntimeError as error:
+        expected_message = (
+            "mean(): could not infer output dtype. Input dtype must be either a floating point or complex dtype. Got:"
+        )
+        if not str(error).startswith(expected_message):
+            raise
+        return {"error": "default_dtype_rejected"}
+    raise ValueError(f"{label} unexpectedly accepted a default integer mean")
+
+
+def mean_dtype(torch: Any) -> dict[str, Any]:
+    """Observe explicit CPU mean casts, views, and default integer rejection."""
+    integer_dtypes = ("bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64")
+    specs: dict[str, dict[str, Any]] = {
+        "bool": {
+            "dtype": "bool", "shape": [2, 3], "words": [0, 1, 0, 2, -1, 0],
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "int8": {
+            "dtype": "int8", "shape": [2, 3], "words": [-128, 127, -1, 1, 2, 3],
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "int16": {
+            "dtype": "int16", "shape": [2, 3], "words": [-32768, 32767, -1, 1, 2, 3],
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "int32": {
+            "dtype": "int32", "shape": [2, 3], "words": [-2147483648, 2147483647, -1, 1, 2, 3],
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "int64": {
+            "dtype": "int64", "shape": [2, 3], "words": [-3, 4, 2, -5, 0, 1],
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "uint8": {
+            "dtype": "uint8", "shape": [2, 3], "words": [0, 255, 1, 2, 128, 3],
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "uint16": {
+            "dtype": "uint16", "shape": [2, 3], "words": [0, 65535, 1, 2, 32768, 3],
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "uint32": {
+            "dtype": "uint32", "shape": [2, 3],
+            "words": [0, 4294967295, 1, 2, 2147483648, 3],
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "uint64": {
+            "dtype": "uint64", "shape": [2, 3],
+            "words": [0, 9223372036854775807, -9223372036854775808, -1, -2, 1],
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "float32": {
+            "dtype": "float32", "shape": [2, 3],
+            "values": [0.1, -0.2, 0.3, -0.4, 0.5, -0.6],
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "float64": {
+            "dtype": "float64", "shape": [2, 3],
+            "values": [0.1, -1.5, 2.0, 3.25, 4.5, -0.5],
+            "layout": "transpose", "axes": [0, 1, -1],
+        },
+        "float64_precision": {
+            "dtype": "float64", "shape": [2], "values": [16777217, -16777216],
+            "layout": "identity", "axes": [0, -1],
+        },
+        "uint64_upper": {
+            "dtype": "uint64", "shape": [2], "words": [-1, -1],
+            "layout": "identity", "axes": [0, -1],
+        },
+        "packed_odd": {
+            "dtype": "int16", "shape": [3, 5], "words": list(range(-7, 8)),
+            "layout": "identity", "axes": [0, 1, -1],
+        },
+        "transpose": {
+            "dtype": "uint16", "shape": [2, 3], "words": [0, 65535, 1, 2, 32768, 3],
+            "layout": "transpose", "axes": [0, -1],
+        },
+        "offset": {
+            "dtype": "uint32", "shape": [3, 4], "words": list(range(12)),
+            "layout": "offset", "axes": [0, -1],
+        },
+        "reverse": {
+            "dtype": "int64", "shape": [5], "words": [3, -2, 0, 4, -1],
+            "layout": "reverse", "axes": [0, -1],
+        },
+        "broadcast": {
+            "dtype": "uint8", "shape": [1, 3], "words": [2, 3, 0],
+            "layout": "broadcast", "axes": [0, 1, -1],
+        },
+        "scalar": {
+            "dtype": "int64", "shape": [], "words": [-1],
+            "layout": "identity", "axes": [0, -1],
+        },
+        "empty": {
+            "dtype": "uint64", "shape": [2, 0, 3], "words": [],
+            "layout": "identity", "axes": [0, 1, 2, -1],
+        },
+    }
+    torch_dtypes = {name: getattr(torch, name) for name in (*integer_dtypes, "float32", "float64")}
+    inputs: dict[str, Any] = {}
+    expected: dict[str, Any] = {}
+    for name, spec in specs.items():
+        dtype_name = spec["dtype"]
+        if dtype_name in integer_dtypes:
+            source = torch.tensor(spec["words"], dtype=torch.int64, device="cpu").to(
+                dtype=torch_dtypes[dtype_name]
+            ).reshape(spec["shape"])
+        else:
+            source = torch.tensor(spec["values"], dtype=torch_dtypes[dtype_name], device="cpu").reshape(
+                spec["shape"]
+            )
+        layout = spec["layout"]
+        if layout == "transpose":
+            source = source.transpose(0, 1)
+        elif layout == "offset":
+            source = source.transpose(0, 1)[:, 1:]
+        elif layout == "reverse":
+            source = source.flip([0])
+        elif layout == "broadcast":
+            source = source.expand(4, 3)
+        inputs[name] = {**spec}
+
+        whole: dict[str, Any] = {}
+        for output_dtype in ("float32", "float64"):
+            output = source.mean(dtype=torch_dtypes[output_dtype])
+            whole[output_dtype] = _observe(output)
+        by_axis: dict[str, Any] = {}
+        for axis in spec["axes"]:
+            by_dtype: dict[str, Any] = {}
+            for output_dtype in ("float32", "float64"):
+                output = source.mean(dim=axis, keepdim=True, dtype=torch_dtypes[output_dtype])
+                by_dtype[output_dtype] = _observe(output)
+            by_axis[str(axis)] = by_dtype
+        observations: dict[str, Any] = {"all": whole, "axes": by_axis}
+
+        if dtype_name in integer_dtypes:
+            defaults: dict[str, Any] = {
+                "all": _default_mean_dtype_rejection(source, None, name),
+                "axes": {},
+            }
+            for axis in spec["axes"]:
+                defaults["axes"][str(axis)] = _default_mean_dtype_rejection(source, axis, name)
+            observations["default"] = defaults
+        expected[name] = observations
+    return _case("tensor.mean_dtype", "api:torch", inputs, expected, tolerance=1e-6)
+
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
@@ -1032,8 +1185,10 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
     unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
     cumsum_gradient, cumprod_gradient,
-    integer_scans, integer_reductions,
+    integer_scans, integer_reductions, mean_dtype,
 )
+
+
 
 
 def _validate_runtime(torch: Any, pin: dict[str, Any]) -> tuple[str, str, str]:

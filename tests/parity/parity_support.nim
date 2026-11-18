@@ -58,14 +58,16 @@ const
     "autograd.matmul_ranks", "autograd.singleton_views", "tensor.elementwise_shapes",
     "autograd.unary_math", "autograd.activation_math", "tensor.reduction_edges",
     "autograd.product_gradient", "autograd.cumsum_gradient", "autograd.cumprod_gradient",
-    "tensor.integer_scans", "tensor.integer_reductions", "tensor.float64_reductions"]
+    "tensor.integer_scans", "tensor.integer_reductions", "tensor.float64_reductions",
+    "tensor.mean_dtype"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
     "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
-    "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch", "api:autograd"]
+    "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch", "api:autograd",
+    "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -633,6 +635,116 @@ proc expectFloat64Reductions(expected, inputs: JsonNode) =
       expectFloat64Observation(field(observation, "grad"), logicalShape,
         "float64 scan VJP gradient " & name)
 
+proc meanDtypeOutputShape(shape: seq[int], axis: int): seq[int] =
+  if shape.len == 0: return @[]
+  result = shape
+  var normalized = axis
+  if normalized < 0: normalized += shape.len
+  result[normalized] = 1
+
+proc expectMeanDtypeInputs(inputs: JsonNode) =
+  let names = ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+    "uint64", "float32", "float64", "float64_precision", "uint64_upper", "packed_odd",
+    "transpose", "offset", "reverse", "broadcast", "scalar", "empty"]
+  let integerDtypes = ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
+  require(inputs.kind == JObject and inputs.len == names.len,
+    "mean dtype inputs do not match required cases")
+  for name in names:
+    require(inputs.hasKey(name), "missing mean dtype input " & name)
+    let spec = inputs[name]
+    require(spec.kind == JObject and spec.len == 5, "mean dtype input fields are incomplete for " & name)
+    let expectedDtype = case name
+      of "float32": "float32"
+      of "float64", "float64_precision": "float64"
+      of "uint64_upper", "empty": "uint64"
+      of "packed_odd": "int16"
+      of "transpose": "uint16"
+      of "offset": "uint32"
+      of "reverse", "scalar": "int64"
+      of "broadcast": "uint8"
+      else: name
+    let dtype = text(field(spec, "dtype"), "mean dtype input dtype")
+    require(dtype == expectedDtype, "mean dtype mismatch for " & name)
+    let expectedShape = case name
+      of "offset": @[3, 4]
+      of "reverse": @[5]
+      of "float64_precision", "uint64_upper": @[2]
+      of "packed_odd": @[3, 5]
+      of "broadcast": @[1, 3]
+      of "scalar": @[]
+      of "empty": @[2, 0, 3]
+      else: @[2, 3]
+    require(field(spec, "shape") == jsonShape(expectedShape),
+      "mean dtype input shape mismatch for " & name)
+    let expectedLayout = if name == "float64": "transpose"
+      elif name in ["transpose", "offset", "reverse", "broadcast"]: name
+      else: "identity"
+    require(text(field(spec, "layout"), "mean dtype input layout") == expectedLayout,
+      "mean dtype input layout mismatch for " & name)
+    let expectedAxes = case name
+      of "empty": @[0, 1, 2, -1]
+      of "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+          "uint64", "float32", "float64", "packed_odd", "broadcast": @[0, 1, -1]
+      else: @[0, -1]
+    var axes = newJArray()
+    for axis in expectedAxes: axes.add newJInt(axis)
+    require(field(spec, "axes") == axes, "mean dtype axis coverage mismatch for " & name)
+    if dtype in integerDtypes:
+      expectIntegerWordsInput(spec, "mean dtype " & name, false)
+    else:
+      expectInputTensor(spec)
+
+proc expectMeanDtypeError(node: JsonNode, label: string) =
+  require(node.kind == JObject and node.len == 1 and
+    text(field(node, "error"), label & " error") == "default_dtype_rejected",
+    label & " must record an observed default-dtype rejection")
+
+proc expectMeanDtypeExpected(expected, inputs: JsonNode) =
+  require(expected.kind == JObject and expected.len == inputs.len,
+    "mean dtype observations do not match inputs")
+  for name, spec in inputs:
+    let dtype = spec["dtype"].getStr
+    let integerInput = dtype in ["bool", "int8", "int16", "int32", "int64",
+      "uint8", "uint16", "uint32", "uint64"]
+    let observations = field(expected, name)
+    require(observations.kind == JObject and observations.len == (if integerInput: 3 else: 2),
+      "mean dtype observation groups are incomplete for " & name)
+    let all = field(observations, "all")
+    require(all.kind == JObject and all.len == 2, "mean dtype whole observations are incomplete for " & name)
+    for outputDtype in ["float32", "float64"]:
+      expectTensor(field(all, outputDtype), false, outputDtype)
+      require(field(all[outputDtype], "shape") == newJArray(),
+        "mean dtype whole output must be scalar for " & name)
+
+    let logicalShape = float64LogicalShape(spec, spec["layout"].getStr)
+    let axes = field(observations, "axes")
+    require(axes.kind == JObject and axes.len == spec["axes"].len,
+      "mean dtype axis observations are incomplete for " & name)
+    for axisNode in spec["axes"]:
+      let axis = axisNode.getInt
+      let byDtype = field(axes, $axis)
+      require(byDtype.kind == JObject and byDtype.len == 2,
+        "mean dtype result dtypes are incomplete for " & name & "." & $axis)
+      let outputShape = meanDtypeOutputShape(logicalShape, axis)
+      for outputDtype in ["float32", "float64"]:
+        expectTensor(field(byDtype, outputDtype), false, outputDtype)
+        require(field(byDtype[outputDtype], "shape") == jsonShape(outputShape),
+          "mean dtype axis output must retain reduced dimension for " & name & "." & $axis)
+
+    if integerInput:
+      let defaults = field(observations, "default")
+      require(defaults.kind == JObject and defaults.len == 2,
+        "mean dtype default rejection observations are incomplete for " & name)
+      expectMeanDtypeError(field(defaults, "all"), "mean dtype " & name & " whole")
+      let defaultAxes = field(defaults, "axes")
+      require(defaultAxes.kind == JObject and defaultAxes.len == spec["axes"].len,
+        "mean dtype default axis rejections are incomplete for " & name)
+      for axisNode in spec["axes"]:
+        let axis = $axisNode.getInt
+        expectMeanDtypeError(field(defaultAxes, axis), "mean dtype " & name & "." & axis)
+    else:
+      require(not observations.hasKey("default"), "floating mean dtype input has default rejection data")
+
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
   requireSameReference(data, reference, "fixtures")
@@ -724,6 +836,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
           else: "identity"
         require(text(field(spec, "layout"), "integer reduction layout") == expectedLayout,
           "integer reduction layout mismatch for " & name)
+    of "tensor.mean_dtype":
+      require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
+        "mean dtype fixtures require 1e-6 tolerances")
+      expectMeanDtypeInputs(inputs)
     of "tensor.float64_reductions":
       require(c["atol"].getFloat == 1e-12 and c["rtol"].getFloat == 1e-12,
         "float64 reduction fixtures require 1e-12 tolerances")
@@ -806,6 +922,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
             expectTensor(field(byAxis, key), false, "int64")
     of "tensor.float64_reductions":
       expectFloat64Reductions(expected, inputs)
+    of "tensor.mean_dtype":
+      expectMeanDtypeExpected(expected, inputs)
     else: discard
   require(ids.len == RequiredCaseIds.len, "missing required fixture case")
 

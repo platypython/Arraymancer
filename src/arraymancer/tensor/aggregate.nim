@@ -26,6 +26,7 @@ import  ./data_structure,
         ./private/p_accelerate
 import std / [math, macros]
 import complex except Complex64, Complex32
+import ../laser/compiler_optim_hints
 
 # ### Standard aggregate functions
 # TODO consider using stats from Nim standard lib: https://nim-lang.org/docs/stats.html#standardDeviation,RunningStat
@@ -257,23 +258,15 @@ proc product*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noin
     arg.reduce_axis_inline(axis):
       x.melwise_mul(y)
 
-proc mean*[T: SomeInteger](arg: Tensor[T]): T {.inline.}=
-  ## Compute the mean of all elements
-  ##
-  ## Warning ⚠: Since input is integer, output will also be integer (using integer division)
-  let total = arg.reduce_inline():
-    x+=y
-  total div arg.size.T
+proc mean*[T: SomeInteger or bool](arg: Tensor[T]): T =
+  ## Integer and boolean means require an explicit floating ``dtype``.
+  ## Without one, raise ``ValueError`` rather than perform integer division.
+  raise newException(ValueError, "Mean requires a floating-point or complex dtype")
 
-proc mean*[T: SomeInteger](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}=
-  ## Compute the mean along an axis
-  ##
-  ## Warning ⚠: Since input is integer, output will also be integer (using integer division)
-  let axis = reductionAxis(arg.rank, axis)
-  if arg.rank == 0: return sumAlongAxis(arg, axis)
-  if arg.shape[axis] == 0:
-    raise newException(ValueError, "Integer mean of an empty reduction is undefined")
-  sumAlongAxis(arg, axis) div arg.shape[axis].T
+proc mean*[T: SomeInteger or bool](arg: Tensor[T], axis: int): Tensor[T] =
+  ## Integer and boolean means require an explicit floating ``dtype``.
+  ## Dtype rejection precedes axis validation, including for empty inputs.
+  raise newException(ValueError, "Mean requires a floating-point or complex dtype")
 
 proc mean*[T: SomeFloat](arg: Tensor[T]): T {.inline.}=
   ## Compute the mean of all elements
@@ -303,6 +296,188 @@ proc mean*[T: Complex[float32] or Complex[float64]](arg: Tensor[T], axis: int): 
   if arg.rank == 0: return sumAlongAxis(arg, axis)
   type F = T.T # Get float subtype of Complex[T]
   sumAlongAxis(arg, axis) / complex(arg.shape[axis].F, 0.F)
+
+template convertedMeanValue(value: untyped; U: typedesc): untyped =
+  when typeof(value) is bool: U(ord(value))
+  else: U(value)
+
+proc sumConvertedMeanSpan[T, U](input: ptr UncheckedArray[T], base, count: uint;
+                                dtype: typedesc[U]): U =
+  ## Reduce at most 1024 values; input casts precede any rounding.
+  when T is SomeInteger and
+       (sizeof(T) <= 2 or (U is float64 and sizeof(T) <= 4)):
+    # These inputs are exactly representable in U; bounded integer sums cannot overflow.
+    U(reducePackedIntegers(input, base, count, false))
+  else:
+    var a, b, c, d: U
+    let bulk = count and not 3'u
+    var index = 0'u
+    while index < bulk:
+      a += convertedMeanValue(input[base + index], U)
+      b += convertedMeanValue(input[base + index + 1], U)
+      c += convertedMeanValue(input[base + index + 2], U)
+      d += convertedMeanValue(input[base + index + 3], U)
+      index += 4
+    result = ((a + b) + c) + d
+    while index < count:
+      result += convertedMeanValue(input[base + index], U)
+      inc index
+
+template mergeMeanPartial(bins, blocks, partial: untyped) =
+  # Occupied binary-counter slots were written by an earlier partial.
+  var value = partial
+  var occupied = blocks
+  var level = 0
+  while (occupied and 1'u) != 0:
+    value = bins[level] + value
+    occupied = occupied shr 1
+    inc level
+  bins[level] = value
+  inc blocks
+
+template finishMeanPartials(bins, blocks: untyped): untyped =
+  block:
+    var value: typeof(bins[0])
+    var occupied = blocks
+    var level = 0
+    while occupied != 0:
+      if (occupied and 1'u) != 0:
+        value = bins[level] + value
+      occupied = occupied shr 1
+      inc level
+    value
+
+proc sumCascadedMeanSpan[T, U](input: ptr UncheckedArray[T], base, count: uint;
+                               dtype: typedesc[U]): U =
+  ## Bounded carries avoid losing low bits in long float32 input conversions.
+  when T is bool:
+    # Boolean counts fit int64 and need only one final floating conversion.
+    return U(reducePackedIntegers(input, base, count, false))
+  else:
+    if count <= 1024:
+      return sumConvertedMeanSpan(input, base, count, U)
+    var bins {.noinit.}: array[sizeof(int) * 8, U]
+    var blocks = 0'u
+    var index = 0'u
+    while index < count:
+      let length = min(1024'u, count - index)
+      mergeMeanPartial(bins, blocks,
+                       sumConvertedMeanSpan(input, base + index, length, U))
+      index += length
+    finishMeanPartials(bins, blocks)
+
+template sumConvertedMeanValues(values: untyped; U: typedesc): untyped =
+  block:
+    var bins {.noinit.}: array[sizeof(int) * 8, U]
+    var partials: array[4, U]
+    var blocks = 0'u
+    var position = 0'u
+    for value in values:
+      partials[position and 3'u] += convertedMeanValue(value, U)
+      inc position
+      if position == 128:
+        mergeMeanPartial(bins, blocks,
+                         ((partials[0] + partials[1]) + partials[2]) + partials[3])
+        for partial in partials.mitems: partial = U(0)
+        position = 0
+    if position != 0:
+      mergeMeanPartial(bins, blocks,
+                       ((partials[0] + partials[1]) + partials[2]) + partials[3])
+    finishMeanPartials(bins, blocks)
+
+iterator meanStridedValues[T](input: ptr UncheckedArray[T], base, count, stride: int): T =
+  ## Negative and broadcast strides keep their signed address arithmetic.
+  for position in 0 ..< count:
+    yield input[base + position * stride]
+
+proc meanConvertedAxis[T, U](arg: Tensor[T], axis: int;
+                             dtype: typedesc[U]): Tensor[U] =
+  ## The fresh output is the only buffer; signed input strides remain intact.
+  withCompilerOptimHints()
+  if arg.rank == 0:
+    if arg.size == 0: return newTensor[U](0)
+    let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+    return newTensorWith[U]([], U(0) + convertedMeanValue(input[0], U))
+  var shape = arg.shape
+  shape[axis] = 1
+  let axisLength = arg.shape[axis]
+  if axisLength == 0: return newTensorWith[U](shape, U(NaN))
+  result = newTensorUninit[U](shape)
+  if result.size == 0: return
+  let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+  let output {.restrict.} = cast[ptr UncheckedArray[U]](result.get_offset_ptr)
+  let divisor = U(axisLength)
+  if arg.is_C_contiguous:
+    var outer = 1'u
+    for dimension in 0 ..< axis: outer *= arg.shape[dimension].uint
+    var inner = 1'u
+    for dimension in axis + 1 ..< arg.rank: inner *= arg.shape[dimension].uint
+    let length = axisLength.uint
+    for batch in 0'u ..< outer:
+      let base = batch * length * inner
+      if inner == 1:
+        output[batch] = sumCascadedMeanSpan(input, base, length, U) / divisor
+      elif length > 128:
+        let destination = batch * inner
+        for column in 0'u ..< inner:
+          output[destination + column] = sumConvertedMeanValues(
+            meanStridedValues(input, int(base + column), axisLength, int(inner)), U) / divisor
+      else:
+        let destination = batch * inner
+        for column in 0'u ..< inner:
+          output[destination + column] = U(0)
+        let bulk = length and not 3'u
+        var position = 0'u
+        while position < bulk:
+          let source = base + position * inner
+          for column in 0'u ..< inner:
+            let a = convertedMeanValue(input[source + column], U)
+            let b = convertedMeanValue(input[source + inner + column], U)
+            let c = convertedMeanValue(input[source + 2'u * inner + column], U)
+            let d = convertedMeanValue(input[source + 3'u * inner + column], U)
+            output[destination + column] += ((a + b) + c) + d
+          position += 4
+        while position < length:
+          let source = base + position * inner
+          for column in 0'u ..< inner:
+            output[destination + column] += convertedMeanValue(input[source + column], U)
+          inc position
+        for column in 0'u ..< inner:
+          output[destination + column] /= divisor
+    return
+  for index in 0 ..< result.size:
+    var remainder = index
+    var base = 0
+    for dimension in countdown(arg.rank - 1, 0):
+      if dimension != axis:
+        base += (remainder mod shape[dimension]) * arg.strides[dimension]
+        remainder = remainder div shape[dimension]
+    output[index] = sumConvertedMeanValues(
+      meanStridedValues(input, base, axisLength, arg.strides[axis]), U) / divisor
+
+proc mean*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T];
+                                                dtype: typedesc[U]): U =
+  ## Mean after casting each real input to the requested floating ``dtype``.
+  ## Unsigned inputs convert numerically, including the uint64 upper half.
+  ## Empty inputs produce NaN. No converted input tensor is allocated.
+  when T is U:
+    if arg.is_C_contiguous: return arg.mean
+  if arg.size == 0: return U(NaN)
+  if arg.is_C_contiguous:
+    let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+    return sumCascadedMeanSpan(input, 0'u, arg.size.uint, U) / U(arg.size)
+  sumConvertedMeanValues(arg, U) / U(arg.size)
+
+proc mean*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T], axis: int;
+                                                dtype: typedesc[U]): Tensor[U] =
+  ## Mean in the requested floating dtype, retaining the reduced dimension.
+  ## Negative/scalar axes follow ``mean``; empty reductions produce NaNs.
+  ## Views are cast on read. Only the independent final output is allocated.
+  let axis = reductionAxis(arg.rank, axis)
+  when T is U and (T is float64 or (defined(macosx) and T is float32)):
+    if arg.rank > 0 and arg.size > 0 and arg.is_C_contiguous:
+      return arg.mean(axis)
+  meanConvertedAxis(arg, axis, U)
 
 proc min*[T](arg: Tensor[T]): T =
   ## Compute the min of all elements

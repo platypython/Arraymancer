@@ -143,6 +143,89 @@ proc integerReductions(spec: JsonNode): JsonNode =
       of "uint64": integerReductionCase[uint64](input)
       else: raise newException(ValueError, "unsupported integer reduction dtype: " & input["dtype"].getStr)
 
+proc getFloat32Tensor(desc: JsonNode): Tensor[float32] =
+  let shapeNode = desc["shape"]
+  if shapeNode.len > LASER_MAXRANK: raise newException(ValueError, "input rank exceeds LASER_MAXRANK")
+  var shape = newSeq[int](shapeNode.len)
+  for i in 0 ..< shapeNode.len: shape[i] = shapeNode[i].getInt
+  result = newTensorUninit[float32](toMetadata(shape))
+  let values = desc["values"]
+  if values.len != result.size: raise newException(ValueError, "mean dtype input value count mismatch")
+  var raw = result.unsafe_raw_offset
+  for i in 0 ..< values.len: raw[i] = values[i].getFloat.float32
+
+proc meanDtypeLayout[T](source: Tensor[T], layout: string): Tensor[T] =
+  case layout
+  of "transpose": result = source.transpose
+  of "offset": result = source.transpose[_, 1..^1]
+  of "reverse": result = source[^1..0|-1]
+  of "broadcast": result = source.broadcast(4, 3)
+  else: result = source
+
+proc meanDtypeOutput[T, U](source: Tensor[T], axes: JsonNode, dtype: typedesc[U]): JsonNode =
+  result = newJObject()
+  result["all"] = tensorObservation(newTensorWith[U]([], source.mean(dtype = dtype)))
+  result["axes"] = newJObject()
+  for axisNode in axes:
+    let axis = axisNode.getInt
+    result["axes"][$axis] = tensorObservation(source.mean(axis = axis, dtype = dtype))
+
+proc meanDtypeDefaultRejections[T](source: Tensor[T], axes: JsonNode): JsonNode =
+  result = newJObject()
+  try:
+    discard source.mean
+    result["all"] = %*{"returned": true}
+  except ValueError:
+    result["all"] = %*{"error": "default_dtype_rejected"}
+  result["axes"] = newJObject()
+  for axisNode in axes:
+    let axis = axisNode.getInt
+    try:
+      discard source.mean(axis)
+      result["axes"][$axis] = %*{"returned": true}
+    except ValueError:
+      result["axes"][$axis] = %*{"error": "default_dtype_rejected"}
+
+proc meanDtypeCase[T](spec: JsonNode): JsonNode =
+  var source =
+    when T is float32: getFloat32Tensor(spec)
+    elif T is float64: getTensor(spec)
+    else: getIntegerTensor[T](spec)
+  source = meanDtypeLayout(source, spec["layout"].getStr)
+  let outputs32 = meanDtypeOutput[T, float32](source, spec["axes"], float32)
+  let outputs64 = meanDtypeOutput[T, float64](source, spec["axes"], float64)
+  result = newJObject()
+  result["all"] = newJObject()
+  result["all"]["float32"] = outputs32["all"]
+  result["all"]["float64"] = outputs64["all"]
+  result["axes"] = newJObject()
+  for axisNode in spec["axes"]:
+    let key = $axisNode.getInt
+    result["axes"][key] = newJObject()
+    result["axes"][key]["float32"] = outputs32["axes"][key]
+    result["axes"][key]["float64"] = outputs64["axes"][key]
+  when T is float32 or T is float64:
+    discard
+  else:
+    result["default"] = meanDtypeDefaultRejections(source, spec["axes"])
+
+proc meanDtype(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = case spec["dtype"].getStr
+      of "bool": meanDtypeCase[bool](spec)
+      of "int8": meanDtypeCase[int8](spec)
+      of "int16": meanDtypeCase[int16](spec)
+      of "int32": meanDtypeCase[int32](spec)
+      of "int64": meanDtypeCase[int64](spec)
+      of "uint8": meanDtypeCase[uint8](spec)
+      of "uint16": meanDtypeCase[uint16](spec)
+      of "uint32": meanDtypeCase[uint32](spec)
+      of "uint64": meanDtypeCase[uint64](spec)
+      of "float32": meanDtypeCase[float32](spec)
+      of "float64": meanDtypeCase[float64](spec)
+      else: raise newException(ValueError, "unsupported mean dtype input: " & spec["dtype"].getStr)
+
 
 proc float64Layout(source: Tensor[float64], layout: string): Tensor[float64] =
   case layout
@@ -262,6 +345,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = integerScans(inputs)
   of "tensor.integer_reductions":
     result = integerReductions(inputs)
+  of "tensor.mean_dtype":
+    result = meanDtype(inputs)
   of "tensor.transpose_alias":
     var base = getTensor(inputs["a"])
     var view = base.transpose

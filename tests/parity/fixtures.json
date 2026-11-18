@@ -44914,6 +44914,2705 @@
           }
         }
       }
+    },
+    {
+      "id": "tensor.mean_dtype",
+      "area": "api:torch",
+      "inputs": {
+        "bool": {
+          "dtype": "bool",
+          "shape": [
+            2,
+            3
+          ],
+          "words": [
+            0,
+            1,
+            0,
+            2,
+            -1,
+            0
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "int8": {
+          "dtype": "int8",
+          "shape": [
+            2,
+            3
+          ],
+          "words": [
+            -128,
+            127,
+            -1,
+            1,
+            2,
+            3
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "int16": {
+          "dtype": "int16",
+          "shape": [
+            2,
+            3
+          ],
+          "words": [
+            -32768,
+            32767,
+            -1,
+            1,
+            2,
+            3
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "int32": {
+          "dtype": "int32",
+          "shape": [
+            2,
+            3
+          ],
+          "words": [
+            -2147483648,
+            2147483647,
+            -1,
+            1,
+            2,
+            3
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "int64": {
+          "dtype": "int64",
+          "shape": [
+            2,
+            3
+          ],
+          "words": [
+            -3,
+            4,
+            2,
+            -5,
+            0,
+            1
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "uint8": {
+          "dtype": "uint8",
+          "shape": [
+            2,
+            3
+          ],
+          "words": [
+            0,
+            255,
+            1,
+            2,
+            128,
+            3
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "uint16": {
+          "dtype": "uint16",
+          "shape": [
+            2,
+            3
+          ],
+          "words": [
+            0,
+            65535,
+            1,
+            2,
+            32768,
+            3
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "uint32": {
+          "dtype": "uint32",
+          "shape": [
+            2,
+            3
+          ],
+          "words": [
+            0,
+            4294967295,
+            1,
+            2,
+            2147483648,
+            3
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "uint64": {
+          "dtype": "uint64",
+          "shape": [
+            2,
+            3
+          ],
+          "words": [
+            0,
+            9223372036854775807,
+            -9223372036854775808,
+            -1,
+            -2,
+            1
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "float32": {
+          "dtype": "float32",
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            0.1,
+            -0.2,
+            0.3,
+            -0.4,
+            0.5,
+            -0.6
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "float64": {
+          "dtype": "float64",
+          "shape": [
+            2,
+            3
+          ],
+          "values": [
+            0.1,
+            -1.5,
+            2.0,
+            3.25,
+            4.5,
+            -0.5
+          ],
+          "layout": "transpose",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "float64_precision": {
+          "dtype": "float64",
+          "shape": [
+            2
+          ],
+          "values": [
+            16777217,
+            -16777216
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            -1
+          ]
+        },
+        "uint64_upper": {
+          "dtype": "uint64",
+          "shape": [
+            2
+          ],
+          "words": [
+            -1,
+            -1
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            -1
+          ]
+        },
+        "packed_odd": {
+          "dtype": "int16",
+          "shape": [
+            3,
+            5
+          ],
+          "words": [
+            -7,
+            -6,
+            -5,
+            -4,
+            -3,
+            -2,
+            -1,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "transpose": {
+          "dtype": "uint16",
+          "shape": [
+            2,
+            3
+          ],
+          "words": [
+            0,
+            65535,
+            1,
+            2,
+            32768,
+            3
+          ],
+          "layout": "transpose",
+          "axes": [
+            0,
+            -1
+          ]
+        },
+        "offset": {
+          "dtype": "uint32",
+          "shape": [
+            3,
+            4
+          ],
+          "words": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "layout": "offset",
+          "axes": [
+            0,
+            -1
+          ]
+        },
+        "reverse": {
+          "dtype": "int64",
+          "shape": [
+            5
+          ],
+          "words": [
+            3,
+            -2,
+            0,
+            4,
+            -1
+          ],
+          "layout": "reverse",
+          "axes": [
+            0,
+            -1
+          ]
+        },
+        "broadcast": {
+          "dtype": "uint8",
+          "shape": [
+            1,
+            3
+          ],
+          "words": [
+            2,
+            3,
+            0
+          ],
+          "layout": "broadcast",
+          "axes": [
+            0,
+            1,
+            -1
+          ]
+        },
+        "scalar": {
+          "dtype": "int64",
+          "shape": [],
+          "words": [
+            -1
+          ],
+          "layout": "identity",
+          "axes": [
+            0,
+            -1
+          ]
+        },
+        "empty": {
+          "dtype": "uint64",
+          "shape": [
+            2,
+            0,
+            3
+          ],
+          "words": [],
+          "layout": "identity",
+          "axes": [
+            0,
+            1,
+            2,
+            -1
+          ]
+        }
+      },
+      "atol": 1e-06,
+      "rtol": 1e-06,
+      "expected": {
+        "bool": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                0.5
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.5
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  0.5,
+                  1.0,
+                  0.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  0.5,
+                  1.0,
+                  0.0
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  0.3333333432674408,
+                  0.6666666865348816
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  0.3333333333333333,
+                  0.6666666666666666
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  0.3333333432674408,
+                  0.6666666865348816
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  0.3333333333333333,
+                  0.6666666666666666
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "int8": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                0.6666666865348816
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.6666666666666666
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -63.5,
+                  64.5,
+                  1.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -63.5,
+                  64.5,
+                  1.0
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -0.6666666865348816,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -0.6666666666666666,
+                  2.0
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -0.6666666865348816,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -0.6666666666666666,
+                  2.0
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "int16": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                0.6666666865348816
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.6666666666666666
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -16383.5,
+                  16384.5,
+                  1.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -16383.5,
+                  16384.5,
+                  1.0
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -0.6666666865348816,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -0.6666666666666666,
+                  2.0
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -0.6666666865348816,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -0.6666666666666666,
+                  2.0
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "int32": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                0.8333333134651184
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.6666666666666666
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -1073741824.0,
+                  1073741824.0,
+                  1.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -1073741823.5,
+                  1073741824.5,
+                  1.0
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -0.3333333432674408,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -0.6666666666666666,
+                  2.0
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -0.3333333432674408,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -0.6666666666666666,
+                  2.0
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "int64": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                -0.1666666716337204
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.16666666666666666
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -4.0,
+                  2.0,
+                  1.5
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -4.0,
+                  2.0,
+                  1.5
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  -1.3333333730697632
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  -1.3333333333333333
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  -1.3333333730697632
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  -1.3333333333333333
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "uint8": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                64.83333587646484
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                64.83333333333333
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  191.5,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  191.5,
+                  2.0
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  85.33333587646484,
+                  44.33333206176758
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  85.33333333333333,
+                  44.333333333333336
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  85.33333587646484,
+                  44.33333206176758
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  85.33333333333333,
+                  44.333333333333336
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "uint16": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                16384.833984375
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                16384.833333333332
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  49151.5,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  49151.5,
+                  2.0
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  21845.333984375,
+                  10924.3330078125
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  21845.333333333332,
+                  10924.333333333334
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  21845.333984375,
+                  10924.3330078125
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  21845.333333333332,
+                  10924.333333333334
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "uint32": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                1073741824.0
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1073741824.8333333
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  3221225472.0,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  3221225471.5,
+                  2.0
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1431655808.0,
+                  715827904.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1431655765.3333333,
+                  715827884.3333334
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1431655808.0,
+                  715827904.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1431655765.3333333,
+                  715827884.3333334
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "uint64": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                9.223372036854776e+18
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                9.223372036854776e+18
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  9.223372036854776e+18,
+                  1.3835058055282164e+19,
+                  4.611686018427388e+18
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  9.223372036854776e+18,
+                  1.3835058055282164e+19,
+                  4.611686018427388e+18
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  6.148914874488455e+18,
+                  1.229782974897691e+19
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  6.148914691236517e+18,
+                  1.2297829382473034e+19
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  6.148914874488455e+18,
+                  1.229782974897691e+19
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  6.148914691236517e+18,
+                  1.2297829382473034e+19
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "float32": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                -0.05000000074505806
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -0.05000000322858492
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -0.15000000596046448,
+                  0.15000000596046448,
+                  -0.15000000596046448
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -0.15000000223517418,
+                  0.14999999850988388,
+                  -0.15000000596046448
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  0.06666667014360428,
+                  -0.1666666716337204
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  0.06666667014360428,
+                  -0.16666667660077414
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  0.06666667014360428,
+                  -0.1666666716337204
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  0.06666667014360428,
+                  -0.16666667660077414
+                ]
+              }
+            }
+          }
+        },
+        "float64": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                1.308333396911621
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.3083333333333333
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  2
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  0.20000000298023224,
+                  2.4166667461395264
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  2
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  0.20000000000000004,
+                  2.4166666666666665
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.6749999523162842,
+                  1.5,
+                  0.75
+                ]
+              },
+              "float64": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.675,
+                  1.5,
+                  0.75
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.6749999523162842,
+                  1.5,
+                  0.75
+                ]
+              },
+              "float64": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.675,
+                  1.5,
+                  0.75
+                ]
+              }
+            }
+          }
+        },
+        "float64_precision": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.5
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  0.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  0.5
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  0.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  0.5
+                ]
+              }
+            }
+          }
+        },
+        "uint64_upper": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                1.8446744073709552e+19
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.8446744073709552e+19
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.8446744073709552e+19
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.8446744073709552e+19
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.8446744073709552e+19
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.8446744073709552e+19
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "packed_odd": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.0
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  5
+                ],
+                "numel": 5,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -2.0,
+                  -1.0,
+                  0.0,
+                  1.0,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  5
+                ],
+                "numel": 5,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -2.0,
+                  -1.0,
+                  0.0,
+                  1.0,
+                  2.0
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -5.0,
+                  0.0,
+                  5.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -5.0,
+                  0.0,
+                  5.0
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -5.0,
+                  0.0,
+                  5.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -5.0,
+                  0.0,
+                  5.0
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "transpose": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                16384.833984375
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                16384.833333333332
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  2
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  21845.333984375,
+                  10924.3330078125
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  2
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  21845.333333333332,
+                  10924.333333333334
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  49151.5,
+                  2.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  3,
+                  1
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.0,
+                  49151.5,
+                  2.0
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "offset": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                7.5
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                7.5
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  2
+                ],
+                "numel": 2,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  5.5,
+                  9.5
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  2
+                ],
+                "numel": 2,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  5.5,
+                  9.5
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  4,
+                  1
+                ],
+                "numel": 4,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  6.0,
+                  7.0,
+                  8.0,
+                  9.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  4,
+                  1
+                ],
+                "numel": 4,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  6.0,
+                  7.0,
+                  8.0,
+                  9.0
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "reverse": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                0.800000011920929
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                0.8
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  0.800000011920929
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  0.8
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  0.800000011920929
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1
+                ],
+                "numel": 1,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  0.8
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "broadcast": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                1.6666666269302368
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                1.6666666666666667
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  2.0,
+                  3.0,
+                  0.0
+                ]
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  3
+                ],
+                "numel": 3,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  2.0,
+                  3.0,
+                  0.0
+                ]
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  4,
+                  1
+                ],
+                "numel": 4,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.6666666269302368,
+                  1.6666666269302368,
+                  1.6666666269302368,
+                  1.6666666269302368
+                ]
+              },
+              "float64": {
+                "shape": [
+                  4,
+                  1
+                ],
+                "numel": 4,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.6666666666666667,
+                  1.6666666666666667,
+                  1.6666666666666667,
+                  1.6666666666666667
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  4,
+                  1
+                ],
+                "numel": 4,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  1.6666666269302368,
+                  1.6666666269302368,
+                  1.6666666269302368,
+                  1.6666666269302368
+                ]
+              },
+              "float64": {
+                "shape": [
+                  4,
+                  1
+                ],
+                "numel": 4,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  1.6666666666666667,
+                  1.6666666666666667,
+                  1.6666666666666667,
+                  1.6666666666666667
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "scalar": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                -1.0
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                -1.0
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [],
+                "numel": 1,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -1.0
+                ]
+              },
+              "float64": {
+                "shape": [],
+                "numel": 1,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -1.0
+                ]
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [],
+                "numel": 1,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  -1.0
+                ]
+              },
+              "float64": {
+                "shape": [],
+                "numel": 1,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  -1.0
+                ]
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        },
+        "empty": {
+          "all": {
+            "float32": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float32",
+              "device": "cpu",
+              "values": [
+                "nan"
+              ]
+            },
+            "float64": {
+              "shape": [],
+              "numel": 1,
+              "dtype": "float64",
+              "device": "cpu",
+              "values": [
+                "nan"
+              ]
+            }
+          },
+          "axes": {
+            "0": {
+              "float32": {
+                "shape": [
+                  1,
+                  0,
+                  3
+                ],
+                "numel": 0,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": []
+              },
+              "float64": {
+                "shape": [
+                  1,
+                  0,
+                  3
+                ],
+                "numel": 0,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": []
+              }
+            },
+            "1": {
+              "float32": {
+                "shape": [
+                  2,
+                  1,
+                  3
+                ],
+                "numel": 6,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": [
+                  "nan",
+                  "nan",
+                  "nan",
+                  "nan",
+                  "nan",
+                  "nan"
+                ]
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  1,
+                  3
+                ],
+                "numel": 6,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": [
+                  "nan",
+                  "nan",
+                  "nan",
+                  "nan",
+                  "nan",
+                  "nan"
+                ]
+              }
+            },
+            "2": {
+              "float32": {
+                "shape": [
+                  2,
+                  0,
+                  1
+                ],
+                "numel": 0,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": []
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  0,
+                  1
+                ],
+                "numel": 0,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": []
+              }
+            },
+            "-1": {
+              "float32": {
+                "shape": [
+                  2,
+                  0,
+                  1
+                ],
+                "numel": 0,
+                "dtype": "float32",
+                "device": "cpu",
+                "values": []
+              },
+              "float64": {
+                "shape": [
+                  2,
+                  0,
+                  1
+                ],
+                "numel": 0,
+                "dtype": "float64",
+                "device": "cpu",
+                "values": []
+              }
+            }
+          },
+          "default": {
+            "all": {
+              "error": "default_dtype_rejected"
+            },
+            "axes": {
+              "0": {
+                "error": "default_dtype_rejected"
+              },
+              "1": {
+                "error": "default_dtype_rejected"
+              },
+              "2": {
+                "error": "default_dtype_rejected"
+              },
+              "-1": {
+                "error": "default_dtype_rejected"
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

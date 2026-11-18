@@ -356,11 +356,117 @@ proc main() =
       check: t_c.mean(axis=0) == row_mean.asType(Complex[float64])
       check: t_c.mean(axis=1) == col_mean.asType(Complex[float64])
       let integers = [[-5'i8, 1, 7], [2'i8, 4, 6]].toTensor
-      check integers.mean == 2'i8
-      let integerRows: Tensor[int8] = integers.mean(0)
-      let integerColumns: Tensor[int8] = integers.mean(1)
-      check integerRows == [[-1'i8, 2, 6]].toTensor
-      check integerColumns == [[1'i8], [4'i8]].toTensor
+      expect ValueError: discard integers.mean
+      expect ValueError: discard integers.mean(0)
+      expect ValueError: discard integers.mean(1)
+      check integers.mean(dtype = float64) == 2.5
+      check integers.mean(0, dtype = float64) == [[-1.5, 2.5, 6.5]].toTensor
+      check integers.mean(1, dtype = float32) == [[1'f32], [4'f32]].toTensor
+
+    test "Explicit mean dtypes cast before arithmetic without signed reinterpretation":
+      template checkIntegerMean(T: typedesc) =
+        block:
+          let input = [T(1), T(2), T(4), T(8), T(16)].toTensor
+          expect ValueError: discard input.mean
+          expect ValueError: discard input.mean(99)
+          expect ValueError: discard newTensor[T](0).mean
+          expect ValueError: discard newTensorWith[T]([], T(1)).mean
+          check input.mean(dtype = float32) == 31'f32 / 5'f32
+          check input.mean(dtype = float64) == 31.0 / 5.0
+          check input.reshape(1, 5).mean(1, dtype = float32) ==
+                [[31'f32 / 5'f32]].toTensor
+          check input.reshape(5, 1).mean(0, dtype = float64) ==
+                [[31.0 / 5.0]].toTensor
+      checkIntegerMean(int8)
+      checkIntegerMean(int16)
+      checkIntegerMean(int32)
+      checkIntegerMean(int64)
+      checkIntegerMean(uint8)
+      checkIntegerMean(uint16)
+      checkIntegerMean(uint32)
+      checkIntegerMean(uint64)
+      let flags = [true, false, true, true, false].toTensor
+      expect ValueError: discard flags.mean
+      expect ValueError: discard flags.mean(-99)
+      expect ValueError: discard newTensor[bool](0).mean
+      expect ValueError: discard newTensorWith[bool]([], true).mean
+      check flags.mean(dtype = float32) == 3'f32 / 5'f32
+      check flags.reshape(5, 1).mean(0, dtype = float64) == [[0.6]].toTensor
+      let upper = [high(uint64), 2'u64, 3'u64].toTensor
+      check upper.mean(dtype = float64) == float64(high(uint64)) / 3.0
+      check upper.reshape(3, 1).mean(0, dtype = float64) ==
+            [[float64(high(uint64)) / 3.0]].toTensor
+      let narrow = [16777217.0, -16777216.0].toTensor
+      check narrow.mean(dtype = float32) == 0'f32
+      check narrow.mean(dtype = float64) == 0.5
+      check narrow.reshape(1, 2).mean(1, dtype = float32) == [[0'f32]].toTensor
+      let widen = [16777216'f32, 1'f32, -16777216'f32].toTensor
+      check widen.mean(dtype = float64) == 1.0 / 3.0
+
+    test "Explicit mean dtypes retain view, empty and scalar contracts":
+      let owner = [[1'i64, 2, 3], [4'i64, 5, 6]].toTensor
+      check owner.transpose.mean(dtype = float32) == 3.5'f32
+      check owner.transpose.mean(0, dtype = float64) == [[2.0, 5.0]].toTensor
+      check owner.transpose.mean(1, dtype = float32) ==
+            [[2.5'f32], [3.5'f32], [4.5'f32]].toTensor
+      let reversed = owner[^1..0|-1, _]
+      check reversed.mean(0, dtype = float64) == [[2.5, 3.5, 4.5]].toTensor
+      check reversed.mean(1, dtype = float64) == [[5.0], [2.0]].toTensor
+      let offset = owner[1..1, _]
+      check offset.mean(dtype = float64) == 5.0
+      check offset.mean(1, dtype = float32) == [[5'f32]].toTensor
+      let broadcast = owner[0..0, 0..0].broadcast(3, 5)
+      check broadcast.mean(dtype = float32) == 1'f32
+      check broadcast.mean(0, dtype = float64) == [[1.0, 1, 1, 1, 1]].toTensor
+      var output = offset.mean(0, dtype = float64)
+      output[0, 0] = 99.0
+      check owner == [[1'i64, 2, 3], [4'i64, 5, 6]].toTensor
+      check classify(newTensor[int32](0).mean(dtype = float64)) == fcNan
+      let empty = newTensor[bool](2, 0).mean(1, dtype = float32)
+      check empty.shape == [2, 1]
+      for value in empty: check classify(value) == fcNan
+      check newTensor[uint64](0, 2, 3).mean(1, dtype = float64).shape == [0, 1, 3]
+      let scalar = newTensorWith[bool]([], true)
+      check scalar.mean(dtype = float64) == 1.0
+      for axis in [0, -1]:
+        let value = scalar.mean(axis, dtype = float32)
+        check value.shape.len == 0
+        check value[] == 1'f32
+      for axis in [1, -2]:
+        expect IndexDefect: discard scalar.mean(axis, dtype = float32)
+      check classify([Inf, -Inf].toTensor.mean(dtype = float32)) == fcNan
+      check classify([NaN].toTensor.mean(dtype = float32)) == fcNan
+
+    test "Floating mean identities preserve positive zero before division":
+      template checkMeanZero(T, U: typedesc) =
+        block:
+          let scalar = newTensorWith[T]([], T(-0.0))
+          let pair = [T(-0.0), T(-0.0)].toTensor
+          check scalar.mean(dtype = U).classify == fcZero
+          check pair.mean(dtype = U).classify == fcZero
+          for axis in [0, -1]:
+            check scalar.mean(axis, dtype = U)[].classify == fcZero
+            check pair.mean(axis, dtype = U)[0].classify == fcZero
+      checkMeanZero(float32, float32)
+      checkMeanZero(float32, float64)
+      checkMeanZero(float64, float32)
+      checkMeanZero(float64, float64)
+
+    test "Converted float32 means bound long carries for packed and strided inputs":
+      var input = newTensor[uint16](128, 128)
+      let pattern = [65534'u16, 65535'u16, 1'u16, 2'u16]
+      for row in 0 ..< 128:
+        for column in 0 ..< 128:
+          input[row, column] = pattern[column mod 4]
+      check input.mean(dtype = float32) == 32768'f32
+      check input.transpose.mean(dtype = float32) == 32768'f32
+      check input[^1..0|-1, _].mean(dtype = float32) == 32768'f32
+      check input.asType(float64).transpose.mean(dtype = float32) == 32768'f32
+      let broadcast = [[65535'u16]].toTensor.broadcast(128, 128)
+      check broadcast.mean(dtype = float32) == 65535'f32
+      check broadcast.mean(0, dtype = float32) == newTensorWith[float32]([1, 128], 65535'f32)
+      let longColumns = newTensorWith[uint16]([16384, 2], 65535'u16)
+      check longColumns.mean(0, dtype = float32) == [[65535'f32, 65535'f32]].toTensor
 
     test "Product":
       let a = [[1,2,4],[8,16,32]].toTensor()

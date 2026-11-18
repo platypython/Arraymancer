@@ -104,6 +104,27 @@ suite "Pinned PyTorch conformance foundation":
         malformed["cases"][index]["inputs"]["uint64"] = newJNull()
     expect ValueError: validateFixtureData(malformed, reference)
 
+  test "Reject explicit mean fixtures with invalid scalar, axis or rejection contracts":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var malformed = duplicate(fixtures)
+    for index in 0 ..< malformed["cases"].len:
+      if malformed["cases"][index]["id"].getStr == "tensor.mean_dtype":
+        malformed["cases"][index]["expected"]["bool"]["default"]["all"]["error"] = %"success"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    for index in 0 ..< malformed["cases"].len:
+      if malformed["cases"][index]["id"].getStr == "tensor.mean_dtype":
+        malformed["cases"][index]["expected"]["int8"]["axes"]["0"]["float32"]["shape"] = %*[3]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    for index in 0 ..< malformed["cases"].len:
+      if malformed["cases"][index]["id"].getStr == "tensor.mean_dtype":
+        malformed["cases"][index]["expected"]["float64"]["all"]["float64"]["shape"] = %*[1]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+
   test "Float64 reductions cover CPU layouts, precision, and seeded VJPs":
     let fixtures = loadFixtures(parityRoot & "fixtures.json")
     var float64CaseIndex = -1
