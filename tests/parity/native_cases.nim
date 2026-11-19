@@ -1502,6 +1502,134 @@ proc extrema(inputs: JsonNode): JsonNode =
         else: raise newException(ValueError, "unsupported extrema input dtype")
 
 
+proc extremaGradientNumber[T: SomeFloat](node: JsonNode): T =
+  if node.kind == JString:
+    case node.getStr
+    of "nan": result = T(NaN)
+    of "+inf": result = T(Inf)
+    of "-inf": result = T(NegInf)
+    of "-0": result = T(-0.0)
+    else: raise newException(ValueError, "unknown extrema gradient special value")
+  else:
+    result = T(node.getFloat)
+
+
+proc extremaGradientTensor[T: SomeFloat](shape: Metadata, values: JsonNode): Tensor[T] =
+  result = newTensorUninit[T](shape)
+  if values.kind != JArray or values.len != result.size:
+    raise newException(ValueError, "extrema gradient tensor value count mismatch")
+  var raw = result.unsafe_raw_offset
+  for index in 0 ..< values.len:
+    raw[index] = extremaGradientNumber[T](values[index])
+
+
+proc extremaGradientInput[T: SomeFloat](spec: JsonNode): Tensor[T] =
+  var source: Tensor[T]
+  when T is float32:
+    source = realDtypeFloat32Tensor(spec["x"])
+  else:
+    source = getTensor(spec["x"])
+  extremaSpecials(source, spec["nonfinite"])
+  case spec["layout"].getStr
+  of "transpose", "offset", "reverse", "broadcast":
+    source = realDtypeLayout(source, spec["layout"].getStr)
+  of "permute":
+    source = source.permute(2, 1, 0)
+  of "identity": discard
+  else: raise newException(ValueError, "unknown extrema gradient input layout")
+  result = source
+
+
+proc extremaGradientSeed[T: SomeFloat](shape: Metadata, spec: JsonNode): Tensor[T] =
+  let kind = spec["kind"].getStr
+  case kind
+  of "constant":
+    result = newTensorUninit[T](shape)
+    let value = extremaGradientNumber[T](spec["value"])
+    var raw = result.unsafe_raw_offset
+    for index in 0 ..< result.size: raw[index] = value
+  of "values":
+    result = extremaGradientTensor[T](shape, spec["values"])
+  of "strided_sequence":
+    if shape.len notin [1, 2] or shape[^1] == 0:
+      raise newException(ValueError, "invalid strided extrema gradient seed shape")
+    var backingShape = shape
+    backingShape[^1] *= 2
+    var backing = newTensorUninit[T](backingShape)
+    var raw = backing.unsafe_raw_offset
+    for index in 0 ..< backing.size: raw[index] = T(index)
+    if shape.len == 1:
+      result = backing[0..^1|2]
+    else:
+      result = backing[_, 0..^1|2]
+  else:
+    raise newException(ValueError, "unknown extrema gradient seed kind")
+
+
+proc extremaGradientObservation[T: SomeFloat](t: Tensor[T]): JsonNode =
+  result = tensorObservation(t)
+  var indices = newJArray()
+  for index, value in enumerate(t):
+    if value == T(0):
+      when T is float32:
+        if (cast[uint32](value) shr 31) == 1'u32: indices.add newJInt(index)
+      else:
+        if (cast[uint64](value) shr 63) == 1'u64: indices.add newJInt(index)
+  result["negative_zero_indices"] = indices
+
+proc extremaGradientCase[T: SomeFloat](spec: JsonNode): JsonNode =
+  let source = extremaGradientInput[T](spec)
+  result = newJArray()
+  for request in spec["operations"]:
+    let context = newContext Tensor[T]
+    let x = context.variable(source, requires_grad = true)
+    let dimensions = spec["axes"]
+    let keepdim = request["keepdim"].getBool
+    let output = case request["operation"].getStr
+      of "amin":
+        if dimensions.kind == JNull:
+          x.amin(keepdim = keepdim)
+        elif dimensions.kind == JInt:
+          x.amin(dimensions.getInt, keepdim = keepdim)
+        elif dimensions.kind == JArray:
+          var axes = newSeq[int](dimensions.len)
+          for index in 0 ..< dimensions.len: axes[index] = dimensions[index].getInt
+          x.amin(axes, keepdim = keepdim)
+        else:
+          raise newException(ValueError, "invalid extrema gradient dimensions")
+      of "amax":
+        if dimensions.kind == JNull:
+          x.amax(keepdim = keepdim)
+        elif dimensions.kind == JInt:
+          x.amax(dimensions.getInt, keepdim = keepdim)
+        elif dimensions.kind == JArray:
+          var axes = newSeq[int](dimensions.len)
+          for index in 0 ..< dimensions.len: axes[index] = dimensions[index].getInt
+          x.amax(axes, keepdim = keepdim)
+        else:
+          raise newException(ValueError, "invalid extrema gradient dimensions")
+      else:
+        raise newException(ValueError, "unknown extrema gradient operation")
+    let seed = extremaGradientSeed[T](output.value.shape, spec["seed"])
+    output.backprop(seed)
+    result.add %*{
+      "output": tensorObservation(output.value),
+      "grad": extremaGradientObservation(x.grad),
+    }
+
+
+proc extremaGradientDtype[T: SomeFloat](inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = extremaGradientCase[T](spec)
+
+
+proc extremaGradient(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  result["float32"] = extremaGradientDtype[float32](inputs)
+  result["float64"] = extremaGradientDtype[float64](inputs)
+
+
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
@@ -1563,6 +1691,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
         "reverse_divide": tensorObservation(2.0 /. a),
         "cast": tensorObservation(a.asType(float32)),
         "greater": tensorObservation(a >. 2.0), "isnan": tensorObservation(a.isNaN)}
+  of "autograd.extrema":
+    result = extremaGradient(inputs)
   of "autograd.product_gradient":
     for name, spec in inputs:
       var source = getTensor(spec["x"])

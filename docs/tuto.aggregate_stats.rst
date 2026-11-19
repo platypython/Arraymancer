@@ -149,5 +149,24 @@ axis rejects, but a zero-length output caused by an unreduced axis is valid.
 Nonempty complex and wider unsigned CPU inputs reject; those dtypes can still
 produce empty outputs when all reduced axes have nonzero lengths.
 
+CPU float32/float64 Variables provide the same ``amin``/``amax`` axis and
+``keepdim`` overloads. First-order backward splits each seed equally among
+tied extrema, including signed zeros and infinities:
+
+.. code-block:: nim
+
+  let ctx = newContext Tensor[float64]
+  let tracked = ctx.variable(
+    [[1.0, 1.0, 3.0], [3.0, 3.0, 2.0]].toTensor, requires_grad = true)
+  let minima = tracked.amin(1)
+  minima.backprop([2.0, -3.0].toTensor)
+  echo tracked.grad
+
+Gradients have the input shape and independent storage. Division precedes the
+numeric selection mask, so unselected gradients can be negative zero or NaN
+with nonfinite seeds; NaN reductions produce NaN gradients. Do not mutate the
+input or saved output before backward. Metal extrema gradients and higher-order
+extrema differentiation are not provided.
+
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

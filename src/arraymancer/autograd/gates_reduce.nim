@@ -15,6 +15,7 @@
 import  ../private/ast_utils,
         ../tensor,
         ./autograd_common,
+        ./private/p_extrema_gradient,
         sequtils
 when defined(macosx) and defined(arm64):
   import ../tensor/private/p_accelerate
@@ -670,3 +671,76 @@ proc cumprod*[TT](a: Variable[TT], axis: int = 0): Variable[TT] =
     result.grad = zeros_like(result.value)
     result.requires_grad = true
     register_node("Cumprod", gate, cumprod_backward_ag[TT], result, a)
+
+type ExtremaGate[T] {.final.} = ref object of Gate[Tensor[T]]
+  cachedInput, cachedExtrema: Tensor[T]
+  reduced: Metadata
+
+proc extrema_backward_ag[T: SomeFloat](self: Gate[Tensor[T]];
+    payload: Payload[Tensor[T]]): SmallDiffs[Tensor[T]] =
+  let gate = ExtremaGate[T](self)
+  result = newDiffs[Tensor[T]](1)
+  result[0] = cpuExtremaGradient(gate.cachedInput, gate.cachedExtrema,
+    payload.variable.grad, gate.reduced)
+
+proc extremaVariable[T: SomeFloat](a: Variable[Tensor[T]], axes: openArray[int];
+    keepdim: bool; maximum: static[bool]): Variable[Tensor[T]] =
+  new result
+  result.context = a.context
+  when maximum:
+    result.value = a.value.amax(axes, keepdim)
+  else:
+    result.value = a.value.amin(axes, keepdim)
+  if a.is_grad_needed:
+    var gate: ExtremaGate[T]
+    new gate
+    gate.cachedInput = a.value
+    gate.cachedExtrema = result.value
+    gate.reduced.len = a.value.rank
+    if axes.len == 0:
+      for axis in 0 ..< a.value.rank: gate.reduced[axis] = 1
+    elif a.value.rank > 0:
+      for axis in axes:
+        let normalized = if axis < 0: axis + a.value.rank else: axis
+        gate.reduced[normalized] = 1
+    result.grad = zeros_like(result.value)
+    result.requires_grad = true
+    when maximum:
+      register_node("Amax", gate, extrema_backward_ag[T], result, a)
+    else:
+      register_node("Amin", gate, extrema_backward_ag[T], result, a)
+
+proc amin*[T: SomeFloat](a: Variable[Tensor[T]], keepdim = false): Variable[Tensor[T]] =
+  ## Minimum of all CPU float32/float64 values, returning a rank-zero tensor.
+  ## ``keepdim`` retains all reduced dimensions. First-order backward splits
+  ## the seed evenly between equal minima, preserving masked NaN/-0 arithmetic.
+  ## Saved input/output storage must not be mutated before backward.
+  extremaVariable(a, [], keepdim, false)
+
+proc amax*[T: SomeFloat](a: Variable[Tensor[T]], keepdim = false): Variable[Tensor[T]] =
+  ## Maximum of all CPU float32/float64 values, with tie-splitting first-order VJPs.
+  ## Output and input-shaped gradients own independent storage; ``keepdim`` retains
+  ## reduced axes. Saved input/output storage must not change before backward.
+  extremaVariable(a, [], keepdim, true)
+
+proc amin*[T: SomeFloat](a: Variable[Tensor[T]], axis: int;
+    keepdim = false): Variable[Tensor[T]] =
+  ## Minimum along a positive/negative axis; drop it unless ``keepdim`` is true.
+  ## Scalar and empty-input rules match Tensor ``amin``; backward splits ties.
+  extremaVariable(a, [axis], keepdim, false)
+
+proc amax*[T: SomeFloat](a: Variable[Tensor[T]], axis: int;
+    keepdim = false): Variable[Tensor[T]] =
+  ## Maximum along a positive/negative axis, with independent tie-split gradients.
+  extremaVariable(a, [axis], keepdim, true)
+
+proc amin*[T: SomeFloat](a: Variable[Tensor[T]], axes: openArray[int];
+    keepdim = false): Variable[Tensor[T]] =
+  ## Minimum across distinct axes; an empty list reduces all dimensions.
+  ## Backward divides each upstream value by the number of equal minima.
+  extremaVariable(a, axes, keepdim, false)
+
+proc amax*[T: SomeFloat](a: Variable[Tensor[T]], axes: openArray[int];
+    keepdim = false): Variable[Tensor[T]] =
+  ## Maximum across distinct axes, with dtype-preserving tie-split seeded VJPs.
+  extremaVariable(a, axes, keepdim, true)

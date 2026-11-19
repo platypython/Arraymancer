@@ -490,6 +490,92 @@ suite "Pinned PyTorch conformance foundation":
     expect ValueError: validateFixtureData(malformed, reference)
 
 
+  test "CPU amin and amax gradients match PyTorch seeded VJPs":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var caseIndex = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "autograd.extrema":
+        caseIndex = index
+    doAssert caseIndex >= 0
+    let extremaGradientCase = fixtures["cases"][caseIndex]
+    check extremaGradientCase["area"].getStr == "api:autograd"
+    check extremaGradientCase["atol"].getFloat == 1e-7
+    check extremaGradientCase["rtol"].getFloat == 1e-7
+    let expected = extremaGradientCase["expected"]
+    let actual = runCase(extremaGradientCase)
+    check compareObservations(expected, actual, 1e-7, 1e-7).len == 0
+
+    for dtype in ["float32", "float64"]:
+      check extremaGradientCase["inputs"].len == 21
+      let rowMinimum = actual[dtype]["rows_ties"][0]
+      let minimumGradient = rowMinimum["grad"]
+      check rowMinimum["output"]["shape"] == %*[2]
+      check minimumGradient["values"][0].getFloat == 1.0
+      check minimumGradient["values"][1].getFloat == 1.0
+      check minimumGradient["values"][2].getFloat == 0.0
+      check isNegativeZero(minimumGradient["values"][3])
+      check isNegativeZero(minimumGradient["values"][4])
+      check minimumGradient["values"][5].getFloat == -3.0
+      check minimumGradient["negative_zero_indices"] == %*[3, 4]
+
+      let rowMaximum = actual[dtype]["rows_ties"][2]
+      let maximumGradient = rowMaximum["grad"]
+      check maximumGradient["values"][2].getFloat == 2.0
+      check maximumGradient["values"][3].getFloat == -1.5
+      check maximumGradient["values"][4].getFloat == -1.5
+      check maximumGradient["negative_zero_indices"] == %*[5]
+
+      let nonfiniteMinimum = actual[dtype]["infinite_seed"][0]["grad"]["values"]
+      check nonfiniteMinimum[0].getStr == "+inf"
+      check nonfiniteMinimum[2].getStr == "nan"
+      check nonfiniteMinimum[5].getStr == "-inf"
+      let nonfiniteMaximum = actual[dtype]["infinite_seed"][2]["grad"]["values"]
+      check nonfiniteMaximum[0].getStr == "nan"
+      check nonfiniteMaximum[2].getStr == "+inf"
+      check nonfiniteMaximum[3].getStr == "-inf"
+
+      let scalarNan = actual[dtype]["scalar_nan"][0]
+      check scalarNan["output"]["values"][0].getStr == "nan"
+      check scalarNan["grad"]["shape"] == %*[]
+      check scalarNan["grad"]["values"][0].getStr == "nan"
+
+      check actual[dtype]["empty_outer"][0]["output"]["shape"] == %*[0]
+      check actual[dtype]["empty_outer"][0]["output"]["values"].len == 0
+      check actual[dtype]["empty_outer"][0]["grad"]["shape"] == %*[0, 3]
+      check actual[dtype]["empty_middle"][1]["output"]["shape"] == %*[1, 0, 1]
+      check actual[dtype]["empty_middle"][1]["grad"]["shape"] == %*[2, 0, 3]
+
+      check actual[dtype]["transpose"][0]["grad"]["shape"] == %*[3, 2]
+      check actual[dtype]["offset"][0]["grad"]["shape"] == %*[4, 2]
+      check actual[dtype]["reverse"][0]["grad"]["shape"] == %*[5]
+      check actual[dtype]["broadcast"][0]["grad"]["shape"] == %*[4, 3]
+      check actual[dtype]["permuted"][0]["grad"]["shape"] == %*[3, 8, 4]
+
+      let negativeZeroGradient = actual[dtype]["negative_zero_seed"][0]["grad"]
+      check negativeZeroGradient["negative_zero_indices"] == %*[0, 1, 2, 3, 4, 5]
+      for value in negativeZeroGradient["values"]:
+        check isNegativeZero(value)
+
+    var signMismatch = duplicate(actual)
+    signMismatch["float32"]["rows_ties"][0]["grad"]["negative_zero_indices"] = newJArray()
+    check compareObservations(expected, signMismatch, 1e-7, 1e-7).len > 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["expected"]["float32"]["rows_ties"][0]["grad"][
+      "negative_zero_indices"] = newJArray()
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["expected"]["float32"]["rows_ties"][0]["grad"][
+      "values"].elems[3] = %0.0
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["expected"]["float32"]["rows_ties"][0]["grad"][
+      "negative_zero_indices"] = %*[4, 3]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+
   test "CPU extrema preserve PyTorch shapes, errors, and signed-zero behavior":
     let fixtures = loadFixtures(parityRoot & "fixtures.json")
     var extremaCaseIndex = -1

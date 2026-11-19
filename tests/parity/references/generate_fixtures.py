@@ -732,6 +732,199 @@ def product_gradient(torch: Any) -> dict[str, Any]:
         expected[name] = observations
     return _case("autograd.product_gradient", "api:autograd", inputs, expected)
 
+def extrema_gradient(torch: Any) -> dict[str, Any]:
+    """Observe pinned float32/float64 CPU amin/amax seeded first-order VJPs."""
+    specs: dict[str, dict[str, Any]] = {
+        "rows_ties": {
+            "shape": [2, 3], "values": [1, 1, 3, 3, 3, 2], "axes": 1,
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "values", "values": [2, -3]},
+        },
+        "columns_ties": {
+            "shape": [3, 2], "values": [-2, 4, -2, 4, 1, 3], "axes": 0,
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "multi_axes": {
+            "shape": [2, 3, 2], "values": [index % 3 for index in range(12)], "axes": [0, -1],
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "empty_axes_all": {
+            "shape": [7], "values": [3] * 7, "axes": [],
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "whole": {
+            "shape": [2, 3], "values": [1, 1, 3, 3, 3, 2], "axes": None,
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "nan_row": {
+            "shape": [2, 3], "values": [1, 0, -2, 3, 3, 1], "axes": 1,
+            "layout": "identity", "nonfinite": [{"index": 1, "value": "nan"}],
+            "seed": {"kind": "values", "values": [2, -3]},
+        },
+        "infinite_values": {
+            "shape": [2, 3], "values": [0, 0, 3, 0, 1, 0], "axes": 1,
+            "layout": "identity", "nonfinite": [
+                {"index": 0, "value": "-inf"}, {"index": 1, "value": "-inf"},
+                {"index": 3, "value": "+inf"}, {"index": 5, "value": "+inf"},
+            ],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "infinite_seed": {
+            "shape": [2, 3], "values": [1, 1, 3, 3, 3, 2], "axes": 1,
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "values", "values": ["+inf", "-inf"]},
+        },
+        "negative_zero_seed": {
+            "shape": [2, 3], "values": [1, 1, 3, 3, 3, 2], "axes": 1,
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "constant", "value": "-0"},
+        },
+        "nan_seed": {
+            "shape": [2, 3], "values": [1, 1, 3, 3, 3, 2], "axes": 0,
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "constant", "value": "nan"},
+        },
+        "scalar_negative_zero": {
+            "shape": [], "values": [-0.0], "axes": -1,
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "scalar_nan": {
+            "shape": [], "values": [0], "axes": None,
+            "layout": "identity", "nonfinite": [{"index": 0, "value": "nan"}],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "scalar_infinity": {
+            "shape": [], "values": [0], "axes": 0,
+            "layout": "identity", "nonfinite": [{"index": 0, "value": "+inf"}],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "empty_outer": {
+            "shape": [0, 3], "values": [], "axes": 1,
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "empty_middle": {
+            "shape": [2, 0, 3], "values": [], "axes": [0, 2],
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "transpose": {
+            "shape": [2, 3], "values": [1, 1, 3, 3, 3, 2], "axes": 1,
+            "layout": "transpose", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "offset": {
+            "shape": [3, 4], "values": [index % 3 for index in range(12)], "axes": 0,
+            "layout": "offset", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "reverse": {
+            "shape": [5], "values": [2, 1, 3, 1, 3], "axes": 0,
+            "layout": "reverse", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "broadcast": {
+            "shape": [1, 3], "values": [1, 3, 2], "axes": 0,
+            "layout": "broadcast", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "permuted": {
+            "shape": [4, 8, 3], "values": [index % 7 for index in range(96)], "axes": [0, 1],
+            "layout": "permute", "nonfinite": [],
+            "seed": {"kind": "constant", "value": -3.0},
+        },
+        "strided_seed": {
+            "shape": [2, 3], "values": [1, 1, 3, 3, 3, 2], "axes": 0,
+            "layout": "identity", "nonfinite": [],
+            "seed": {"kind": "strided_sequence"},
+        },
+    }
+    operations = [
+        {"operation": operation, "keepdim": keepdim}
+        for operation in ("amin", "amax")
+        for keepdim in (False, True)
+    ]
+    inputs: dict[str, Any] = {}
+    for name, spec in specs.items():
+        inputs[name] = {
+            "x": {"shape": spec["shape"], "values": spec["values"]},
+            "layout": spec["layout"],
+            "nonfinite": spec["nonfinite"],
+            "axes": spec["axes"],
+            "seed": spec["seed"],
+            "operations": operations,
+        }
+
+    expected: dict[str, Any] = {}
+    for dtype_name in ("float32", "float64"):
+        dtype = getattr(torch, dtype_name)
+        expected[dtype_name] = {}
+        for name, spec in specs.items():
+            source = torch.tensor(spec["values"], dtype=dtype, device="cpu").reshape(spec["shape"])
+            for special in spec["nonfinite"]:
+                source.reshape(-1)[special["index"]] = _extrema_gradient_number(special["value"])
+            layout = spec["layout"]
+            if layout == "transpose":
+                source = source.transpose(0, 1)
+            elif layout == "offset":
+                source = source.transpose(0, 1)[:, 1:]
+            elif layout == "reverse":
+                source = source.flip([0])
+            elif layout == "broadcast":
+                source = source.expand(4, 3)
+            elif layout == "permute":
+                source = source.permute(2, 1, 0)
+
+            observations = []
+            for request in operations:
+                leaf = source.detach().requires_grad_(True)
+                kwargs: dict[str, Any] = {"keepdim": request["keepdim"]}
+                axes = spec["axes"]
+                if axes is not None:
+                    kwargs["dim"] = tuple(axes) if isinstance(axes, list) else axes
+                output = getattr(torch, request["operation"])(leaf, **kwargs)
+                seed_spec = spec["seed"]
+                if seed_spec["kind"] == "constant":
+                    seed = torch.full_like(output, _extrema_gradient_number(seed_spec["value"]))
+                elif seed_spec["kind"] == "values":
+                    seed = torch.tensor(
+                        [_extrema_gradient_number(value) for value in seed_spec["values"]],
+                        dtype=dtype, device="cpu",
+                    ).reshape(output.shape)
+                else:
+                    seed = torch.arange(output.numel() * 2, dtype=dtype, device="cpu")[::2].reshape(
+                        output.shape
+                    )
+                output.backward(seed)
+                observations.append({
+                    "output": _observe(output),
+                    "grad": _observe_extrema_gradient(leaf.grad),
+                })
+            expected[dtype_name][name] = observations
+
+    return _case("autograd.extrema", "api:autograd", inputs, expected, tolerance=1e-7)
+
+
+def _extrema_gradient_number(value: int | float | str) -> float:
+    if isinstance(value, str):
+        return {"nan": float("nan"), "+inf": float("inf"), "-inf": float("-inf"), "-0": -0.0}[value]
+    return float(value)
+
+
+def _observe_extrema_gradient(tensor: Any) -> dict[str, Any]:
+    observation = _observe(tensor)
+    values = tensor.detach().reshape(-1).tolist()
+    observation["negative_zero_indices"] = [
+        index for index, value in enumerate(values)
+        if value == 0 and math.copysign(1.0, float(value)) < 0
+    ]
+    return observation
+
 
 def _scan_gradient(torch: Any, kind: str) -> dict[str, Any]:
     """Observe inclusive scans and seeded VJPs on shared exact inputs."""
@@ -2448,7 +2641,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     slice_overlap, index_select_gradient, mask_select_gradient, axis_mean, reduction_scalars,
     axis_options, broadcast_multiply, broadcast_divide,
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
-    unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
+    unary_math, activation_math, reduction_edges, float64_reductions, product_gradient, extrema_gradient,
     cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,

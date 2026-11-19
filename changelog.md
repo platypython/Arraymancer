@@ -1,6 +1,12 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add CPU float32/float64 seeded ``amin``/``amax`` gradients with equal tie
+  splitting, strided inputs/seeds and independent input-shaped outputs.
+  Match divide-then-mask behavior for NaNs, infinities and signed zeros without
+  allocating mask or count tensors.
+- Preserve negative-zero first contributions and retained intermediate
+  gradients in CPU autograd without overriding explicit leaf initialization.
 - Add dtype-preserving CPU ``amin``/``amax`` tensor reductions with negative or
   multiple axes, optional retained dimensions, and independent outputs.
   Read strided/broadcast views without conversion buffers; preserve NaN

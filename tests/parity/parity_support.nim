@@ -62,8 +62,9 @@ const
     "tensor.mean_dtype", "tensor.sum_dtype", "tensor.cumsum_dtype", "tensor.cumprod_dtype",
     "tensor.prod_dtype", "tensor.integer_output_dtype", "tensor.complex_scans",
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
-    "tensor.complex_prod_dtype", "tensor.extrema"]
-  RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
+    "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema"]
+  RequiredCaseAreas: array[RequiredCaseIds.len, string] = [
+    "api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
@@ -71,7 +72,8 @@ const
     "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
     "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch",
     "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
-    "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch"]
+    "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
+    "api:torch", "api:torch", "api:torch", "api:autograd"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -1987,6 +1989,231 @@ proc expectExtremaExpected(expected, inputs: JsonNode) =
         expectExtremaTensor(observed, outputShape, spec["dtype"].getStr, label)
 
 
+const ExtremaGradientInputNames = [
+  "rows_ties", "columns_ties", "multi_axes", "empty_axes_all", "whole", "nan_row",
+  "infinite_values", "infinite_seed", "negative_zero_seed", "nan_seed", "scalar_negative_zero",
+  "scalar_nan", "scalar_infinity", "empty_outer", "empty_middle", "transpose", "offset",
+  "reverse", "broadcast", "permuted", "strided_seed"]
+
+
+proc extremaGradientInputShape(name: string): seq[int] =
+  case name
+  of "rows_ties", "whole", "nan_row", "infinite_values", "infinite_seed",
+      "negative_zero_seed", "nan_seed", "transpose", "strided_seed":
+    @[2, 3]
+  of "columns_ties": @[3, 2]
+  of "multi_axes": @[2, 3, 2]
+  of "empty_axes_all": @[7]
+  of "scalar_negative_zero", "scalar_nan", "scalar_infinity": @[]
+  of "empty_outer": @[0, 3]
+  of "empty_middle": @[2, 0, 3]
+  of "offset": @[3, 4]
+  of "reverse": @[5]
+  of "broadcast": @[1, 3]
+  of "permuted": @[4, 8, 3]
+  else: invalid("unknown extrema gradient input " & name)
+
+
+proc extremaGradientLayout(name: string): string =
+  case name
+  of "transpose", "offset", "reverse", "broadcast": name
+  of "permuted": "permute"
+  else: "identity"
+
+
+proc extremaGradientDimensions(name: string): JsonNode =
+  case name
+  of "rows_ties", "nan_row", "infinite_values", "infinite_seed", "negative_zero_seed",
+      "transpose", "empty_outer": result = %1
+  of "columns_ties", "offset", "reverse", "broadcast", "strided_seed": result = %0
+  of "multi_axes": result = %*[0, -1]
+  of "empty_middle": result = %*[0, 2]
+  of "permuted": result = %*[0, 1]
+  of "empty_axes_all": result = newJArray()
+  of "whole", "scalar_nan": result = newJNull()
+  of "nan_seed", "scalar_infinity": result = %0
+  of "scalar_negative_zero": result = %(-1)
+  else: invalid("unknown extrema gradient dimensions " & name)
+
+
+proc extremaGradientSpecials(name: string): JsonNode =
+  case name
+  of "nan_row": result = %*[{"index": 1, "value": "nan"}]
+  of "infinite_values":
+    result = %*[{"index": 0, "value": "-inf"}, {"index": 1, "value": "-inf"},
+                {"index": 3, "value": "+inf"}, {"index": 5, "value": "+inf"}]
+  of "scalar_nan": result = %*[{"index": 0, "value": "nan"}]
+  of "scalar_infinity": result = %*[{"index": 0, "value": "+inf"}]
+  else: result = newJArray()
+
+
+proc extremaGradientSeedSpec(name: string): JsonNode =
+  case name
+  of "rows_ties", "nan_row":
+    result = %*{"kind": "values", "values": [2, -3]}
+  of "infinite_seed":
+    result = %*{"kind": "values", "values": ["+inf", "-inf"]}
+  of "negative_zero_seed":
+    result = %*{"kind": "constant", "value": "-0"}
+  of "nan_seed":
+    result = %*{"kind": "constant", "value": "nan"}
+  of "strided_seed":
+    result = %*{"kind": "strided_sequence"}
+  else:
+    result = %*{"kind": "constant", "value": -3.0}
+
+
+proc extremaGradientInputValues(name: string): JsonNode =
+  case name
+  of "rows_ties", "whole", "infinite_seed", "negative_zero_seed", "nan_seed",
+      "transpose", "strided_seed":
+    result = %*[1, 1, 3, 3, 3, 2]
+  of "columns_ties": result = %*[-2, 4, -2, 4, 1, 3]
+  of "multi_axes":
+    result = newJArray()
+    for index in 0 ..< 12: result.add newJInt(index mod 3)
+  of "empty_axes_all": result = %*[3, 3, 3, 3, 3, 3, 3]
+  of "nan_row": result = %*[1, 0, -2, 3, 3, 1]
+  of "infinite_values": result = %*[0, 0, 3, 0, 1, 0]
+  of "scalar_negative_zero":
+    result = newJArray()
+    result.add newJFloat(-0.0)
+  of "scalar_nan", "scalar_infinity": result = %*[0]
+  of "empty_outer", "empty_middle": result = newJArray()
+  of "offset":
+    result = newJArray()
+    for index in 0 ..< 12: result.add newJInt(index mod 3)
+  of "reverse": result = %*[2, 1, 3, 1, 3]
+  of "broadcast": result = %*[1, 3, 2]
+  of "permuted":
+    result = newJArray()
+    for index in 0 ..< 96: result.add newJInt(index mod 7)
+  else: invalid("unknown extrema gradient values " & name)
+
+
+proc extremaGradientOutputShape(shape: seq[int], dimensions: JsonNode,
+                                keepdim: bool): seq[int] =
+  var reduced = newSeq[bool](shape.len)
+  let allAxes = dimensions.kind == JNull or (dimensions.kind == JArray and dimensions.len == 0)
+  if allAxes:
+    for axis in 0 ..< shape.len: reduced[axis] = true
+  elif dimensions.kind == JInt:
+    if shape.len > 0:
+      let axis = if dimensions.getInt < 0: dimensions.getInt + shape.len else: dimensions.getInt
+      reduced[axis] = true
+  else:
+    for dimension in dimensions:
+      if shape.len > 0:
+        let rawAxis = dimension.getInt
+        let axis = if rawAxis < 0: rawAxis + shape.len else: rawAxis
+        reduced[axis] = true
+  for axis, dimension in shape:
+    if reduced[axis]:
+      if keepdim: result.add 1
+    else:
+      result.add dimension
+
+
+proc extremaGradientSourceShape(name: string): seq[int] =
+  result = extremaGradientInputShape(name)
+  case extremaGradientLayout(name)
+  of "transpose": swap(result[0], result[1])
+  of "offset": result = @[result[1], result[0] - 1]
+  of "broadcast": result = @[4, 3]
+  of "permute": result = @[result[2], result[1], result[0]]
+  else: discard
+
+
+proc isNegativeZeroValue(value: JsonNode): bool =
+  value.kind == JFloat and value.getFloat == 0.0 and
+    (cast[uint64](value.getFloat) shr 63) == 1'u64
+
+
+proc expectExtremaGradientTensor(node: JsonNode, shape: seq[int], dtype, label: string,
+                                 gradient: bool) =
+  if gradient:
+    expectExtremaFields(node, ["shape", "numel", "dtype", "device", "values",
+      "negative_zero_indices"], label)
+  else:
+    expectExtremaFields(node, ["shape", "numel", "dtype", "device", "values"], label)
+  expectTensor(node, false, dtype)
+  require(field(node, "shape") == jsonShape(shape), label & " shape mismatch")
+  if gradient:
+    let values = field(node, "values")
+    let indices = field(node, "negative_zero_indices")
+    require(indices.kind == JArray, label & " negative_zero_indices must be an array")
+    var expectedIndices = newJArray()
+    for index in 0 ..< values.len:
+      if isNegativeZeroValue(values[index]): expectedIndices.add newJInt(index)
+    var previous = -1
+    for index in indices:
+      require(index.kind == JInt and index.getInt > previous and index.getInt < values.len,
+        label & " negative_zero_indices must be sorted unique in-range indices")
+      previous = index.getInt
+    require(indices == expectedIndices,
+      label & " negative_zero_indices do not match gradient value sign bits")
+
+
+proc expectExtremaGradientInputs(inputs: JsonNode) =
+  require(inputs.kind == JObject and inputs.len == ExtremaGradientInputNames.len,
+    "extrema gradient inputs do not match required probe cases")
+  var operations = newJArray()
+  for operation in ["amin", "amax"]:
+    for keepdim in [false, true]:
+      operations.add %*{"operation": operation, "keepdim": keepdim}
+  for name in ExtremaGradientInputNames:
+    require(inputs.hasKey(name), "missing extrema gradient input " & name)
+    let spec = field(inputs, name)
+    expectExtremaFields(spec, ["x", "layout", "nonfinite", "axes", "seed", "operations"],
+      "extrema gradient input " & name)
+    let x = field(spec, "x")
+    expectExtremaFields(x, ["shape", "values"], "extrema gradient source " & name)
+    expectInputTensor(x)
+    if name == "scalar_negative_zero":
+      require(isNegativeZeroValue(field(x, "values")[0]),
+        "extrema gradient source negative zero sign mismatch")
+    else:
+      require(field(x, "values") == extremaGradientInputValues(name),
+        "extrema gradient source values mismatch for " & name)
+    require(field(x, "shape") == jsonShape(extremaGradientInputShape(name)),
+      "extrema gradient source shape mismatch for " & name)
+    require(text(field(spec, "layout"), "extrema gradient layout") == extremaGradientLayout(name),
+      "extrema gradient layout mismatch for " & name)
+    require(field(spec, "nonfinite") == extremaGradientSpecials(name),
+      "extrema gradient nonfinite source mismatch for " & name)
+    require(field(spec, "axes") == extremaGradientDimensions(name),
+      "extrema gradient dimensions mismatch for " & name)
+    require(field(spec, "seed") == extremaGradientSeedSpec(name),
+      "extrema gradient seed mismatch for " & name)
+    require(field(spec, "operations") == operations,
+      "extrema gradient operations must cover amin/amax and both keepdim modes for " & name)
+
+
+proc expectExtremaGradientExpected(expected, inputs: JsonNode) =
+  expectExtremaFields(expected, ["float32", "float64"], "extrema gradient dtypes")
+  for dtype in ["float32", "float64"]:
+    let byInput = field(expected, dtype)
+    expectExtremaFields(byInput, ExtremaGradientInputNames, "extrema gradient cases for " & dtype)
+    for name in ExtremaGradientInputNames:
+      let spec = inputs[name]
+      let requests = spec["operations"]
+      let observations = field(byInput, name)
+      require(observations.kind == JArray and observations.len == requests.len,
+        "extrema gradient observations are incomplete for " & dtype & "." & name)
+      let sourceShape = extremaGradientSourceShape(name)
+      for index in 0 ..< requests.len:
+        let request = requests[index]
+        let observed = observations[index]
+        let label = "extrema gradient " & dtype & "." & name & "[" & $index & "]"
+        expectExtremaFields(observed, ["output", "grad"], label)
+        let outputShape = extremaGradientOutputShape(
+          sourceShape, spec["axes"], request["keepdim"].getBool)
+        expectExtremaGradientTensor(field(observed, "output"), outputShape, dtype,
+          label & " output", false)
+        expectExtremaGradientTensor(field(observed, "grad"), sourceShape, dtype,
+          label & " gradient", true)
+
+
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
   requireSameReference(data, reference, "fixtures")
@@ -2063,6 +2290,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "complex product dtype fixtures require 1e-6 tolerances")
       expectComplexProdDtypeInputs(inputs)
+    of "autograd.extrema":
+      require(c["atol"].getFloat == 1e-7 and c["rtol"].getFloat == 1e-7,
+        "extrema gradient fixtures require 1e-7 tolerances")
+      expectExtremaGradientInputs(inputs)
     of "tensor.extrema":
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "extrema fixtures require exact-value tolerances")
@@ -2212,6 +2443,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
           for axis in spec["axes"]:
             let key = if axis.kind == JNull: "all" else: $axis.getInt
             expectTensor(field(byAxis, key), false, "int64")
+    of "autograd.extrema":
+      expectExtremaGradientExpected(expected, inputs)
     of "tensor.extrema":
       expectExtremaExpected(expected, inputs)
     of "tensor.integer_output_dtype":
