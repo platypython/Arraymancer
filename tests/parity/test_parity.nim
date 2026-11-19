@@ -1520,7 +1520,7 @@ suite "Pinned PyTorch conformance foundation":
     for caseData in fixtures["cases"]:
       if caseData["id"].getStr == "tensor.aminmax": aminmaxFixture = caseData
     doAssert aminmaxFixture.kind == JObject
-    check fixtures["cases"].len == 53
+    check fixtures["cases"].len == 54
     check aminmaxFixture["area"].getStr == "api:torch"
     check aminmaxFixture["atol"].getFloat == 0
     check aminmaxFixture["rtol"].getFloat == 0
@@ -1607,4 +1607,99 @@ suite "Pinned PyTorch conformance foundation":
     malformed = duplicate(fixtures)
     malformed["cases"][index]["expected"]["uint16_matrix"]["axis_0_drop"]["error"] =
       %"axis_out_of_range"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+  test "CPU logsumexp oracle parity covers dtype, axes, layout, and special values":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var logsumexpFixture = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.logsumexp": logsumexpFixture = caseData
+    doAssert logsumexpFixture.kind == JObject
+    check fixtures["cases"].len == 54
+    check logsumexpFixture["area"].getStr == "api:torch"
+    check logsumexpFixture["atol"].getFloat == 1e-6
+    check logsumexpFixture["rtol"].getFloat == 1e-6
+    check logsumexpFixture["inputs"].len == 27
+    for dtype in ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16",
+                  "uint32", "uint64", "float32", "float64", "complex64", "complex128"]:
+      check logsumexpFixture["inputs"].hasKey(dtype)
+    for view in ["transpose", "offset", "reverse", "broadcast", "multi_axes",
+                 "scalar_negative_zero", "complex_principal", "empty_reduced",
+                 "empty_outer", "empty_complex", "stable_float32", "nonfinite_float32",
+                 "all_negative_infinity", "complex_nonfinite"]:
+      check logsumexpFixture["inputs"].hasKey(view)
+
+    let actual = runCase(logsumexpFixture)
+    check compareObservations(logsumexpFixture["expected"], actual,
+      logsumexpFixture["atol"].getFloat, logsumexpFixture["rtol"].getFloat).len == 0
+    for name, spec in logsumexpFixture["inputs"]:
+      if spec["dtype"].getStr in ["float64", "complex128"]:
+        check compareObservations(logsumexpFixture["expected"][name],
+          actual[name], 1e-12, 1e-12).len == 0
+    for dtype in ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16",
+                  "uint32", "uint64"]:
+      check actual[dtype]["all_drop"]["dtype"].getStr == "float32"
+    check actual["complex64"]["all_drop"]["dtype"].getStr == "complex64"
+    check actual["complex128"]["all_keep"]["dtype"].getStr == "complex128"
+    check actual["transpose"]["axis_0_drop"]["shape"] == %*[2]
+    check actual["offset"]["axis_-1_keep"]["shape"] == %*[4, 1]
+    check actual["broadcast"]["all_keep"]["shape"] == %*[1, 1]
+    check actual["multi_axes"]["axes_0_2_drop"]["shape"] == %*[3]
+    check actual["scalar_negative_zero"]["all_drop"]["shape"].len == 0
+    check not isNegativeZero(actual["scalar_negative_zero"]["all_drop"]["values"][0])
+    let principal = actual["complex_principal"]["all_drop"]["values"][0]
+    check principal["real"].getFloat > 1.999999 and principal["real"].getFloat < 2.000001
+    check principal["imag"].getFloat > 0.716813 and principal["imag"].getFloat < 0.716816
+    check actual["stable_float32"]["all_drop"]["values"][0].getFloat > 1000.3
+    check actual["stable_float32"]["all_drop"]["values"][0].getFloat < 1000.4
+    check actual["empty_reduced"]["all_drop"]["values"] == %*["-inf"]
+    check actual["empty_reduced"]["axes_empty_drop"]["shape"] == %*[]
+    check actual["empty_reduced"]["axes_empty_drop"]["values"] == %*["-inf"]
+    check actual["empty_reduced"]["axes_empty_keep"]["shape"] == %*[1, 1, 1]
+    check actual["empty_outer"]["axis_0_drop"]["shape"] == %*[3]
+    check actual["empty_outer"]["axis_0_drop"]["values"] == %*["-inf", "-inf", "-inf"]
+    check actual["nonfinite_float32"]["all_drop"]["values"] == %*["nan"]
+    check actual["all_negative_infinity"]["all_drop"]["values"] == %*["-inf"]
+    check actual["complex_nonfinite"]["all_drop"]["dtype"].getStr == "complex128"
+    check actual["empty_complex"]["all_drop"]["values"][0]["real"] == %"-inf"
+    check actual["empty_complex"]["all_drop"]["values"][0]["imag"].getFloat == 0.0
+    check actual["empty_complex"]["all_drop"]["negative_zero"]["imag"].len == 0
+    check actual["float32"]["axes_empty_drop"] == %*{"error": "empty_axes_drop_mismatch"}
+    check actual["float32"]["axes_0_-2_drop"] == %*{"error": "duplicate_axes"}
+    check actual["float32"]["axis_2_drop"] == %*{"error": "invalid_axis"}
+    check actual["scalar_negative_zero"]["axis_1_drop"] == %*{"error": "invalid_axis"}
+
+  test "Reject malformed logsumexp fixture schemas and observations":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "tensor.logsumexp":
+        index = candidate
+    doAssert index >= 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["float32"].delete("requests")
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["multi_axes"]["requests"][0]["id"] = %"all"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["axes_0_-2_drop"]["error"] =
+      %"invalid_axis"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex_principal"]["all_drop"]["dtype"] =
+      %"float32"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["empty_reduced"]["axes_empty_drop"]["shape"] =
+      %*[2, 0]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["stable_float32"]["all_drop"]["extra"] = %true
     expect ValueError: validateFixtureData(malformed, reference)

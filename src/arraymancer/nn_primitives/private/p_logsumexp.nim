@@ -15,7 +15,7 @@
 import  ../../tensor,
         math
 
-# Implements numerically stable logsumexp
+## Provides streaming normalizers for softmax cross-entropy kernels.
 
 # - Classic version: log ∑i exp(xi) = α + log ∑i exp(xi−α)
 # with α = max(xi) for xi in x
@@ -58,45 +58,3 @@ proc stable_softmax*[T](x, max, sumexp: T): T {.noSideEffect, inline.}=
   # Numerically stable streaming softmax helper
   result = exp(x - max) / sumexp
 
-proc logsumexp*[T: SomeFloat](t: Tensor[T]): T =
-  # Advantage:
-  #  - Only one loop over the data
-  #  - Can be done "on-the-fly"
-  # Disadvantage:
-  #  - no parallelization
-  #  - branching in tight loop
-  #
-  # Note: most image problems have less than 1000 classes (or even 100)
-  # However NLP problems may have 50000+ words in dictionary
-  # It would be great to parallelize the one-pass version
-  # (there are parallel running version algorithm we can draw inspiration from)
-
-  # Also as problem size grow, the 1-pass version should scale much better
-  # However so does parallel code. ==> Benchmark needed with low, medium and huge scale problem.
-
-  let (max, sumexp) = t.streaming_max_sumexp
-  result = max + ln(sumexp)
-
-
-# proc logsumexp_classic[T: SomeFloat](t: Tensor[T]): T =
-#   # Advantage:
-#   #  - OpenMP parallel
-#   #  - No branching in a tight loop
-#   # Disadvantage:
-#   #  - Two loops over the data, might be costly if tensor is big
-#   # Note: most image problems have less than 1000 classes (or even 100)
-#   # However NLP problems may have 50000+ words in dictionary
-
-#   let alpha = t.max # first loop over data
-
-#   result = t.fold_inline() do:
-#     # Init first element
-#     x = exp(y - alpha)
-#   do:
-#     # Process next elements
-#     x += exp(y - alpha)
-#   do:
-#     # Merge the partial folds
-#     x += y
-
-#   result = alpha + ln(result)

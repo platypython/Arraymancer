@@ -63,7 +63,7 @@ const
     "tensor.prod_dtype", "tensor.integer_output_dtype", "tensor.complex_scans",
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
     "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema", "tensor.indexed_extrema",
-    "tensor.paired_extrema", "autograd.paired_extrema", "tensor.aminmax"]
+    "tensor.paired_extrema", "autograd.paired_extrema", "tensor.aminmax", "tensor.logsumexp"]
   RequiredCaseAreas: array[RequiredCaseIds.len, string] = [
     "api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
@@ -75,7 +75,7 @@ const
     "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch", "api:torch",
-    "api:autograd", "api:torch"]
+    "api:autograd", "api:torch", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -2884,6 +2884,305 @@ proc expectAminmaxExpected(expected, inputs: JsonNode) =
           field(observed, "distinct").getBool, label & " tuple outputs must be independent")
 
 
+const LogsumexpInputNames = [
+  "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+  "float32", "float64", "complex64", "complex128", "transpose", "offset", "reverse",
+  "broadcast", "multi_axes", "scalar_negative_zero", "complex_principal", "empty_reduced",
+  "empty_outer", "empty_complex", "stable_float32", "nonfinite_float32",
+  "all_negative_infinity", "complex_nonfinite"]
+
+
+proc logsumexpInputDtype(name: string): string =
+  case name
+  of "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+      "uint64", "float32", "float64", "complex64", "complex128": name
+  of "transpose", "empty_outer", "all_negative_infinity": "float64"
+  of "offset": "int32"
+  of "broadcast": "uint8"
+  of "reverse", "multi_axes", "scalar_negative_zero", "empty_reduced",
+      "stable_float32", "nonfinite_float32": "float32"
+  of "complex_principal", "complex_nonfinite", "empty_complex": "complex128"
+  else: invalid("unknown logsumexp input " & name)
+
+
+proc logsumexpInputShape(name: string): seq[int] =
+  case name
+  of "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+      "uint64", "float32", "float64", "complex64", "complex128", "transpose",
+      "nonfinite_float32": @[2, 3]
+  of "offset": @[3, 4]
+  of "reverse", "complex_nonfinite": @[5]
+  of "broadcast": @[1, 3]
+  of "multi_axes": @[2, 3, 2]
+  of "scalar_negative_zero", "complex_principal": @[]
+  of "empty_reduced": @[2, 0, 3]
+  of "empty_outer", "empty_complex": @[0, 3]
+  of "stable_float32": @[2]
+  of "all_negative_infinity": @[3]
+  else: invalid("unknown logsumexp input shape " & name)
+
+
+proc logsumexpInputLayout(name: string): string =
+  if name in ["transpose", "offset", "reverse", "broadcast"]: name
+  else: "identity"
+
+
+proc logsumexpInputPayloadKey(name: string): string =
+  if logsumexpInputDtype(name) in
+      ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]:
+    "words"
+  else:
+    "values"
+
+
+proc logsumexpWholeRequest(id: string, keepdim: bool): JsonNode =
+  result = %*{"id": id, "kind": "whole", "keepdim": keepdim}
+
+
+proc logsumexpAxisRequest(axis: int, keepdim: bool): JsonNode =
+  result = %*{"id": "axis_" & $axis & (if keepdim: "_keep" else: "_drop"),
+    "kind": "axis", "axis": axis, "keepdim": keepdim}
+
+
+proc logsumexpAxesRequest(axes: openArray[int], keepdim: bool): JsonNode =
+  var id = "axes"
+  if axes.len == 0: id.add "_empty"
+  else:
+    for axis in axes: id.add "_" & $axis
+  id.add (if keepdim: "_keep" else: "_drop")
+  result = newJObject()
+  result["id"] = %id
+  result["kind"] = %"axes"
+  result["keepdim"] = %keepdim
+  result["axes"] = newJArray()
+  for axis in axes: result["axes"].add newJInt(axis)
+
+
+proc appendLogsumexpWhole(requests: var JsonNode, keepdim: bool) =
+  requests.add logsumexpWholeRequest("all" & (if keepdim: "_keep" else: "_drop"), keepdim)
+
+
+proc appendLogsumexpAxis(requests: var JsonNode, axis: int, keepdim: bool) =
+  requests.add logsumexpAxisRequest(axis, keepdim)
+
+
+proc appendLogsumexpAxes(requests: var JsonNode, axes: openArray[int], keepdim: bool) =
+  requests.add logsumexpAxesRequest(axes, keepdim)
+
+
+proc logsumexpRequests(name: string): JsonNode =
+  result = newJArray()
+  let profile = if name in ["reverse", "stable_float32", "all_negative_infinity",
+      "complex_nonfinite"]: "vector"
+    elif name == "multi_axes": "multi_axes"
+    elif name in ["scalar_negative_zero", "complex_principal"]: "scalar"
+    elif name in ["empty_outer", "empty_complex"]: "empty_outer"
+    elif name == "empty_reduced": "empty"
+    else: "rank2"
+  case profile
+  of "rank2":
+    appendLogsumexpWhole(result, false); appendLogsumexpWhole(result, true)
+    appendLogsumexpAxis(result, 0, false); appendLogsumexpAxis(result, -1, true)
+    appendLogsumexpAxes(result, @[0, 1], false)
+    appendLogsumexpAxes(result, @[1, 0], true)
+    appendLogsumexpAxes(result, [], false); appendLogsumexpAxes(result, [], true)
+    appendLogsumexpAxis(result, 2, false)
+    appendLogsumexpAxes(result, @[0, -2], false)
+  of "multi_axes":
+    appendLogsumexpWhole(result, false); appendLogsumexpWhole(result, true)
+    appendLogsumexpAxis(result, 1, false)
+    appendLogsumexpAxes(result, @[0, 2], false)
+    appendLogsumexpAxes(result, @[2, 0], true)
+    appendLogsumexpAxes(result, @[0, -1], false)
+    appendLogsumexpAxes(result, [], false); appendLogsumexpAxes(result, [], true)
+    appendLogsumexpAxis(result, 3, false)
+    appendLogsumexpAxes(result, @[0, -3], false)
+  of "scalar":
+    appendLogsumexpWhole(result, false); appendLogsumexpWhole(result, true)
+    appendLogsumexpAxis(result, 0, false); appendLogsumexpAxis(result, -1, true)
+    appendLogsumexpAxes(result, [], false); appendLogsumexpAxes(result, [], true)
+    appendLogsumexpAxis(result, 1, false); appendLogsumexpAxis(result, -2, false)
+  of "empty":
+    appendLogsumexpWhole(result, false); appendLogsumexpWhole(result, true)
+    appendLogsumexpAxis(result, 0, false); appendLogsumexpAxis(result, 1, false)
+    appendLogsumexpAxis(result, 2, true)
+    appendLogsumexpAxes(result, @[1], true); appendLogsumexpAxes(result, @[0, 2], false)
+    appendLogsumexpAxes(result, [], false); appendLogsumexpAxes(result, [], true)
+    appendLogsumexpAxis(result, 3, false); appendLogsumexpAxes(result, @[0, -3], false)
+  of "empty_outer":
+    appendLogsumexpWhole(result, false); appendLogsumexpWhole(result, true)
+    appendLogsumexpAxis(result, 0, false); appendLogsumexpAxis(result, 1, true)
+    appendLogsumexpAxes(result, [], false); appendLogsumexpAxes(result, [], true)
+    appendLogsumexpAxis(result, 2, false)
+  of "vector":
+    appendLogsumexpWhole(result, false); appendLogsumexpWhole(result, true)
+    appendLogsumexpAxis(result, 0, false); appendLogsumexpAxis(result, -1, true)
+    appendLogsumexpAxes(result, [], false); appendLogsumexpAxes(result, [], true)
+    appendLogsumexpAxis(result, 1, false); appendLogsumexpAxes(result, @[0, -1], false)
+  else:
+    invalid("unknown logsumexp request profile " & profile)
+
+
+proc logsumexpNumel(shape: openArray[int]): int =
+  result = 1
+  for dimension in shape:
+    if dimension == 0: return 0
+    require(result <= high(int) div dimension, "logsumexp input shape overflows")
+    result *= dimension
+
+
+proc expectLogsumexpInputs(inputs: JsonNode) =
+  require(inputs.kind == JObject and inputs.len == LogsumexpInputNames.len,
+    "logsumexp inputs do not match required coverage")
+  for name in LogsumexpInputNames:
+    require(inputs.hasKey(name), "missing logsumexp input " & name)
+    let spec = field(inputs, name)
+    let dtype = logsumexpInputDtype(name)
+    let payloadKey = logsumexpInputPayloadKey(name)
+    expectExtremaFields(spec,
+      ["dtype", "shape", "layout", payloadKey, "specials", "requests"],
+      "logsumexp input " & name)
+    require(field(spec, "dtype") == %dtype and
+      field(spec, "shape") == jsonShape(logsumexpInputShape(name)) and
+      field(spec, "layout") == %logsumexpInputLayout(name),
+      "logsumexp input metadata mismatch for " & name)
+    let payload = field(spec, payloadKey)
+    let count = logsumexpNumel(logsumexpInputShape(name))
+    require(payload.kind == JArray and payload.len == count,
+      "logsumexp input payload count mismatch for " & name)
+    if payloadKey == "words":
+      for word in payload:
+        require(word.kind == JInt, "logsumexp integer words must be signed int64 JSON values")
+    elif dtype in ["complex64", "complex128"]:
+      for pair in payload:
+        require(pair.kind == JArray and pair.len == 2,
+          "logsumexp complex values must be real/imaginary pairs")
+        for component in pair:
+          require(component.kind in {JInt, JFloat} and
+            classify(component.getFloat) notin {fcNan, fcInf, fcNegInf},
+            "logsumexp complex source values must be finite")
+    else:
+      for value in payload:
+        require(value.kind in {JInt, JFloat} and
+          classify(value.getFloat) notin {fcNan, fcInf, fcNegInf},
+          "logsumexp real source values must be finite")
+    let specials = field(spec, "specials")
+    let expectedSpecials = case name
+      of "nonfinite_float32":
+        %*[{"index": 0, "value": "-inf"}, {"index": 1, "value": "+inf"},
+           {"index": 2, "value": "nan"}]
+      of "all_negative_infinity":
+        %*[{"index": 0, "value": "-inf"}, {"index": 1, "value": "-inf"},
+           {"index": 2, "value": "-inf"}]
+      of "complex_nonfinite":
+        %*[{"index": 0, "component": "real", "value": "+inf"},
+           {"index": 1, "component": "real", "value": "-inf"},
+           {"index": 2, "component": "imag", "value": "nan"},
+           {"index": 3, "component": "real", "value": "nan"}]
+      else: newJArray()
+    require(specials == expectedSpecials, "logsumexp nonfinite specials mismatch for " & name)
+    require(field(spec, "requests") == logsumexpRequests(name),
+      "logsumexp request schema mismatch for " & name)
+
+
+proc logsumexpLogicalShape(name: string): seq[int] =
+  let shape = logsumexpInputShape(name)
+  case name
+  of "transpose": @[shape[1], shape[0]]
+  of "offset": @[shape[1], shape[0] - 1]
+  of "broadcast": @[4, 3]
+  else: shape
+
+
+proc logsumexpExpectedError(shape: seq[int], request: JsonNode): string =
+  let rank = shape.len
+  let axisLimit = max(1, rank)
+  let kind = request["kind"].getStr
+  if kind == "axis":
+    let axis = request["axis"].getInt
+    if axis < -axisLimit or axis >= axisLimit: return "invalid_axis"
+  elif kind == "axes":
+    let axes = request["axes"]
+    for index in 0 ..< axes.len:
+      let axisNode = axes[index]
+      let axis = axisNode.getInt
+      if axis < -axisLimit or axis >= axisLimit: return "invalid_axis"
+      let normalized = if axis < 0: axis + axisLimit else: axis
+      for prior in 0 ..< index:
+        let previous = axes[prior].getInt
+        if (if previous < 0: previous + axisLimit else: previous) == normalized:
+          return "duplicate_axes"
+    if axes.len == 0 and not request["keepdim"].getBool and
+        rank > 0 and logsumexpNumel(shape) > 0:
+      return "empty_axes_drop_mismatch"
+
+
+proc logsumexpOutputShape(shape: seq[int], request: JsonNode): seq[int] =
+  var reduced = newSeq[bool](shape.len)
+  let kind = request["kind"].getStr
+  if kind == "whole":
+    for index in 0 ..< shape.len: reduced[index] = true
+  elif kind == "axis":
+    var axis = request["axis"].getInt
+    if axis < 0: axis += max(1, shape.len)
+    if shape.len > 0: reduced[axis] = true
+  else:
+    let axes = request["axes"]
+    if axes.len == 0:
+      for index in 0 ..< shape.len: reduced[index] = true
+    else:
+      for axisNode in axes:
+        var axis = axisNode.getInt
+        if axis < 0: axis += max(1, shape.len)
+        if shape.len > 0: reduced[axis] = true
+  if request["keepdim"].getBool:
+    for index, dimension in shape:
+      result.add(if reduced[index]: 1 else: dimension)
+  else:
+    for index, dimension in shape:
+      if not reduced[index]: result.add dimension
+
+
+proc logsumexpOutputDtype(dtype: string): string =
+  if dtype in ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16",
+      "uint32", "uint64"]: "float32"
+  else: dtype
+
+
+proc expectLogsumexpObservation(node: JsonNode, shape: seq[int],
+                               dtype, label: string) =
+  if dtype in ["complex64", "complex128"]:
+    expectComplexObservation(node, shape, dtype, label)
+  else:
+    expectExtremaFields(node, ["shape", "numel", "dtype", "device", "values"], label)
+    expectTensor(node, false, dtype)
+    require(field(node, "shape") == jsonShape(shape), label & " shape mismatch")
+
+
+proc expectLogsumexpExpected(expected, inputs: JsonNode) =
+  expectExtremaFields(expected, LogsumexpInputNames, "logsumexp expected inputs")
+  for name in LogsumexpInputNames:
+    let spec = field(inputs, name)
+    let shape = logsumexpLogicalShape(name)
+    let dtype = logsumexpOutputDtype(logsumexpInputDtype(name))
+    let requests = field(spec, "requests")
+    let byRequest = field(expected, name)
+    require(byRequest.kind == JObject and byRequest.len == requests.len,
+      "logsumexp observations do not match requests for " & name)
+    for request in requests:
+      let requestId = request["id"].getStr
+      let observed = field(byRequest, requestId)
+      let label = "logsumexp " & name & "." & requestId
+      let expectedError = logsumexpExpectedError(shape, request)
+      if expectedError.len > 0:
+        expectExtremaFields(observed, ["error"], label)
+        require(field(observed, "error") == %expectedError,
+          label & " error precedence mismatch")
+      else:
+        expectLogsumexpObservation(observed,
+          logsumexpOutputShape(shape, request), dtype, label)
+
+
 const PairedExtremaGradientInputNames = [
   "ties", "transpose", "reverse", "broadcast", "nan_first", "zero_ties",
   "scalar", "empty", "cube", "offset", "infinities"]
@@ -3173,6 +3472,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "aminmax fixtures require exact-value tolerances")
       expectAminmaxInputs(inputs)
+    of "tensor.logsumexp":
+      require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
+        "logsumexp fixtures require 1e-6 tolerances")
+      expectLogsumexpInputs(inputs)
 
     of "tensor.integer_reductions":
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
@@ -3331,6 +3634,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectPairedExtremaExpected(expected, inputs)
     of "tensor.aminmax":
       expectAminmaxExpected(expected, inputs)
+    of "tensor.logsumexp":
+      expectLogsumexpExpected(expected, inputs)
     of "tensor.integer_output_dtype":
       expectIntegerOutputExpected(expected, inputs)
     of "tensor.float64_reductions":

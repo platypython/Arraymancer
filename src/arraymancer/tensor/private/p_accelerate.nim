@@ -541,6 +541,12 @@ when defined(macosx):
     {.importc, header: "<Accelerate/Accelerate.h>".}
   proc vvlogf*(output, input: ptr float32; count: ptr cint)
     {.importc, header: "<Accelerate/Accelerate.h>".}
+  proc vvexp*(output, input: ptr float64; count: ptr cint)
+    {.importc, header: "<Accelerate/Accelerate.h>".}
+  proc vvsincosf*(sine, cosine, input: ptr float32; count: ptr cint)
+    {.importc, header: "<Accelerate/Accelerate.h>".}
+  proc vvsincos*(sine, cosine, input: ptr float64; count: ptr cint)
+    {.importc, header: "<Accelerate/Accelerate.h>".}
 
   when defined(arm64):
     when defined(clang):

@@ -339936,6 +339936,4759 @@
           }
         }
       }
+    },
+    {
+      "id": "tensor.logsumexp",
+      "area": "api:torch",
+      "inputs": {
+        "bool": {
+          "dtype": "bool",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "words": [
+            0,
+            1,
+            0,
+            1,
+            0,
+            1
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "int8": {
+          "dtype": "int8",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "words": [
+            -128,
+            127,
+            -1,
+            1,
+            2,
+            3
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "int16": {
+          "dtype": "int16",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "words": [
+            -32768,
+            32767,
+            -1,
+            1,
+            2,
+            3
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "int32": {
+          "dtype": "int32",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "words": [
+            -2147483648,
+            2147483647,
+            -1,
+            1,
+            2,
+            3
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "int64": {
+          "dtype": "int64",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "words": [
+            -9223372036854775808,
+            9223372036854775807,
+            -2,
+            1,
+            4,
+            -9
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "uint8": {
+          "dtype": "uint8",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "words": [
+            0,
+            255,
+            1,
+            2,
+            128,
+            3
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "uint16": {
+          "dtype": "uint16",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "words": [
+            0,
+            65535,
+            1,
+            2,
+            40000,
+            3
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "uint32": {
+          "dtype": "uint32",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "words": [
+            0,
+            4294967295,
+            1,
+            2,
+            4294967294,
+            3
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "uint64": {
+          "dtype": "uint64",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "words": [
+            0,
+            -1,
+            1,
+            -9223372036854775801,
+            -9223372036854775808,
+            3
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "float32": {
+          "dtype": "float32",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "values": [
+            0.0,
+            1.0,
+            -1.0,
+            3.0,
+            -4.0,
+            2.0
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "float64": {
+          "dtype": "float64",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "values": [
+            0.0,
+            1.0,
+            -1.0,
+            3.0,
+            -4.0,
+            2.0
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "complex64": {
+          "dtype": "complex64",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "values": [
+            [
+              1.0,
+              0.5
+            ],
+            [
+              -2.0,
+              1.0
+            ],
+            [
+              0.0,
+              -1.0
+            ],
+            [
+              3.0,
+              -0.5
+            ],
+            [
+              0.25,
+              2.0
+            ],
+            [
+              -1.0,
+              0.0
+            ]
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "complex128": {
+          "dtype": "complex128",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "values": [
+            [
+              1.0,
+              -0.5
+            ],
+            [
+              2.0,
+              1.25
+            ],
+            [
+              -3.0,
+              0.75
+            ],
+            [
+              0.5,
+              -2.0
+            ],
+            [
+              -1.0,
+              0.25
+            ],
+            [
+              4.0,
+              1.0
+            ]
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "transpose": {
+          "dtype": "float64",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "transpose",
+          "values": [
+            2.0,
+            -3.0,
+            5.0,
+            7.0,
+            0.0,
+            -1.0
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "offset": {
+          "dtype": "int32",
+          "shape": [
+            3,
+            4
+          ],
+          "layout": "offset",
+          "words": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "reverse": {
+          "dtype": "float32",
+          "shape": [
+            5
+          ],
+          "layout": "reverse",
+          "values": [
+            1.0,
+            -5.0,
+            2.0,
+            0.0,
+            4.0
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_1_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 1
+            },
+            {
+              "id": "axes_0_-1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -1
+              ]
+            }
+          ]
+        },
+        "broadcast": {
+          "dtype": "uint8",
+          "shape": [
+            1,
+            3
+          ],
+          "layout": "broadcast",
+          "words": [
+            2,
+            3,
+            0
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "multi_axes": {
+          "dtype": "float32",
+          "shape": [
+            2,
+            3,
+            2
+          ],
+          "layout": "identity",
+          "values": [
+            -5.0,
+            9.0,
+            8.0,
+            4.0,
+            3.0,
+            2.0,
+            7.0,
+            6.0,
+            1.0,
+            0.0,
+            11.0,
+            -2.0
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_1_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 1
+            },
+            {
+              "id": "axes_0_2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                2
+              ]
+            },
+            {
+              "id": "axes_2_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                2,
+                0
+              ]
+            },
+            {
+              "id": "axes_0_-1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -1
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_3_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 3
+            },
+            {
+              "id": "axes_0_-3_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -3
+              ]
+            }
+          ]
+        },
+        "scalar_negative_zero": {
+          "dtype": "float32",
+          "shape": [],
+          "layout": "identity",
+          "values": [
+            -0.0
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_1_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 1
+            },
+            {
+              "id": "axis_-2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": -2
+            }
+          ]
+        },
+        "complex_principal": {
+          "dtype": "complex128",
+          "shape": [],
+          "layout": "identity",
+          "values": [
+            [
+              2.0,
+              7.0
+            ]
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_1_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 1
+            },
+            {
+              "id": "axis_-2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": -2
+            }
+          ]
+        },
+        "empty_reduced": {
+          "dtype": "float32",
+          "shape": [
+            2,
+            0,
+            3
+          ],
+          "layout": "identity",
+          "values": [],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_1_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 1
+            },
+            {
+              "id": "axis_2_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": 2
+            },
+            {
+              "id": "axes_1_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1
+              ]
+            },
+            {
+              "id": "axes_0_2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                2
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_3_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 3
+            },
+            {
+              "id": "axes_0_-3_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -3
+              ]
+            }
+          ]
+        },
+        "empty_outer": {
+          "dtype": "float64",
+          "shape": [
+            0,
+            3
+          ],
+          "layout": "identity",
+          "values": [],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": 1
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            }
+          ]
+        },
+        "empty_complex": {
+          "dtype": "complex128",
+          "shape": [
+            0,
+            3
+          ],
+          "layout": "identity",
+          "values": [],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": 1
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            }
+          ]
+        },
+        "stable_float32": {
+          "dtype": "float32",
+          "shape": [
+            2
+          ],
+          "layout": "identity",
+          "values": [
+            1000.0,
+            999.0
+          ],
+          "specials": [],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_1_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 1
+            },
+            {
+              "id": "axes_0_-1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -1
+              ]
+            }
+          ]
+        },
+        "nonfinite_float32": {
+          "dtype": "float32",
+          "shape": [
+            2,
+            3
+          ],
+          "layout": "identity",
+          "values": [
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0
+          ],
+          "specials": [
+            {
+              "index": 0,
+              "value": "-inf"
+            },
+            {
+              "index": 1,
+              "value": "+inf"
+            },
+            {
+              "index": 2,
+              "value": "nan"
+            }
+          ],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_0_1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                1
+              ]
+            },
+            {
+              "id": "axes_1_0_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": [
+                1,
+                0
+              ]
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_2_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 2
+            },
+            {
+              "id": "axes_0_-2_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -2
+              ]
+            }
+          ]
+        },
+        "all_negative_infinity": {
+          "dtype": "float64",
+          "shape": [
+            3
+          ],
+          "layout": "identity",
+          "values": [
+            0.0,
+            1.0,
+            2.0
+          ],
+          "specials": [
+            {
+              "index": 0,
+              "value": "-inf"
+            },
+            {
+              "index": 1,
+              "value": "-inf"
+            },
+            {
+              "index": 2,
+              "value": "-inf"
+            }
+          ],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_1_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 1
+            },
+            {
+              "id": "axes_0_-1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -1
+              ]
+            }
+          ]
+        },
+        "complex_nonfinite": {
+          "dtype": "complex128",
+          "shape": [
+            5
+          ],
+          "layout": "identity",
+          "values": [
+            [
+              1.0,
+              0.0
+            ],
+            [
+              2.0,
+              1.0
+            ],
+            [
+              3.0,
+              -1.0
+            ],
+            [
+              4.0,
+              2.0
+            ],
+            [
+              5.0,
+              0.5
+            ]
+          ],
+          "specials": [
+            {
+              "index": 0,
+              "component": "real",
+              "value": "+inf"
+            },
+            {
+              "index": 1,
+              "component": "real",
+              "value": "-inf"
+            },
+            {
+              "index": 2,
+              "component": "imag",
+              "value": "nan"
+            },
+            {
+              "index": 3,
+              "component": "real",
+              "value": "nan"
+            }
+          ],
+          "requests": [
+            {
+              "id": "all_drop",
+              "kind": "whole",
+              "keepdim": false
+            },
+            {
+              "id": "all_keep",
+              "kind": "whole",
+              "keepdim": true
+            },
+            {
+              "id": "axis_0_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 0
+            },
+            {
+              "id": "axis_-1_keep",
+              "kind": "axis",
+              "keepdim": true,
+              "axis": -1
+            },
+            {
+              "id": "axes_empty_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": []
+            },
+            {
+              "id": "axes_empty_keep",
+              "kind": "axes",
+              "keepdim": true,
+              "axes": []
+            },
+            {
+              "id": "axis_1_drop",
+              "kind": "axis",
+              "keepdim": false,
+              "axis": 1
+            },
+            {
+              "id": "axes_0_-1_drop",
+              "kind": "axes",
+              "keepdim": false,
+              "axes": [
+                0,
+                -1
+              ]
+            }
+          ]
+        }
+      },
+      "atol": 1e-06,
+      "rtol": 1e-06,
+      "expected": {
+        "bool": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2.4118738174438477
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2.4118738174438477
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.31326162815094,
+              1.31326162815094,
+              1.31326162815094
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.55144464969635,
+              1.861994743347168
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2.4118738174438477
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2.4118738174438477
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2.4118738174438477
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "int8": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              127.0
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              127.0
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.0,
+              127.0,
+              3.0181498527526855
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              127.0,
+              3.4076058864593506
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              127.0
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              127.0
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              127.0
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "int16": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              32767.0
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              32767.0
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.0,
+              32767.0,
+              3.0181498527526855
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              32767.0,
+              3.4076058864593506
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              32767.0
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              32767.0
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              32767.0
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "int32": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2147483648.0
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2147483648.0
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.0,
+              2147483648.0,
+              3.0181498527526855
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2147483648.0,
+              3.4076058864593506
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2147483648.0
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2147483648.0
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2147483648.0
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "int64": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              9.223372036854776e+18
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              9.223372036854776e+18
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.0,
+              9.223372036854776e+18,
+              -1.9990885257720947
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              9.223372036854776e+18,
+              4.048589706420898
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              9.223372036854776e+18
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              9.223372036854776e+18
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              9.223372036854776e+18
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "uint8": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              255.0
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              255.0
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2.1269280910491943,
+              255.0,
+              3.1269280910491943
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              255.0,
+              128.0
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              255.0
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              255.0
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              255.0
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "uint16": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              65535.0
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              65535.0
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2.1269280910491943,
+              65535.0,
+              3.1269280910491943
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              65535.0,
+              40000.0
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              65535.0
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              65535.0
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              65535.0
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "uint32": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4294967296.0
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4294967296.0
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              2.1269280910491943,
+              4294967296.0,
+              3.1269280910491943
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4294967296.0,
+              4294967296.0
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4294967296.0
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4294967296.0
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4294967296.0
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "uint64": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.8446744073709552e+19
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.8446744073709552e+19
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              9.223372036854776e+18,
+              1.8446744073709552e+19,
+              3.1269280910491943
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.8446744073709552e+19,
+              9.223372036854776e+18
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.8446744073709552e+19
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.8446744073709552e+19
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.8446744073709552e+19
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "float32": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              3.4524946212768555
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              3.4524946212768555
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              3.0485873222351074,
+              1.0067152976989746,
+              2.0485873222351074
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1.4076058864593506,
+              3.3139281272888184
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              3.4524946212768555
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              3.4524946212768555
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              3.4524946212768555
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "float64": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              3.4524945571790298
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              3.4524945571790298
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              3.048587351573742,
+              1.006715348489118,
+              2.048587351573742
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              1.4076059644443804,
+              3.313928104546676
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              3.4524945571790298
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              3.4524945571790298
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              3.4524945571790298
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "complex64": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex64",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 3.0876975059509277,
+                "imag": -0.3679150938987732
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex64",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 3.0876975059509277,
+                "imag": -0.3679150938987732
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "complex64",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 3.076171398162842,
+                "imag": -0.3942747712135315
+              },
+              {
+                "real": 0.30889326333999634,
+                "imag": 1.9162843227386475
+              },
+              {
+                "real": 0.21357008814811707,
+                "imag": -0.7472886443138123
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "complex64",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 1.1163488626480103,
+                "imag": 0.18963585793972015
+              },
+              {
+                "real": 2.9654126167297363,
+                "imag": -0.45128530263900757
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex64",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 3.0876975059509277,
+                "imag": -0.3679150938987732
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex64",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 3.0876975059509277,
+                "imag": -0.3679150938987732
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex64",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 3.0876975059509277,
+                "imag": -0.3679150938987732
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "complex128": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 4.105130434597467,
+                "imag": 0.9772590155313847
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 4.105130434597467,
+                "imag": 0.9772590155313847
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 1.1870518893082467,
+                "imag": -1.0256747735881064
+              },
+              {
+                "real": 2.0273761243841655,
+                "imag": 1.2092256782430553
+              },
+              {
+                "real": 4.000883169080851,
+                "imag": 0.9997745959472608
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 2.0087352422578095,
+                "imag": 0.8795422519561278
+              },
+              {
+                "real": 3.974759214667709,
+                "imag": 0.9909192404577148
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 4.105130434597467,
+                "imag": 0.9772590155313847
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 4.105130434597467,
+                "imag": 0.9772590155313847
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 4.105130434597467,
+                "imag": 0.9772590155313847
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "transpose": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              7.133976521454037
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              7.133976521454037
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              2
+            ],
+            "numel": 2,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              5.048906853547406,
+              7.001246567305486
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              7.006715348489118,
+              0.048587351573741965,
+              5.00247568513773
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              7.133976521454037
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              7.133976521454037
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              7.133976521454037
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "offset": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              11.45833969116211
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              11.45833969116211
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              2
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              7.440189838409424,
+              11.440189361572266
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              4,
+              1
+            ],
+            "numel": 4,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              8.018150329589844,
+              9.018150329589844,
+              10.018150329589844,
+              11.018150329589844
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              11.45833969116211
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              11.45833969116211
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              11.45833969116211
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "reverse": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.1852850914001465
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.1852850914001465
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.1852850914001465
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.1852850914001465
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.1852850914001465
+            ]
+          },
+          "axis_1_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-1_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "broadcast": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.735306739807129
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.735306739807129
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              3.386294364929199,
+              4.386294364929199,
+              1.3862943649291992
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              4,
+              1
+            ],
+            "numel": 4,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              3.3490121364593506,
+              3.3490121364593506,
+              3.3490121364593506,
+              3.3490121364593506
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.735306739807129
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.735306739807129
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.735306739807129
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "multi_axes": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              11.191950798034668
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              11.191950798034668
+            ]
+          },
+          "axis_1_drop": {
+            "shape": [
+              2,
+              2
+            ],
+            "numel": 4,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              8.006717681884766,
+              9.007620811462402,
+              11.018194198608398,
+              6.002810001373291
+            ]
+          },
+          "axes_0_2_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              9.169846534729004,
+              8.019373893737793,
+              11.000460624694824
+            ]
+          },
+          "axes_2_0_keep": {
+            "shape": [
+              1,
+              3,
+              1
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              9.169846534729004,
+              8.019373893737793,
+              11.000460624694824
+            ]
+          },
+          "axes_0_-1_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              9.169846534729004,
+              8.019373893737793,
+              11.000460624694824
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              11.191950798034668
+            ]
+          },
+          "axis_3_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-3_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "scalar_negative_zero": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              0.0
+            ]
+          },
+          "all_keep": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              0.0
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              0.0
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              0.0
+            ]
+          },
+          "axes_empty_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              0.0
+            ]
+          },
+          "axes_empty_keep": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              0.0
+            ]
+          },
+          "axis_1_drop": {
+            "error": "invalid_axis"
+          },
+          "axis_-2_drop": {
+            "error": "invalid_axis"
+          }
+        },
+        "complex_principal": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 2.0,
+                "imag": 0.7168146928204135
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "all_keep": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 2.0,
+                "imag": 0.7168146928204135
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_0_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 2.0,
+                "imag": 0.7168146928204135
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_-1_keep": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 2.0,
+                "imag": 0.7168146928204135
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_empty_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 2.0,
+                "imag": 0.7168146928204135
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_empty_keep": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": 2.0,
+                "imag": 0.7168146928204135
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_1_drop": {
+            "error": "invalid_axis"
+          },
+          "axis_-2_drop": {
+            "error": "invalid_axis"
+          }
+        },
+        "empty_reduced": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              0,
+              3
+            ],
+            "numel": 0,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": []
+          },
+          "axis_1_drop": {
+            "shape": [
+              2,
+              3
+            ],
+            "numel": 6,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "-inf",
+              "-inf",
+              "-inf",
+              "-inf",
+              "-inf",
+              "-inf"
+            ]
+          },
+          "axis_2_keep": {
+            "shape": [
+              2,
+              0,
+              1
+            ],
+            "numel": 0,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": []
+          },
+          "axes_1_keep": {
+            "shape": [
+              2,
+              1,
+              3
+            ],
+            "numel": 6,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "-inf",
+              "-inf",
+              "-inf",
+              "-inf",
+              "-inf",
+              "-inf"
+            ]
+          },
+          "axes_0_2_drop": {
+            "shape": [
+              0
+            ],
+            "numel": 0,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": []
+          },
+          "axes_empty_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "axis_3_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-3_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "empty_outer": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "-inf",
+              "-inf",
+              "-inf"
+            ]
+          },
+          "axis_1_keep": {
+            "shape": [
+              0,
+              1
+            ],
+            "numel": 0,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": []
+          },
+          "axes_empty_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          }
+        },
+        "empty_complex": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": "-inf",
+                "imag": 0.0
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": "-inf",
+                "imag": 0.0
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": "-inf",
+                "imag": 0.0
+              },
+              {
+                "real": "-inf",
+                "imag": 0.0
+              },
+              {
+                "real": "-inf",
+                "imag": 0.0
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_1_keep": {
+            "shape": [
+              0,
+              1
+            ],
+            "numel": 0,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_empty_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": "-inf",
+                "imag": 0.0
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": "-inf",
+                "imag": 0.0
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          }
+        },
+        "stable_float32": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1000.313232421875
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1000.313232421875
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1000.313232421875
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1000.313232421875
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              1000.313232421875
+            ]
+          },
+          "axis_1_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-1_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "nonfinite_float32": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "nan"
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "nan"
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [
+              3
+            ],
+            "numel": 3,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              4.0,
+              "+inf",
+              "nan"
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              2,
+              1
+            ],
+            "numel": 2,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "nan",
+              6.40760612487793
+            ]
+          },
+          "axes_0_1_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "nan"
+            ]
+          },
+          "axes_1_0_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "nan"
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1,
+              1
+            ],
+            "numel": 1,
+            "dtype": "float32",
+            "device": "cpu",
+            "values": [
+              "nan"
+            ]
+          },
+          "axis_2_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-2_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "all_negative_infinity": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "all_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "axis_0_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "axis_-1_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "float64",
+            "device": "cpu",
+            "values": [
+              "-inf"
+            ]
+          },
+          "axis_1_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-1_drop": {
+            "error": "duplicate_axes"
+          }
+        },
+        "complex_nonfinite": {
+          "all_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": "nan",
+                "imag": "nan"
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "all_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": "nan",
+                "imag": "nan"
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_0_drop": {
+            "shape": [],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": "nan",
+                "imag": "nan"
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_-1_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": "nan",
+                "imag": "nan"
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axes_empty_drop": {
+            "error": "empty_axes_drop_mismatch"
+          },
+          "axes_empty_keep": {
+            "shape": [
+              1
+            ],
+            "numel": 1,
+            "dtype": "complex128",
+            "device": "cpu",
+            "values": [
+              {
+                "real": "nan",
+                "imag": "nan"
+              }
+            ],
+            "negative_zero": {
+              "real": [],
+              "imag": []
+            }
+          },
+          "axis_1_drop": {
+            "error": "invalid_axis"
+          },
+          "axes_0_-1_drop": {
+            "error": "duplicate_axes"
+          }
+        }
+      }
     }
   ]
 }

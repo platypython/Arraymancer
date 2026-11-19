@@ -236,3 +236,29 @@ output-buffer or low-precision overloads are provided.
 
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.
+
+Logarithmic reductions
+---------------------
+
+``logsumexp`` computes a stable ``log(sum(exp(x)))`` without materializing
+shifted or exponential tensors:
+
+.. code-block:: nim
+
+  let normalizer = scores.logsumexp(1)  # Remove axis 1.
+  let total = scores.logsumexp()       # Return a scalar tensor.
+  let retained = scores.logsumexp([0, 1], keepdim = true)
+
+Integer and bool inputs promote numerically to float32, including high unsigned
+values. Float32/float64 and complex64/complex128 preserve their dtype. Complex
+results use the principal logarithm: even a scalar's imaginary phase can wrap.
+Signed, offset and broadcast views are read directly; results own independent
+storage. Reduced empty axes yield negative infinity, while retained empty axes
+produce empty outputs. Duplicate or invalid axes reject.
+
+An explicit empty axis list reduces all axes. Matching the pinned PyTorch
+broadcast behavior, nonempty positive-rank inputs require ``keepdim = true``
+for that spelling; use the no-axis overload for a dropped whole result.
+This CPU forward API does not provide autograd, Metal, output-buffer or
+low-precision overloads.
+

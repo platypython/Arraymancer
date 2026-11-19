@@ -26,7 +26,8 @@ import  ./data_structure,
         ./private/p_accelerate,
         ./private/p_extrema,
         ./private/p_argextrema,
-        ./private/p_aminmax
+        ./private/p_aminmax,
+        ./private/p_logsumexp
 import std / [math, macros]
 import complex except Complex64, Complex32
 import ../laser/compiler_optim_hints
@@ -1012,6 +1013,31 @@ proc std*[T: SomeFloat](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.} 
   ## The normalization is by the (n-1), like in the formal definition
   returnEmptyIfEmpty(arg)
   sqrt(arg.variance(axis))
+
+proc logsumexp*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    keepdim = false): Tensor[logsumexpDtype(T)] =
+  ## Return an independent tensor containing log(sum(exp(arg))) over all elements.
+  ## Integer/bool inputs promote numerically to float32; float/complex keep dtype.
+  ## Stabilization uses the maximum real component. Empty reductions yield -Inf;
+  ## complex outputs use the principal logarithm, including for scalar inputs.
+  ## The result is scalar unless ``keepdim`` retains singleton input dimensions.
+  ## Signed/broadcast views are read directly; only the final tensor is allocated.
+  reduceLogsumexp(arg, [], true, keepdim)
+
+proc logsumexp*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int;
+    keepdim = false): Tensor[logsumexpDtype(T)] =
+  ## Reduce one axis, removing it unless ``keepdim``. Negative axes normalize;
+  ## scalars accept 0/-1 and remain scalar. Empty reduced axes yield -Inf.
+  ## Output dtype, stability, complex phase and allocation match whole logsumexp.
+  reduceLogsumexp(arg, [axis], false, keepdim)
+
+proc logsumexp*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    axes: openArray[int]; keepdim = false): Tensor[logsumexpDtype(T)] =
+  ## Reduce distinct axes simultaneously, retaining them as ones with ``keepdim``.
+  ## An empty axis list means all axes; matching the pinned PyTorch broadcast
+  ## contract, nonempty positive-rank inputs require ``keepdim`` for that spelling.
+  ## Invalid or duplicate normalized axes reject, including on empty inputs.
+  reduceLogsumexp(arg, axes, false, keepdim)
 
 proc maxWithIndices*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int;
     keepdim = false): tuple[values: Tensor[T], indices: Tensor[int64]] =

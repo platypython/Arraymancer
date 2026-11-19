@@ -2103,6 +2103,119 @@ proc aminmax(inputs: JsonNode): JsonNode =
       else: raise newException(ValueError, "unsupported aminmax dtype: " & spec["dtype"].getStr)
 
 
+proc logsumexpInputTensor[T](spec: JsonNode): Tensor[T] =
+  var source =
+    when T is Complex[float32] or T is Complex[float64]: getComplexTensor[T](spec)
+    elif T is float32: realDtypeFloat32Tensor(spec)
+    elif T is float64: getTensor(spec)
+    else: getIntegerTensor[T](spec)
+  if spec["specials"].len > 0:
+    when T is Complex[float32] or T is Complex[float64]:
+      complexScanSpecials(source, spec["specials"])
+    elif T is SomeFloat:
+      realDtypeSpecials(source, spec["specials"])
+    else:
+      raise newException(ValueError, "integer logsumexp input cannot contain nonfinite values")
+  result = realDtypeLayout(source, spec["layout"].getStr)
+
+
+proc logsumexpExpectedNativeError[T](source: Tensor[T],
+                                     request: JsonNode): string =
+  let rank = source.shape.len
+  let axisLimit = max(1, rank)
+  let kind = request["kind"].getStr
+  if kind == "axis":
+    let axis = request["axis"].getInt
+    if axis < -axisLimit or axis >= axisLimit: return "invalid_axis"
+  elif kind == "axes":
+    let axes = request["axes"]
+    for index in 0 ..< axes.len:
+      let axisNode = axes[index]
+      let axis = axisNode.getInt
+      if axis < -axisLimit or axis >= axisLimit: return "invalid_axis"
+      let normalized = if axis < 0: axis + axisLimit else: axis
+      for prior in 0 ..< index:
+        let previous = axes[prior].getInt
+        if (if previous < 0: previous + axisLimit else: previous) == normalized:
+          return "duplicate_axes"
+    if axes.len == 0 and not request["keepdim"].getBool and
+        rank > 0 and source.size > 0:
+      return "empty_axes_drop_mismatch"
+
+
+proc logsumexpApply[T](source: Tensor[T], request: JsonNode): JsonNode =
+  let kind = request["kind"].getStr
+  let keepdim = request["keepdim"].getBool
+  when T is bool or T is SomeInteger or T is SomeFloat:
+    case kind
+    of "whole":
+      result = tensorObservation(source.logsumexp(keepdim = keepdim))
+    of "axis":
+      result = tensorObservation(source.logsumexp(
+        axis = request["axis"].getInt, keepdim = keepdim))
+    of "axes":
+      var axes = newSeq[int](request["axes"].len)
+      for index in 0 ..< axes.len: axes[index] = request["axes"][index].getInt
+      result = tensorObservation(source.logsumexp(axes = axes, keepdim = keepdim))
+    else:
+      raise newException(ValueError, "unknown logsumexp request kind: " & kind)
+  elif T is Complex[float32] or T is Complex[float64]:
+    case kind
+    of "whole":
+      result = complexTensorObservation(source.logsumexp(keepdim = keepdim))
+    of "axis":
+      result = complexTensorObservation(source.logsumexp(
+        axis = request["axis"].getInt, keepdim = keepdim))
+    of "axes":
+      var axes = newSeq[int](request["axes"].len)
+      for index in 0 ..< axes.len: axes[index] = request["axes"][index].getInt
+      result = complexTensorObservation(source.logsumexp(axes = axes, keepdim = keepdim))
+    else:
+      raise newException(ValueError, "unknown logsumexp request kind: " & kind)
+  else:
+    {.error: "unsupported logsumexp input dtype".}
+
+
+proc logsumexpObservation[T](source: Tensor[T], request: JsonNode): JsonNode =
+  try:
+    return logsumexpApply(source, request)
+  except IndexDefect:
+    let code = logsumexpExpectedNativeError(source, request)
+    if code != "invalid_axis": raise
+    return %*{"error": code}
+  except ValueError:
+    let code = logsumexpExpectedNativeError(source, request)
+    if code notin ["duplicate_axes", "empty_axes_drop_mismatch"]: raise
+    return %*{"error": code}
+
+
+proc logsumexpCase[T](spec: JsonNode): JsonNode =
+  let source = logsumexpInputTensor[T](spec)
+  result = newJObject()
+  for request in spec["requests"]:
+    result[request["id"].getStr] = logsumexpObservation(source, request)
+
+
+proc logsumexp(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = case spec["dtype"].getStr
+      of "bool": logsumexpCase[bool](spec)
+      of "int8": logsumexpCase[int8](spec)
+      of "int16": logsumexpCase[int16](spec)
+      of "int32": logsumexpCase[int32](spec)
+      of "int64": logsumexpCase[int64](spec)
+      of "uint8": logsumexpCase[uint8](spec)
+      of "uint16": logsumexpCase[uint16](spec)
+      of "uint32": logsumexpCase[uint32](spec)
+      of "uint64": logsumexpCase[uint64](spec)
+      of "float32": logsumexpCase[float32](spec)
+      of "float64": logsumexpCase[float64](spec)
+      of "complex64": logsumexpCase[Complex[float32]](spec)
+      of "complex128": logsumexpCase[Complex[float64]](spec)
+      else: raise newException(ValueError, "unsupported logsumexp dtype: " & spec["dtype"].getStr)
+
+
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
@@ -2122,6 +2235,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = pairedExtrema(inputs)
   of "tensor.aminmax":
     result = aminmax(inputs)
+  of "tensor.logsumexp":
+    result = logsumexp(inputs)
   of "tensor.integer_output_dtype":
     result = integerOutputDtype(inputs)
   of "tensor.mean_dtype":

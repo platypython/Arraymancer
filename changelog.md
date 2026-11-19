@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add stable CPU ``logsumexp`` whole/single/multiple-axis tensor reductions
+  without intermediate tensors. Promote integer/bool inputs numerically to
+  float32; preserve floating/complex dtypes, principal complex phases, empty
+  identities and signed/broadcast views.
 - Add fused CPU ``aminmax`` whole/single-axis reductions with independent,
   dtype-preserving outputs and no materialized input. Preserve scalar, empty,
   signed/broadcast-view and first-axis tie/NaN bits; whole floating folds follow

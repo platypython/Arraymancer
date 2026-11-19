@@ -3367,6 +3367,288 @@ def aminmax(torch: Any) -> dict[str, Any]:
     return _case("tensor.aminmax", "api:torch", inputs, expected, tolerance=0.0)
 
 
+
+
+def _logsumexp_request(
+    kind: str, dimensions: int | list[int] | None, keepdim: bool
+) -> dict[str, Any]:
+    if kind == "whole":
+        name = "all"
+    elif kind == "axis":
+        name = f"axis_{dimensions}"
+    else:
+        assert isinstance(dimensions, list)
+        name = "axes_" + ("empty" if not dimensions else "_".join(map(str, dimensions)))
+    return {
+        "id": f"{name}_{'keep' if keepdim else 'drop'}",
+        "kind": kind,
+        "keepdim": keepdim,
+        **({"axis": dimensions} if kind == "axis" else
+           {"axes": dimensions} if kind == "axes" else {}),
+    }
+
+
+def _logsumexp_requests(profile: str) -> list[dict[str, Any]]:
+    if profile == "rank2":
+        return [
+            _logsumexp_request("whole", None, False),
+            _logsumexp_request("whole", None, True),
+            _logsumexp_request("axis", 0, False),
+            _logsumexp_request("axis", -1, True),
+            _logsumexp_request("axes", [0, 1], False),
+            _logsumexp_request("axes", [1, 0], True),
+            _logsumexp_request("axes", [], False),
+            _logsumexp_request("axes", [], True),
+            _logsumexp_request("axis", 2, False),
+            _logsumexp_request("axes", [0, -2], False),
+        ]
+    if profile == "multi_axes":
+        return [
+            _logsumexp_request("whole", None, False),
+            _logsumexp_request("whole", None, True),
+            _logsumexp_request("axis", 1, False),
+            _logsumexp_request("axes", [0, 2], False),
+            _logsumexp_request("axes", [2, 0], True),
+            _logsumexp_request("axes", [0, -1], False),
+            _logsumexp_request("axes", [], False),
+            _logsumexp_request("axes", [], True),
+            _logsumexp_request("axis", 3, False),
+            _logsumexp_request("axes", [0, -3], False),
+        ]
+    if profile == "scalar":
+        return [
+            _logsumexp_request("whole", None, False),
+            _logsumexp_request("whole", None, True),
+            _logsumexp_request("axis", 0, False),
+            _logsumexp_request("axis", -1, True),
+            _logsumexp_request("axes", [], False),
+            _logsumexp_request("axes", [], True),
+            _logsumexp_request("axis", 1, False),
+            _logsumexp_request("axis", -2, False),
+        ]
+    if profile == "empty":
+        return [
+            _logsumexp_request("whole", None, False),
+            _logsumexp_request("whole", None, True),
+            _logsumexp_request("axis", 0, False),
+            _logsumexp_request("axis", 1, False),
+            _logsumexp_request("axis", 2, True),
+            _logsumexp_request("axes", [1], True),
+            _logsumexp_request("axes", [0, 2], False),
+            _logsumexp_request("axes", [], False),
+            _logsumexp_request("axes", [], True),
+            _logsumexp_request("axis", 3, False),
+            _logsumexp_request("axes", [0, -3], False),
+        ]
+    if profile == "empty_outer":
+        return [
+            _logsumexp_request("whole", None, False),
+            _logsumexp_request("whole", None, True),
+            _logsumexp_request("axis", 0, False),
+            _logsumexp_request("axis", 1, True),
+            _logsumexp_request("axes", [], False),
+            _logsumexp_request("axes", [], True),
+            _logsumexp_request("axis", 2, False),
+        ]
+    if profile == "vector":
+        return [
+            _logsumexp_request("whole", None, False),
+            _logsumexp_request("whole", None, True),
+            _logsumexp_request("axis", 0, False),
+            _logsumexp_request("axis", -1, True),
+            _logsumexp_request("axes", [], False),
+            _logsumexp_request("axes", [], True),
+            _logsumexp_request("axis", 1, False),
+            _logsumexp_request("axes", [0, -1], False),
+        ]
+    raise ValueError(f"unknown logsumexp request profile: {profile}")
+
+
+def _logsumexp_raw_inputs() -> dict[str, dict[str, Any]]:
+    inputs: dict[str, dict[str, Any]] = {}
+
+    def add(
+        name: str,
+        dtype: str,
+        shape: list[int],
+        layout: str,
+        payload_key: str,
+        payload: list[Any],
+        profile: str,
+        specials: list[dict[str, Any]] | None = None,
+    ) -> None:
+        inputs[name] = {
+            "dtype": dtype,
+            "shape": shape,
+            "layout": layout,
+            payload_key: payload,
+            "specials": [] if specials is None else specials,
+            "requests": _logsumexp_requests(profile),
+        }
+
+    integer_values: dict[str, list[int]] = {
+        "bool": [0, 1, 0, 1, 0, 1],
+        "int8": [-128, 127, -1, 1, 2, 3],
+        "int16": [-(1 << 15), (1 << 15) - 1, -1, 1, 2, 3],
+        "int32": [-(1 << 31), (1 << 31) - 1, -1, 1, 2, 3],
+        "int64": [-(1 << 63), (1 << 63) - 1, -2, 1, 4, -9],
+        "uint8": [0, 255, 1, 2, 128, 3],
+        "uint16": [0, 65535, 1, 2, 40000, 3],
+        "uint32": [0, (1 << 32) - 1, 1, 2, (1 << 32) - 2, 3],
+        "uint64": [0, (1 << 64) - 1, 1, (1 << 63) + 7, (1 << 63), 3],
+    }
+    for dtype, values in integer_values.items():
+        words = [_indexed_extrema_word(value) for value in values] if dtype == "uint64" else values
+        add(dtype, dtype, [2, 3], "identity", "words", words, "rank2")
+
+    for dtype, values in (
+        ("float32", [0.0, 1.0, -1.0, 3.0, -4.0, 2.0]),
+        ("float64", [0.0, 1.0, -1.0, 3.0, -4.0, 2.0]),
+    ):
+        add(dtype, dtype, [2, 3], "identity", "values", values, "rank2")
+
+    add("complex64", "complex64", [2, 3], "identity", "values",
+        [[1.0, 0.5], [-2.0, 1.0], [0.0, -1.0],
+         [3.0, -0.5], [0.25, 2.0], [-1.0, 0.0]], "rank2")
+    add("complex128", "complex128", [2, 3], "identity", "values",
+        [[1.0, -0.5], [2.0, 1.25], [-3.0, 0.75],
+         [0.5, -2.0], [-1.0, 0.25], [4.0, 1.0]], "rank2")
+
+    add("transpose", "float64", [2, 3], "transpose", "values",
+        [2.0, -3.0, 5.0, 7.0, 0.0, -1.0], "rank2")
+    add("offset", "int32", [3, 4], "offset", "words",
+        list(range(12)), "rank2")
+    add("reverse", "float32", [5], "reverse", "values",
+        [1.0, -5.0, 2.0, 0.0, 4.0], "vector")
+    add("broadcast", "uint8", [1, 3], "broadcast", "words",
+        [2, 3, 0], "rank2")
+    add("multi_axes", "float32", [2, 3, 2], "identity", "values",
+        [-5.0, 9.0, 8.0, 4.0, 3.0, 2.0, 7.0, 6.0, 1.0, 0.0, 11.0, -2.0],
+        "multi_axes")
+
+    add("scalar_negative_zero", "float32", [], "identity", "values",
+        [-0.0], "scalar")
+    add("complex_principal", "complex128", [], "identity", "values",
+        [[2.0, 7.0]], "scalar")
+    add("empty_reduced", "float32", [2, 0, 3], "identity", "values",
+        [], "empty")
+    add("empty_outer", "float64", [0, 3], "identity", "values",
+        [], "empty_outer")
+    add("empty_complex", "complex128", [0, 3], "identity", "values",
+        [], "empty_outer")
+    add("stable_float32", "float32", [2], "identity", "values",
+        [1000.0, 999.0], "vector")
+    add("nonfinite_float32", "float32", [2, 3], "identity", "values",
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "rank2",
+        specials=[
+            {"index": 0, "value": "-inf"},
+            {"index": 1, "value": "+inf"},
+            {"index": 2, "value": "nan"},
+        ])
+    add("all_negative_infinity", "float64", [3], "identity", "values",
+        [0.0, 1.0, 2.0], "vector",
+        specials=[{"index": index, "value": "-inf"} for index in range(3)])
+    add("complex_nonfinite", "complex128", [5], "identity", "values",
+        [[1.0, 0.0], [2.0, 1.0], [3.0, -1.0], [4.0, 2.0], [5.0, 0.5]],
+        "vector",
+        specials=[
+            {"index": 0, "component": "real", "value": "+inf"},
+            {"index": 1, "component": "real", "value": "-inf"},
+            {"index": 2, "component": "imag", "value": "nan"},
+            {"index": 3, "component": "real", "value": "nan"},
+        ])
+    return inputs
+
+
+def _logsumexp_source(torch: Any, spec: dict[str, Any]) -> Any:
+    dtype_name = spec["dtype"]
+    dtype = getattr(torch, dtype_name)
+    if "words" in spec:
+        words = spec["words"]
+        values = [
+            word + (1 << 64) if dtype_name == "uint64" and word < 0 else word
+            for word in words
+        ]
+        source = torch.tensor(values, dtype=dtype, device="cpu")
+    elif dtype_name in ("complex64", "complex128"):
+        source = torch.tensor(
+            [complex(real, imaginary) for real, imaginary in spec["values"]],
+            dtype=dtype,
+            device="cpu",
+        )
+    else:
+        source = torch.tensor(spec["values"], dtype=dtype, device="cpu")
+    source = source.reshape(spec["shape"])
+    for special in spec["specials"]:
+        value = {"nan": float("nan"), "+inf": float("inf"), "-inf": float("-inf")}[
+            special["value"]
+        ]
+        if dtype_name in ("complex64", "complex128"):
+            component = source.real if special["component"] == "real" else source.imag
+            component.reshape(-1)[special["index"]] = value
+        else:
+            source.reshape(-1)[special["index"]] = value
+    if spec["layout"] == "transpose":
+        return source.transpose(0, 1)
+    if spec["layout"] == "offset":
+        return source.transpose(0, 1)[:, 1:]
+    if spec["layout"] == "reverse":
+        return source.flip([0])
+    if spec["layout"] == "broadcast":
+        return source.expand(4, 3)
+    return source
+
+
+def _logsumexp_error_code(error: Exception) -> str | None:
+    message = str(error).lower().replace("non-zero", "nonzero")
+    if isinstance(error, IndexError):
+        return "invalid_axis"
+    if isinstance(error, RuntimeError):
+        if "appears multiple times" in message or "multiple times" in message:
+            return "duplicate_axes"
+        if "broadcast" in message and "shape" in message:
+            return "empty_axes_drop_mismatch"
+    return None
+
+
+def _observe_logsumexp_request(
+    torch: Any, source: Any, request: dict[str, Any], label: str
+) -> dict[str, Any]:
+    kind = request["kind"]
+    keepdim = request["keepdim"]
+    if kind == "whole":
+        dimensions: int | tuple[int, ...] = tuple(range(source.ndim))
+    elif kind == "axis":
+        dimensions = request["axis"]
+    else:
+        dimensions = tuple(request["axes"])
+    try:
+        output = torch.logsumexp(source, dim=dimensions, keepdim=keepdim)
+    except (IndexError, RuntimeError, TypeError) as error:
+        code = _logsumexp_error_code(error)
+        if code is None:
+            raise ValueError(f"unexpected logsumexp rejection for {label}: {error}") from error
+        return {"error": code}
+    if output.is_complex():
+        return _observe_complex(output)
+    return _observe(output)
+
+
+def logsumexp(torch: Any) -> dict[str, Any]:
+    """Observe actual PyTorch CPU logsumexp values, layouts and rejection precedence."""
+    inputs = _logsumexp_raw_inputs()
+    expected: dict[str, dict[str, Any]] = {}
+    for name, spec in inputs.items():
+        source = _logsumexp_source(torch, spec)
+        expected[name] = {
+            request["id"]: _observe_logsumexp_request(
+                torch, source, request, f"{name}.{request['id']}"
+            )
+            for request in spec["requests"]
+        }
+    return _case("tensor.logsumexp", "api:torch", inputs, expected, tolerance=1e-6)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -3379,6 +3661,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
     complex_prod_dtype, indexed_extrema, paired_extrema, paired_extrema_gradient, aminmax,
+    logsumexp,
 )
 
 
