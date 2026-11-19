@@ -99,5 +99,18 @@ dtypes reject before axis validation or warnings, even for scalars and empties.
 Empty complex means have two NaN components; scalar means add the zero identity
 before dividing rather than copying signed-zero components.
 
+Complex sums accept ``dtype = Complex[float32]`` or ``Complex[float64]`` for
+real, boolean and complex inputs, casting before component-width accumulation.
+Default complex sums retain their input dtype and execute the zero identity,
+including for scalars. Empty sums produce zeros in the retained output shape.
+
+Complex inputs also support real floating, integer and boolean sum outputs.
+Numeric outputs discard imaginary components with the same cast warning;
+integer casts truncate before wrapping addition and must be representable in
+the output dtype. Boolean sums OR the truth of both components without warning.
+Wider unsigned sums accept only empty inputs, rejecting nonempty scalars too.
+Those nonempty numeric casts warn before kernel rejection; invalid axes reject
+before warnings, while empty inputs remain quiet.
+
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

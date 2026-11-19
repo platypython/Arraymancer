@@ -866,3 +866,78 @@ suite "Pinned PyTorch conformance foundation":
     emptyMean["numel"] = %0
     emptyMean["values"] = newJArray()
     expect ValueError: validateFixtureData(malformed, reference)
+
+  test "Complex sums preserve defaults, casts, retained axes and empty identities":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var sumCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.complex_sum_dtype": sumCase = caseData
+    doAssert sumCase.kind == JObject
+    let actual = runCase(sumCase)
+    let expected = sumCase["expected"]
+    check compareObservations(expected, actual,
+      sumCase["atol"].getFloat, sumCase["rtol"].getFloat).len == 0
+    check sumCase["inputs"].len == 31
+    check actual["complex64"]["default"]["all"]["dtype"].getStr == "complex64"
+    check actual["complex128"]["default"]["all"]["dtype"].getStr == "complex128"
+    check actual["complex64"]["default"]["axes"]["0"]["shape"] == %*[1, 3]
+    check actual["rounding"]["int32"]["all"]["values"] == %*[3]
+    check actual["float32"]["complex64"]["all"]["dtype"].getStr == "complex64"
+    check actual["scalar_imaginary"]["bool"]["all"]["values"] == %*[true]
+    check actual["scalar_imaginary"]["bool"]["axes"]["0"]["values"] == %*[true]
+    check actual["complex64"]["uint16"]["all"] ==
+      %*{"error": "unsupported_output_dtype"}
+    check actual["complex64"]["uint16"]["invalid_axes"]["2"] ==
+      %*{"error": "invalid_axis"}
+
+    let emptyUnsigned = actual["empty"]["uint16"]
+    check emptyUnsigned["all"]["shape"] == %*[]
+    check emptyUnsigned["all"]["values"] == %*[0]
+    check emptyUnsigned["axes"]["1"]["shape"] == %*[2, 1, 3]
+    check emptyUnsigned["axes"]["1"]["values"] == %*[0, 0, 0, 0, 0, 0]
+    check actual["scalar"]["uint64"]["all"] ==
+      %*{"error": "unsupported_output_dtype"}
+
+    let scalarDefault = actual["scalar_negative_zero"]["default"]
+    for scalarZero in [scalarDefault["all"], scalarDefault["axes"]["0"],
+        scalarDefault["axes"]["-1"]]:
+      check scalarZero["negative_zero"] == %*{"real": [], "imag": []}
+      check not isNegativeZero(scalarZero["values"][0]["real"])
+      check not isNegativeZero(scalarZero["values"][0]["imag"])
+
+    let packedColumns = actual["packed_columns_cancellation"]["default"]["axes"]["0"]["values"]
+    check packedColumns[0]["real"].getFloat == 0.0
+    check packedColumns[16]["real"].getFloat > 0.0
+
+  test "Reject malformed complex sum dtype schemas and observations":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "tensor.complex_sum_dtype":
+        index = candidate
+    doAssert index >= 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["double_precision"]["output_dtypes"].elems[4] =
+      %"int32"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["bool"]["output_dtypes"].elems[0] = %"default"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    let invalidAxis = malformed["cases"][index]["expected"]["complex64"]["uint16"][
+      "invalid_axes"]["2"]
+    invalidAxis["error"] = %"unsupported_output_dtype"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["empty"]["uint16"]["axes"]["1"]["shape"] =
+      %*[2, 3]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["double_precision"]["values"].elems[0].elems[0] =
+      %100000000000000000000.0
+    expect ValueError: validateFixtureData(malformed, reference)

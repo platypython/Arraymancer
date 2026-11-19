@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add cast-on-read complex CPU sum dtypes, including real, wrapping integer and
+  boolean outputs for complex inputs. Share bounded cascade kernels with means
+  while preserving default complex sum grouping, scalar zero identities,
+  empty shapes and nonfinite components.
 - Add explicit complex CPU mean dtypes for real, boolean and complex inputs,
   plus real output dtypes for complex inputs, without conversion buffers.
   Correct default complex mean reciprocal rounding, scalar zero identities

@@ -61,6 +61,8 @@ COMPLEX_DTYPES = ("complex64", "complex128")
 COMPLEX_SCAN_CASES = (
     "cumsum_rows", "cumsum_columns", "cumprod_rows", "cumprod_columns",
 )
+COMPLEX_SUM_CASES = ("sum", "sum_rows", "sum_columns")
+COMPLEX_SUM_DEFAULT_CASES = ("sum_default", "sum_rows_default", "sum_columns_default")
 COMPLEX_MEAN_CASES = ("mean", "mean_rows", "mean_columns")
 COMPLEX_MEAN_DEFAULT_CASES = (
     "mean_default", "mean_rows_default", "mean_columns_default",
@@ -118,6 +120,20 @@ def operation(
     name: str, value: torch.Tensor, output_dtype: str, *, explicit_scan_dtype: bool = False,
 ) -> Callable[[], torch.Tensor]:
     """Resolve an allocating reduction or scan; keep casting inside the action."""
+    if output_dtype in COMPLEX_DTYPES and name in COMPLEX_SUM_CASES + COMPLEX_SUM_DEFAULT_CASES:
+        is_default = name in COMPLEX_SUM_DEFAULT_CASES
+        action = name.removesuffix("_default")
+        reducer = value.sum
+        if action == "sum":
+            if is_default:
+                return lambda: reducer()
+            dtype = TORCH_DTYPES[output_dtype]
+            return lambda: reducer(dtype=dtype)
+        axis = -1 if action == "sum_rows" else -2
+        if is_default:
+            return lambda: reducer(dim=axis, keepdim=True)
+        dtype = TORCH_DTYPES[output_dtype]
+        return lambda: reducer(dim=axis, keepdim=True, dtype=dtype)
     if output_dtype in COMPLEX_DTYPES and (
         name in COMPLEX_MEAN_CASES or name in COMPLEX_MEAN_DEFAULT_CASES
     ):
@@ -205,6 +221,13 @@ def complex_mean_actions(input_dtype: str, output_dtype: str) -> tuple[str, ...]
         return COMPLEX_MEAN_CASES + COMPLEX_MEAN_DEFAULT_CASES
     return COMPLEX_MEAN_CASES
 
+
+def complex_sum_actions(input_dtype: str, output_dtype: str) -> tuple[str, ...]:
+    """Return explicit sum actions plus valid matching-complex default overloads."""
+    if input_dtype == output_dtype and input_dtype in COMPLEX_DTYPES:
+        return COMPLEX_SUM_CASES + COMPLEX_SUM_DEFAULT_CASES
+    return COMPLEX_SUM_CASES
+
 def run_group(
     args: argparse.Namespace,
     input_dtype: str,
@@ -214,7 +237,9 @@ def run_group(
     input_hashes: dict[str, str],
     failures: list[str],
 ) -> dict[str, Any]:
-    if args.complex_means:
+    if args.complex_sums:
+        action_names = complex_sum_actions(input_dtype, output_dtype)
+    elif args.complex_means:
         action_names = complex_mean_actions(input_dtype, output_dtype)
     elif args.complex_scan_dtypes or output_dtype in COMPLEX_DTYPES:
         action_names = COMPLEX_SCAN_CASES
@@ -391,8 +416,18 @@ def main() -> int:
         "--complex-scan-dtypes", action="store_true",
         help="Benchmark explicit complex scan output dtypes across real and complex inputs",
     )
+    parser.add_argument(
+        "--complex-sums", action="store_true",
+        help="Benchmark allocating complex-output and complex-input sum dtype overloads",
+    )
     args = parser.parse_args()
     explicit_output_dtypes = args.output_dtypes is not None
+    if args.complex_sums and explicit_output_dtypes:
+        parser.error("--complex-sums cannot be combined with --output-dtypes")
+    if args.complex_sums and (
+        args.complex_scans or args.complex_means or args.complex_scan_dtypes
+    ):
+        parser.error("--complex-sums cannot be combined with other complex modes")
     if args.complex_scans and explicit_output_dtypes and args.output_dtypes != list(OUTPUT_DTYPES):
         parser.error("--complex-scans cannot be combined with --output-dtypes")
     if args.complex_scan_dtypes and args.complex_scans:
@@ -432,6 +467,8 @@ def main() -> int:
     compile_command = [
         "nim", "c", "-d:release", "--path:src", f"--out:{args.runner}",
     ]
+    if args.complex_sums:
+        compile_command.append("-d:complexSums")
     if args.complex_means:
         compile_command.append("-d:complexMeans")
     elif args.complex_scans:
@@ -443,7 +480,19 @@ def main() -> int:
     failures: list[str] = []
     input_hashes: dict[str, str] = {}
     groups: list[dict[str, Any]] = []
-    if args.complex_means:
+    if args.complex_sums:
+        input_dtypes = INPUT_DTYPES + COMPLEX_DTYPES
+        output_dtypes = COMPLEX_DTYPES + OUTPUT_DTYPES + INTEGER_OUTPUT_DTYPES + BOOL_OUTPUT_DTYPES
+        for input_dtype in input_dtypes:
+            source, payload = make_source(input_dtype)
+            selected_outputs = (
+                COMPLEX_DTYPES if input_dtype not in COMPLEX_DTYPES else output_dtypes
+            )
+            for output_dtype in selected_outputs:
+                groups.append(run_group(
+                    args, input_dtype, output_dtype, source, payload, input_hashes, failures,
+                ))
+    elif args.complex_means:
         input_dtypes = INPUT_DTYPES + COMPLEX_DTYPES
         output_dtypes = COMPLEX_DTYPES + OUTPUT_DTYPES
         for input_dtype in input_dtypes:
@@ -499,7 +548,13 @@ def main() -> int:
         failures.append(
             "complex mean protocol expected 30 groups, 96 actions, and 576 comparisons"
         )
-    if args.complex_means:
+    if args.complex_sums and (
+        len(groups) != 42 or action_count != 132 or comparison_count != 792
+    ):
+        failures.append(
+            "complex sum protocol expected 42 groups, 132 actions, and 792 comparisons"
+        )
+    if args.complex_means or args.complex_sums:
         actions_by_output_dtype = {
             output_dtype: list(dict.fromkeys(
                 action
@@ -527,7 +582,7 @@ def main() -> int:
         "paired_rounds_per_group": 3,
         "comparisons": comparison_count,
     }
-    if args.complex_means:
+    if args.complex_means or args.complex_sums:
         protocol["actions_per_group"] = {
             f'{group["input_dtype"]}_to_{group["output_dtype"]}': list(group["actions"])
             for group in groups

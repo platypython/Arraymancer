@@ -20,9 +20,21 @@ const complexMeanCases = ["mean", "mean_rows", "mean_columns"]
 const complexMeanDefaultCases = [
   "mean_default", "mean_rows_default", "mean_columns_default",
 ]
+const complexSumCases = ["sum", "sum_rows", "sum_columns"]
+const complexSumDefaultCases = ["sum_default", "sum_rows_default", "sum_columns_default"]
 
 iterator actionNames[InputT, OutputT](): string =
-  when defined(complexMeans):
+  when defined(complexSums):
+    when OutputT is Complex:
+      for name in complexSumCases:
+        yield name
+      when InputT is Complex and OutputT is InputT:
+        for name in complexSumDefaultCases:
+          yield name
+    elif InputT is Complex and (OutputT is SomeFloat or OutputT is SomeInteger or OutputT is bool):
+      for name in complexSumCases:
+        yield name
+  elif defined(complexMeans):
     when OutputT is SomeFloat or OutputT is Complex:
       for name in complexMeanCases:
         yield name
@@ -83,7 +95,25 @@ proc loadInput[T](manifest: JsonNode): Tensor[T] =
           data[index] = T(values[index].getFloat)
 
 proc execute[InputT, OutputT](name: string; input: Tensor[InputT]): Tensor[OutputT] =
-  when defined(complexMeans):
+  when defined(complexSums):
+    case name
+    of "sum": newTensorWith[OutputT]([], input.sum(dtype = OutputT))
+    of "sum_rows": input.sum(-1, dtype = OutputT)
+    of "sum_columns": input.sum(-2, dtype = OutputT)
+    of "sum_default":
+      when InputT is Complex and OutputT is InputT:
+        newTensorWith[OutputT]([], input.sum())
+      else: raise newException(ValueError, "Default complex sum requires matching complex dtypes")
+    of "sum_rows_default":
+      when InputT is Complex and OutputT is InputT:
+        input.sum(-1)
+      else: raise newException(ValueError, "Default complex sum requires matching complex dtypes")
+    of "sum_columns_default":
+      when InputT is Complex and OutputT is InputT:
+        input.sum(-2)
+      else: raise newException(ValueError, "Default complex sum requires matching complex dtypes")
+    else: raise newException(ValueError, "Unknown complex sum dtype action: " & name)
+  elif defined(complexMeans):
     when OutputT is SomeFloat or OutputT is Complex:
       case name
       of "mean": newTensorWith[OutputT]([], input.mean(dtype = OutputT))
@@ -195,6 +225,18 @@ proc run[InputT, OutputT](manifest: JsonNode): JsonNode =
   let repeats = manifest["repeats"].getInt
   let warmup = manifest["warmup"].getInt
   var report = newJObject()
+  when defined(complexSums):
+    var expectedActions = newSeq[string]()
+    for action in actionNames[InputT, OutputT]():
+      expectedActions.add action
+    if expectedActions.len == 0:
+      raise newException(ValueError, "Unsupported complex sum source/output dtype pair")
+    let suppliedActions = manifest["actions"]
+    if suppliedActions.len != expectedActions.len:
+      raise newException(ValueError, "Complex sum action manifest does not match dtype mode")
+    for index, action in expectedActions:
+      if suppliedActions[index].getStr != action:
+        raise newException(ValueError, "Complex sum action manifest does not match dtype mode")
   for name in actionNames[InputT, OutputT]():
     let observation = observe(execute[InputT, OutputT](name, input), dtypeName[InputT]())
     for _ in 0 ..< warmup:
@@ -229,11 +271,11 @@ proc runForInput[InputT](manifest: JsonNode): JsonNode =
   of "float32": run[InputT, float32](manifest)
   of "float64": run[InputT, float64](manifest)
   of "complex64":
-    when defined(complexScanDtypes) or defined(complexMeans):
+    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums):
       run[InputT, Complex[float32]](manifest)
     else: raise newException(ValueError, "Unsupported reduction output dtype")
   of "complex128":
-    when defined(complexScanDtypes) or defined(complexMeans):
+    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums):
       run[InputT, Complex[float64]](manifest)
     else: raise newException(ValueError, "Unsupported reduction output dtype")
   else: raise newException(ValueError, "Unsupported reduction output dtype")
@@ -252,11 +294,11 @@ proc runForDtype(manifest: JsonNode): JsonNode =
   of "float32": runForInput[float32](manifest)
   of "float64": runForInput[float64](manifest)
   of "complex64":
-    when defined(complexScanDtypes) or defined(complexMeans):
+    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums):
       runForInput[Complex[float32]](manifest)
     else: raise newException(ValueError, "Unsupported reduction input dtype")
   of "complex128":
-    when defined(complexScanDtypes) or defined(complexMeans):
+    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums):
       runForInput[Complex[float64]](manifest)
     else: raise newException(ValueError, "Unsupported reduction input dtype")
   else: raise newException(ValueError, "Unsupported reduction input dtype")

@@ -1058,6 +1058,158 @@ proc complexMeanDtype(inputs: JsonNode): JsonNode =
     result[name] = complexMeanDtypeBySource(spec)
 
 
+proc complexSumUnsupported(message: string): bool =
+  message == "CPU reductions do not support this unsigned output dtype"
+
+proc complexSumDtypeScalar[T, U](source: Tensor[T], dtype: typedesc[U],
+                                 reject: bool, label: string): JsonNode =
+  if reject:
+    try:
+      discard source.sum(dtype = dtype)
+    except ValueError as error:
+      if not complexSumUnsupported(error.msg): raise
+      return integerOutputUnsupported()
+    raise newException(ValueError, label & " unexpectedly accepted an unsupported output dtype")
+  result = complexScanDtypeObservation(newTensorWith[U]([], source.sum(dtype = dtype)))
+
+proc complexSumDtypeAxis[T, U](source: Tensor[T], axis: int,
+                               dtype: typedesc[U], reject: bool,
+                               label: string): JsonNode =
+  if reject:
+    try:
+      discard source.sum(axis = axis, dtype = dtype)
+    except ValueError as error:
+      if not complexSumUnsupported(error.msg): raise
+      return integerOutputUnsupported()
+    raise newException(ValueError, label & " unexpectedly accepted an unsupported output dtype")
+  result = complexScanDtypeObservation(source.sum(axis = axis, dtype = dtype))
+
+proc complexSumInvalidAxisError(message: string): bool =
+  let lowered = message.toLowerAscii
+  let namesAxis = lowered.contains("axis") or lowered.contains("dimension")
+  let reportsInvalidRange = lowered.contains("invalid") or
+    lowered.contains("out of range") or lowered.contains("out of bounds")
+  namesAxis and reportsInvalidRange
+
+proc complexSumInvalidAxis[T, U](source: Tensor[T], axis: int,
+                                 dtype: typedesc[U], label: string): JsonNode =
+  try:
+    discard source.sum(axis = axis, dtype = dtype)
+  except ValueError as error:
+    if not complexSumInvalidAxisError(error.msg): raise
+    return %*{"error": "invalid_axis"}
+  except IndexDefect as error:
+    if not error.msg.toLowerAscii.contains("reduction axis out of bounds"): raise
+    return %*{"error": "invalid_axis"}
+  raise newException(ValueError, label & " unexpectedly accepted an invalid sum axis")
+
+proc complexSumInvalidDefaultAxis[T](source: Tensor[T], axis: int,
+                                     label: string): JsonNode =
+  try:
+    discard source.sum(axis = axis)
+  except ValueError as error:
+    if not complexSumInvalidAxisError(error.msg): raise
+    return %*{"error": "invalid_axis"}
+  except IndexDefect as error:
+    if not error.msg.toLowerAscii.contains("reduction axis out of bounds"): raise
+    return %*{"error": "invalid_axis"}
+  raise newException(ValueError, label & " unexpectedly accepted an invalid sum axis")
+
+proc complexSumDefaultTarget[T](source: Tensor[T], spec: JsonNode): JsonNode =
+  result = newJObject()
+  result["all"] = complexScanDtypeObservation(newTensorWith[T]([], source.sum))
+
+  var axes = newJObject()
+  for axisNode in spec["axes"]:
+    let axis = axisNode.getInt
+    axes[$axis] = complexScanDtypeObservation(source.sum(axis = axis))
+  result["axes"] = axes
+
+  var invalidAxes = newJObject()
+  for axisNode in spec["invalid_axes"]:
+    let axis = axisNode.getInt
+    invalidAxes[$axis] = complexSumInvalidDefaultAxis(
+      source, axis, "default.sum.invalid_axis." & $axis)
+  result["invalid_axes"] = invalidAxes
+
+
+proc complexSumDtypeTarget[T, U](source: Tensor[T], spec: JsonNode,
+                                 dtype: typedesc[U], dtypeName: string): JsonNode =
+  let reject = dtypeName in ["uint16", "uint32", "uint64"] and source.size > 0
+  result = newJObject()
+  result["all"] = complexSumDtypeScalar(
+    source, dtype, reject, dtypeName & ".sum.all")
+
+  var axes = newJObject()
+  for axisNode in spec["axes"]:
+    let axis = axisNode.getInt
+    axes[$axis] = complexSumDtypeAxis(
+      source, axis, dtype, reject, dtypeName & ".sum." & $axis)
+  result["axes"] = axes
+
+  var invalidAxes = newJObject()
+  for axisNode in spec["invalid_axes"]:
+    let axis = axisNode.getInt
+    invalidAxes[$axis] = complexSumInvalidAxis(
+      source, axis, dtype, dtypeName & ".sum.invalid_axis." & $axis)
+  result["invalid_axes"] = invalidAxes
+
+proc complexSumDtypeForOutput[T](source: Tensor[T], spec: JsonNode,
+                                 dtypeName: string): JsonNode =
+  case dtypeName
+  of "bool": complexSumDtypeTarget[T, bool](source, spec, bool, dtypeName)
+  of "uint8": complexSumDtypeTarget[T, uint8](source, spec, uint8, dtypeName)
+  of "int8": complexSumDtypeTarget[T, int8](source, spec, int8, dtypeName)
+  of "int16": complexSumDtypeTarget[T, int16](source, spec, int16, dtypeName)
+  of "int32": complexSumDtypeTarget[T, int32](source, spec, int32, dtypeName)
+  of "int64": complexSumDtypeTarget[T, int64](source, spec, int64, dtypeName)
+  of "uint16": complexSumDtypeTarget[T, uint16](source, spec, uint16, dtypeName)
+  of "uint32": complexSumDtypeTarget[T, uint32](source, spec, uint32, dtypeName)
+  of "uint64": complexSumDtypeTarget[T, uint64](source, spec, uint64, dtypeName)
+  of "float32": complexSumDtypeTarget[T, float32](source, spec, float32, dtypeName)
+  of "float64": complexSumDtypeTarget[T, float64](source, spec, float64, dtypeName)
+  of "complex64": complexSumDtypeTarget[T, Complex[float32]](
+    source, spec, Complex[float32], dtypeName)
+  of "complex128": complexSumDtypeTarget[T, Complex[float64]](
+    source, spec, Complex[float64], dtypeName)
+  else: raise newException(ValueError, "unsupported complex sum output dtype: " & dtypeName)
+
+proc complexSumDtypeCase[T](spec: JsonNode): JsonNode =
+  let source = complexScanDtypeSource[T](spec)
+  result = newJObject()
+  for dtypeNode in spec["output_dtypes"]:
+    let dtypeName = dtypeNode.getStr
+    if dtypeName == "default":
+      when T is Complex[float32] or T is Complex[float64]:
+        result[dtypeName] = complexSumDefaultTarget(source, spec)
+      else:
+        raise newException(ValueError, "default complex sum requires a complex input")
+    else:
+      result[dtypeName] = complexSumDtypeForOutput(source, spec, dtypeName)
+
+proc complexSumDtypeBySource(spec: JsonNode): JsonNode =
+  case spec["dtype"].getStr
+  of "bool": complexSumDtypeCase[bool](spec)
+  of "int8": complexSumDtypeCase[int8](spec)
+  of "int16": complexSumDtypeCase[int16](spec)
+  of "int32": complexSumDtypeCase[int32](spec)
+  of "int64": complexSumDtypeCase[int64](spec)
+  of "uint8": complexSumDtypeCase[uint8](spec)
+  of "uint16": complexSumDtypeCase[uint16](spec)
+  of "uint32": complexSumDtypeCase[uint32](spec)
+  of "uint64": complexSumDtypeCase[uint64](spec)
+  of "float32": complexSumDtypeCase[float32](spec)
+  of "float64": complexSumDtypeCase[float64](spec)
+  of "complex64": complexSumDtypeCase[Complex[float32]](spec)
+  of "complex128": complexSumDtypeCase[Complex[float64]](spec)
+  else: raise newException(ValueError, "unsupported complex sum input dtype")
+
+proc complexSumDtype(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = complexSumDtypeBySource(spec)
+
+
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
@@ -1087,6 +1239,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = complexScanDtype(inputs)
   of "tensor.complex_mean_dtype":
     result = complexMeanDtype(inputs)
+  of "tensor.complex_sum_dtype":
+    result = complexSumDtype(inputs)
   of "tensor.transpose_alias":
     var base = getTensor(inputs["a"])
     var view = base.transpose

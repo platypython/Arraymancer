@@ -635,6 +635,72 @@ proc main() =
       columns[0, 0] = complex32(100, 100)
       check owner[1] == complex(1.0, 1.0)
 
+    test "Complex sum dtypes cast before component arithmetic and numeric wrapping":
+      let precise = [16777217.0, -16777216.0].toTensor
+      check precise.sum(dtype = Complex[float32]) == complex32(0, 0)
+      check precise.sum(dtype = Complex[float64]) == complex(1.0)
+      let unsigned = [0x8000008000000001'u64].toTensor
+      check cast[uint32](unsigned.sum(dtype = Complex[float32]).re) == 0x5f000001'u32
+      check [true, false, true].toTensor.sum(dtype = Complex[float64]) == complex(2.0)
+      let wide = [complex(9007199254740992.0, 9007199254740992.0),
+                  complex(1.0, 1.0), complex(-9007199254740992.0, -9007199254740992.0)].toTensor
+      check wide.sum == complex(1.0, 1.0)
+      check wide.sum(dtype = float64) == 0.0
+      check wide.sum(dtype = int64) == 1'i64
+      let negative = [complex(-127.9, 1.0), complex(-128.9, -2.0), complex(-0.9, 4.0)].toTensor
+      check negative.sum(dtype = int8) == 1'i8
+      check negative.sum(dtype = int64) == -255'i64
+      check [complex(200.9), complex(100.9)].toTensor.sum(dtype = uint8) == 44'u8
+      check [complex(0.0, 4.0)].toTensor.sum(dtype = bool)
+
+    test "Complex sums preserve cascade block and scalar-tail boundaries":
+      var boundary = newTensor[Complex[float64]](129)
+      boundary[0] = complex(9007199254740992.0, 9007199254740992.0)
+      boundary[8] = complex(1.0, 1.0)
+      boundary[16] = complex(-9007199254740992.0, -9007199254740992.0)
+      boundary[128] = complex(1.0, 1.0)
+      check boundary[0..127].sum == complex(0.0)
+      check boundary.sum == complex(1.0, 1.0)
+      check boundary[0..127].reshape(1, 128).sum(1) == [[complex(0.0)]].toTensor
+      check boundary[0..127].mean == complex(0.0)
+      check boundary.mean == complex(1.0 / 129.0, 1.0 / 129.0)
+
+    test "Complex sums retain zero identities, empty shapes and nonfinite components":
+      let negativeZero = cast[float64](0x8000000000000000'u64)
+      let scalar = newTensorWith[Complex[float64]]([], complex(negativeZero, negativeZero))
+      check cast[uint64](scalar.sum.re) == 0'u64
+      check cast[uint64](scalar.sum.im) == 0'u64
+      check cast[uint64](scalar.sum(-1)[].re) == 0'u64
+      let empty = newTensor[Complex[float64]](2, 0, 3)
+      check empty.sum == complex(0.0)
+      check empty.sum(1, dtype = Complex[float32]) == newTensor[Complex[float32]](2, 1, 3)
+      check empty.sum(0).shape == [1, 0, 3]
+      check empty.sum(dtype = uint64) == 0'u64
+      check empty.sum(1, dtype = uint16) == newTensor[uint16](2, 1, 3)
+      let nonfinite = [complex(7.0, NaN)].toTensor
+      check nonfinite.sum.re == 7.0 and nonfinite.sum.im.isNaN
+      check nonfinite.sum(dtype = float32) == 7'f32
+      expect ValueError: discard scalar.sum(dtype = uint16)
+      expect ValueError: discard scalar.sum(0, dtype = uint64)
+      expect IndexDefect: discard scalar.sum(99, dtype = uint16)
+
+    test "Complex sum dtype views retain signed strides and independent outputs":
+      let owner = [complex(99.0, 1.0), complex(1.0, 1.0), complex(2.0, 2.0),
+                   complex(3.0, 3.0), complex(99.0, 1.0)].toTensor
+      let reversed = owner[3..1|-1]
+      check reversed.sum(dtype = Complex[float32]) == complex32(6, 6)
+      check reversed.sum(dtype = int32) == 6'i32
+      let broadcast = reversed.reshape(3, 1).broadcast(3, 5)
+      var columns = broadcast.sum(0, dtype = Complex[float32])
+      check columns == newTensorWith[Complex[float32]]([1, 5], complex32(6, 6))
+      check broadcast.sum(1, dtype = float32) == [[15'f32], [10'f32], [5'f32]].toTensor
+      let truth = [[complex(0.0), complex(0.0, 4.0), complex(0.0)],
+                   [complex(0.0), complex(0.0), complex(2.0)]].toTensor
+      check truth.sum(0, dtype = bool) == [[false, true, true]].toTensor
+      check truth.sum(1, dtype = bool) == [[true], [true]].toTensor
+      columns[0, 0] = complex32(100, 100)
+      check owner[1] == complex(1.0, 1.0)
+
     test "Product":
       let a = [[1,2,4],[8,16,32]].toTensor()
       let a_c = a.asType(Complex[float64])

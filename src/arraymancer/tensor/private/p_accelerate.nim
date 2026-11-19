@@ -128,9 +128,14 @@ proc scanPackedComplex*[T; F: SomeFloat](output: ptr Complex[F]; input: ptr T;
       accumulateComplexScan(carry, value, multiply)
       destination[index] = Complex[F](re: F(carry.re), im: F(carry.im))
 
-template normalizedMeanValue*(value: untyped; count: int): untyped =
-  when typeof(value) is Complex: normalizedComplexMean(value, count)
-  else: value / typeof(value)(count)
+template finishCascadedReduction*(value: untyped; count: int;
+                                  average: static[bool]): untyped =
+  ## Means retain complex reciprocal rounding; sums keep the zero identity.
+  when average:
+    when typeof(value) is Complex: normalizedComplexMean(value, count)
+    else: value / typeof(value)(count)
+  else:
+    value
 
 template addCascadedValue(target, value: untyped) =
   when typeof(target) is Complex:
@@ -140,55 +145,61 @@ template addCascadedValue(target, value: untyped) =
   else:
     target += value
 
-proc cascadeReductionRows[T, U; I: SomeInteger; N: static[int]](
+template cascadeReductionRows[T, U; I: SomeInteger; N: static[int]](
     input: ptr UncheckedArray[T]; base, stride, laneStride: I; count: uint;
-    sums: var array[N, U]) {.inline.} =
-  ## Four bounded levels preserve the CPU cascade's component-width rounding.
-  sums = default(typeof(sums))
-  # One cascade block has no higher carry to merge.
-  if count <= 16'u:
-    for position in 0'u ..< count:
-      let offset = I(position) * stride
-      for lane in 0 ..< N:
+    sums: var array[N, U]) =
+  ## Caller expansion exposes unit strides without relying on C inlining.
+  block cascadeRows:
+    let data = input
+    let first = base
+    let rowStride = stride
+    let columnStride = laneStride
+    let rows = count
+    sums = default(typeof(sums))
+    # One cascade block has no higher carry to merge.
+    if rows <= 16'u:
+      for position in 0'u ..< rows:
+        let offset = I(position) * rowStride
+        for lane in 0'u ..< uint(N):
+          addCascadedValue(sums[lane],
+            convertedReductionValue(data[first + offset + I(lane) * columnStride], U))
+      break cascadeRows
+    var levels: array[3, array[N, U]]
+    var bits = 0
+    var remaining = rows - 1'u
+    while remaining != 0:
+      inc bits
+      remaining = remaining shr 1
+    let power = max(4, bits div 4)
+    let step = 1'u shl power
+    let mask = step - 1'u
+    let masks = [mask shl power, mask shl (2 * power), mask shl (3 * power)]
+    var position = 0'u
+    while position + step <= rows:
+      for _ in 0'u ..< step:
+        let offset = I(position) * rowStride
+        for lane in 0'u ..< uint(N):
+          addCascadedValue(sums[lane],
+            convertedReductionValue(data[first + offset + I(lane) * columnStride], U))
+        inc position
+      for level in 0'u ..< 3'u:
+        for lane in 0'u ..< uint(N):
+          if level == 0:
+            addCascadedValue(levels[0][lane], sums[lane])
+            sums[lane] = default(U)
+          else:
+            addCascadedValue(levels[level][lane], levels[level - 1'u][lane])
+            levels[level - 1'u][lane] = default(U)
+        if (position and masks[level]) != 0: break
+    while position < rows:
+      let offset = I(position) * rowStride
+      for lane in 0'u ..< uint(N):
         addCascadedValue(sums[lane],
-          convertedReductionValue(input[base + offset + I(lane) * laneStride], U))
-    return
-  var levels: array[3, array[N, U]]
-  var bits = 0
-  var remaining = if count == 0: 0'u else: count - 1'u
-  while remaining != 0:
-    inc bits
-    remaining = remaining shr 1
-  let power = max(4, bits div 4)
-  let step = 1'u shl power
-  let mask = step - 1'u
-  let masks = [mask shl power, mask shl (2 * power), mask shl (3 * power)]
-  var position = 0'u
-  while position + step <= count:
-    for _ in 0'u ..< step:
-      let offset = I(position) * stride
-      for lane in 0 ..< N:
-        addCascadedValue(sums[lane],
-          convertedReductionValue(input[base + offset + I(lane) * laneStride], U))
+          convertedReductionValue(data[first + offset + I(lane) * columnStride], U))
       inc position
-    for level in 0 ..< 3:
-      for lane in 0 ..< N:
-        if level == 0:
-          addCascadedValue(levels[0][lane], sums[lane])
-          sums[lane] = default(U)
-        else:
-          addCascadedValue(levels[level][lane], levels[level - 1][lane])
-          levels[level - 1][lane] = default(U)
-      if (position and masks[level]) != 0: break
-  while position < count:
-    let offset = I(position) * stride
-    for lane in 0 ..< N:
-      addCascadedValue(sums[lane],
-        convertedReductionValue(input[base + offset + I(lane) * laneStride], U))
-    inc position
-  for level in 0 ..< 3:
-    for lane in 0 ..< N:
-      addCascadedValue(sums[lane], levels[level][lane])
+    for level in 0'u ..< 3'u:
+      for lane in 0'u ..< uint(N):
+        addCascadedValue(sums[lane], levels[level][lane])
 
 proc sumCascadedSpan*[T; U: SomeFloat or Complex; I: SomeInteger](input: ptr UncheckedArray[T];
     base: I; count: uint; stride: I; dtype: typedesc[U];
@@ -205,19 +216,19 @@ proc sumCascadedSpan*[T; U: SomeFloat or Complex; I: SomeInteger](input: ptr Unc
     partials = default(typeof(partials))
   let tail = count - count mod uint(tailLanes)
   for index in bulk ..< tail:
-    let lane = int((index - bulk) mod uint(tailLanes))
+    let lane = (index - bulk) mod uint(tailLanes)
     addCascadedValue(partials[lane],
       convertedReductionValue(input[base + I(index) * stride], U))
-  for lane in countup(tailLanes, lanes - 1, tailLanes):
-    for component in 0 ..< tailLanes:
+  for lane in countup(uint(tailLanes), uint(lanes - 1), tailLanes):
+    for component in 0'u ..< uint(tailLanes):
       addCascadedValue(partials[component], partials[lane + component])
   for index in tail ..< count:
     addCascadedValue(result, convertedReductionValue(input[base + I(index) * stride], U))
-  for lane in 0 ..< tailLanes:
+  for lane in 0'u ..< uint(tailLanes):
     addCascadedValue(result, partials[lane])
 
-proc meanCascadedAxis*[T; U: SomeFloat or Complex](output: ptr U; input: ptr T;
-    outer, length, inner: uint) =
+proc reduceCascadedAxis*[T; U: SomeFloat or Complex](output: ptr U; input: ptr T;
+    outer, length, inner: uint; average: static[bool]) =
   ## A bounded column tile needs no conversion tensor or output-sized scratch.
   withCompilerOptimHints()
   let source = cast[ptr UncheckedArray[T]](input)
@@ -227,21 +238,21 @@ proc meanCascadedAxis*[T; U: SomeFloat or Complex](output: ptr U; input: ptr T;
     let base = group * length * inner
     let target = group * inner
     if inner == 1:
-      destination[target] = normalizedMeanValue(
-        sumCascadedSpan(source, base, length, 1'u, U), int(length))
+      destination[target] = finishCascadedReduction(
+        sumCascadedSpan(source, base, length, 1'u, U), int(length), average)
     else:
       var column = 0'u
       while column + uint(lanes) <= inner:
         var partials {.noinit.}: array[lanes, U]
         cascadeReductionRows(source, base + column, inner, 1'u, length, partials)
-        for lane in 0 ..< lanes:
+        for lane in 0'u ..< uint(lanes):
           destination[target + column + uint(lane)] =
-            normalizedMeanValue(partials[lane], int(length))
+            finishCascadedReduction(partials[lane], int(length), average)
         column += uint(lanes)
       while column < inner:
-        destination[target + column] = normalizedMeanValue(
+        destination[target + column] = finishCascadedReduction(
           sumCascadedSpan(source, base + column, length, inner, U, false),
-          int(length))
+          int(length), average)
         inc column
 
 when defined(macosx):

@@ -1898,6 +1898,39 @@ def _complex_scan_dtype_inputs() -> dict[str, dict[str, Any]]:
     return specs
 
 
+def _complex_reduction_dtype_inputs() -> dict[str, dict[str, Any]]:
+    """Return fresh shared data-only specs for complex reduction dtype cases."""
+    all_outputs = (*_INTEGER_OUTPUT_DTYPE_NAMES, "float32", "float64", "complex64", "complex128")
+    specs = _complex_scan_dtype_inputs()
+    specs["rounding"] = _complex_scan_dtype_spec(
+        "complex64", [3], [[1.9, 2.0], [2.9, -3.0], [0.0, 4.0]], [0, -1],
+        all_outputs,
+    )
+    specs["complex64_cancellation"] = _complex_scan_dtype_spec(
+        "complex64", [3], [[16777216.0, 0.0], [1.0, 0.0], [-16777216.0, 0.0]],
+        [0, -1], ("complex64", "complex128", "float32", "float64", "int32", "int64"),
+    )
+    specs["double_precision"] = _complex_scan_dtype_spec(
+        "complex128", [3],
+        [
+            [9007199254740992, 9007199254740992],
+            [1, 1],
+            [-9007199254740992, -9007199254740992],
+        ],
+        [0, -1], ("complex64", "complex128", "float32", "float64", "int64"),
+    )
+    packed_values: list[list[int | float]] = [
+        [value, value]
+        for value in (0, 0, 16777216, 1, -16777216)
+        for _ in range(17)
+    ]
+    specs["packed_columns_cancellation"] = _complex_scan_dtype_spec(
+        "complex64", [5, 17], packed_values, [0, 1, -1],
+        ("complex64", "complex128", "float32", "float64", "int32", "int64"),
+    )
+    return specs
+
+
 def complex_scan_dtype(torch: Any) -> dict[str, Any]:
     """Observe explicit CPU complex scan output dtypes across source and layout classes."""
     specs = _complex_scan_dtype_inputs()
@@ -1905,19 +1938,19 @@ def complex_scan_dtype(torch: Any) -> dict[str, Any]:
     return _case("tensor.complex_scan_dtype", "api:torch", specs, expected, tolerance=1e-6)
 
 
-def _complex_invalid_mean_axis(call: Callable[[], Any], label: str) -> dict[str, str]:
+def _complex_invalid_reduction_axis(call: Callable[[], Any], label: str) -> dict[str, str]:
     try:
         call()
     except (IndexError, RuntimeError) as error:
         if "dimension out of range" not in str(error).lower():
             raise
         return {"error": "invalid_axis"}
-    raise ValueError(f"{label} unexpectedly accepted an invalid mean axis")
+    raise ValueError(f"{label} unexpectedly accepted an invalid reduction axis")
 
 
 def complex_mean_dtype(torch: Any) -> dict[str, Any]:
     """Observe explicit and default CPU complex mean output dtypes."""
-    specs = _complex_scan_dtype_inputs()
+    specs = _complex_reduction_dtype_inputs()
     all_outputs = (*_INTEGER_OUTPUT_DTYPE_NAMES, "float32", "float64", "complex64", "complex128")
     for spec in specs.values():
         spec["output_dtypes"] = list(
@@ -1925,37 +1958,6 @@ def complex_mean_dtype(torch: Any) -> dict[str, Any]:
             if spec["dtype"] in ("complex64", "complex128")
             else ("complex64", "complex128")
         )
-    specs["rounding"] = _complex_scan_spec(
-        "complex64", [3], [[1.9, 2.0], [2.9, -3.0], [0.0, 4.0]], [0, -1]
-    )
-    specs["complex64_cancellation"] = _complex_scan_spec(
-        "complex64", [3], [[16777216.0, 0.0], [1.0, 0.0], [-16777216.0, 0.0]],
-        [0, -1],
-    )
-    specs["double_precision"] = _complex_scan_spec(
-        "complex128", [3],
-        [
-            [9007199254740992, 9007199254740992],
-            [1, 1],
-            [-9007199254740992, -9007199254740992],
-        ],
-        [0, -1],
-    )
-    packed_values: list[list[int | float]] = [
-        [value, value]
-        for value in (0, 0, 16777216, 1, -16777216)
-        for _ in range(17)
-    ]
-    specs["packed_columns_cancellation"] = _complex_scan_spec(
-        "complex64", [5, 17], packed_values, [0, 1, -1]
-    )
-    for spec in (
-        specs["rounding"],
-        specs["complex64_cancellation"],
-        specs["double_precision"],
-        specs["packed_columns_cancellation"],
-    ):
-        spec["output_dtypes"] = [*all_outputs, "default"]
 
     expected: dict[str, Any] = {}
     for name, spec in specs.items():
@@ -2002,7 +2004,7 @@ def complex_mean_dtype(torch: Any) -> dict[str, Any]:
                         axis_call, f"{name}.mean.invalid_axis.{axis}.{target}"
                     )
                     if is_integer_target
-                    else _complex_invalid_mean_axis(
+                    else _complex_invalid_reduction_axis(
                         axis_call, f"{name}.mean.invalid_axis.{axis}.{target}"
                     )
                 )
@@ -2013,6 +2015,63 @@ def complex_mean_dtype(torch: Any) -> dict[str, Any]:
     return _case("tensor.complex_mean_dtype", "api:torch", specs, expected, tolerance=1e-6)
 
 
+def complex_sum_dtype(torch: Any) -> dict[str, Any]:
+    """Observe explicit and default CPU complex sum output dtypes."""
+    specs = _complex_reduction_dtype_inputs()
+    for spec in specs.values():
+        if spec["dtype"] in ("complex64", "complex128"):
+            spec["output_dtypes"].append("default")
+
+    expected: dict[str, Any] = {}
+    for name, spec in specs.items():
+        source = (
+            _complex_scan_source(torch, spec)
+            if spec["dtype"] in ("complex64", "complex128")
+            else _real_dtype_source(torch, spec)
+        )
+        source_expected: dict[str, Any] = {}
+        for target in spec["output_dtypes"]:
+            output_dtype = None if target == "default" else getattr(torch, target)
+
+            def sum_call(axis: int | None) -> Any:
+                if target == "default":
+                    return (
+                        source.sum()
+                        if axis is None
+                        else source.sum(dim=axis, keepdim=True)
+                    )
+                return (
+                    source.sum(dtype=output_dtype)
+                    if axis is None
+                    else source.sum(dim=axis, keepdim=True, dtype=output_dtype)
+                )
+
+            reject = target in ("uint16", "uint32", "uint64") and source.numel() > 0
+            target_expected: dict[str, Any] = {
+                "all": _unsupported_integer_output(
+                    lambda: sum_call(None), "sum", target, reject,
+                    f"{name}.sum.all.{target}", observer=_complex_scan_dtype_observation,
+                )
+            }
+            axes: dict[str, Any] = {}
+            for axis in spec["axes"]:
+                axes[str(axis)] = _unsupported_integer_output(
+                    lambda axis=axis: sum_call(axis), "sum", target, reject,
+                    f"{name}.sum.{axis}.{target}",
+                    observer=_complex_scan_dtype_observation,
+                )
+            target_expected["axes"] = axes
+
+            invalid_axes: dict[str, Any] = {}
+            for axis in spec["invalid_axes"]:
+                invalid_axes[str(axis)] = _complex_invalid_reduction_axis(
+                    lambda axis=axis: sum_call(axis),
+                    f"{name}.sum.invalid_axis.{axis}.{target}",
+                )
+            target_expected["invalid_axes"] = invalid_axes
+            source_expected[target] = target_expected
+        expected[name] = source_expected
+    return _case("tensor.complex_sum_dtype", "api:torch", specs, expected, tolerance=1e-6)
 
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
@@ -2025,7 +2084,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
     cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
-    integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype,
+    integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
 )
 
 
