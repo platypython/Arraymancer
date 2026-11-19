@@ -332,10 +332,6 @@ proc mean*[T: SomeFloat](arg: Tensor[T]): T {.inline.}=
   ## Compute the mean of all elements
   arg.sum / arg.size.T
 
-proc mean*[T: Complex[float32] or Complex[float64]](arg: Tensor[T]): T {.inline.}=
-  ## Compute the mean of all elements
-  type F = T.T # Get float subtype of Complex[T]
-  arg.sum / complex(arg.size.F, 0.F)
 
 proc mean*[T: SomeFloat](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}=
   ## Mean along a positive or negative axis, retaining its dimension.
@@ -350,12 +346,6 @@ proc mean*[T: SomeFloat](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}
       return packedFloat32Axis(arg, axis, false, true)
   sumAlongAxis(arg, axis) / arg.shape[axis].T
 
-proc mean*[T: Complex[float32] or Complex[float64]](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}=
-  ## Mean along a positive or negative axis, retaining its dimension.
-  let axis = reductionAxis(arg.rank, axis)
-  if arg.rank == 0: return sumAlongAxis(arg, axis)
-  type F = T.T # Get float subtype of Complex[T]
-  sumAlongAxis(arg, axis) / complex(arg.shape[axis].F, 0.F)
 
 
 proc sumConvertedBlock[T, U](input: ptr UncheckedArray[T], base, count: uint;
@@ -438,7 +428,7 @@ template sumConvertedValues(values: untyped; U: typedesc): untyped =
       if position == 128:
         mergeConvertedPartial(bins, blocks,
                               ((partials[0] + partials[1]) + partials[2]) + partials[3])
-        for partial in partials.mitems: partial = U(0)
+        for partial in partials.mitems: partial = default(U)
         position = 0
     if position != 0:
       mergeConvertedPartial(bins, blocks,
@@ -563,6 +553,65 @@ proc reduceConvertedAxis[T, U](arg: Tensor[T], axis: int;
     output[index] = reduced(
       stridedReductionValues(input, base, axisLength, arg.strides[axis]))
 
+proc meanCascadedTotal[T, U](arg: Tensor[T]; dtype: typedesc[U]): U =
+  ## Dense views reduce in storage order; other views retain signed strides.
+  warnComplexToRealCast(T, U, arg.size)
+  if arg.size == 0:
+    when U is Complex: return normalizedMeanValue(default(U), 0)
+    else: return U(NaN)
+  let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+  var total: U
+  if arg.is_C_contiguous or arg.is_F_contiguous:
+    total = sumCascadedSpan(input, 0'u, arg.size.uint, 1'u, U)
+  elif arg.rank == 1:
+    total = sumCascadedSpan(input, 0, arg.size.uint, arg.strides[0], U)
+  else:
+    total = sumConvertedValues(arg, U)
+  normalizedMeanValue(total, arg.size)
+
+proc meanCascadedTensorAxis[T, U](arg: Tensor[T], axis: int;
+                                 dtype: typedesc[U]): Tensor[U] =
+  ## Only the independent final output is allocated, including scalar means.
+  withCompilerOptimHints()
+  warnComplexToRealCast(T, U, arg.size)
+  let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+  if arg.rank == 0:
+    if arg.size == 0: return newTensor[U](0)
+    let total = default(U) + convertedReductionValue(input[0], U)
+    return newTensorWith[U]([], normalizedMeanValue(total, 1))
+  var shape = arg.shape
+  shape[axis] = 1
+  let length = arg.shape[axis]
+  if length == 0:
+    when U is Complex:
+      return newTensorWith[U](shape, normalizedMeanValue(default(U), 0))
+    else:
+      return newTensorWith[U](shape, U(NaN))
+  result = newTensorUninit[U](shape)
+  if result.size == 0: return
+  if arg.is_C_contiguous:
+    var outer = 1'u
+    var inner = 1'u
+    for dimension in 0 ..< axis: outer *= arg.shape[dimension].uint
+    for dimension in axis + 1 ..< arg.rank: inner *= arg.shape[dimension].uint
+    meanCascadedAxis(result.get_offset_ptr, arg.get_offset_ptr, outer, length.uint, inner)
+    return
+  let output {.restrict.} = cast[ptr UncheckedArray[U]](result.get_offset_ptr)
+  let stride = arg.strides[axis]
+  for index in 0 ..< result.size:
+    var remainder = index
+    var base = 0
+    for dimension in countdown(arg.rank - 1, 0):
+      if dimension != axis:
+        base += (remainder mod shape[dimension]) * arg.strides[dimension]
+        remainder = remainder div shape[dimension]
+    let total =
+      if stride == 1 or stride == -1:
+        sumCascadedSpan(input, base, length.uint, stride, U)
+      else:
+        sumCascadedSpan(input, base, length.uint, stride, U, false)
+    output[index] = normalizedMeanValue(total, length)
+
 proc mean*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T];
                                                 dtype: typedesc[U]): U =
   ## Mean after casting each real input to the requested floating ``dtype``.
@@ -586,6 +635,49 @@ proc mean*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T], axis: int;
     if arg.rank > 0 and arg.size > 0 and arg.is_C_contiguous:
       return arg.mean(axis)
   reduceConvertedAxis(arg, axis, U, true)
+
+proc mean*[T: SomeNumber or bool or Complex; F: SomeFloat](arg: Tensor[T];
+    dtype: typedesc[Complex[F]]): Complex[F] =
+  ## Cast before component-width CPU summation and rounded reciprocal division.
+  ## Empty means have two NaN components. No converted input tensor is allocated.
+  meanCascadedTotal(arg, Complex[F])
+
+proc mean*[T: SomeNumber or bool or Complex; F: SomeFloat](arg: Tensor[T], axis: int;
+    dtype: typedesc[Complex[F]]): Tensor[Complex[F]] =
+  ## Mean in the requested complex dtype, retaining the reduced dimension.
+  ## Signed views and negative axes are supported; only the output is allocated.
+  let axis = reductionAxis(arg.rank, axis)
+  meanCascadedTensorAxis(arg, axis, Complex[F])
+
+proc mean*[T: Complex[float32] or Complex[float64]](arg: Tensor[T]): T {.inline.} =
+  ## Sum in the input component width, then apply complex reciprocal division.
+  meanCascadedTotal(arg, T)
+
+proc mean*[T: Complex[float32] or Complex[float64]](arg: Tensor[T], axis: int): Tensor[T] {.inline.} =
+  ## Complex mean retaining its axis; scalar sums execute the zero identity.
+  let axis = reductionAxis(arg.rank, axis)
+  meanCascadedTensorAxis(arg, axis, T)
+
+proc mean*[F: SomeFloat; U: SomeFloat](arg: Tensor[Complex[F]];
+    dtype: typedesc[U]): U =
+  ## Drop imaginary components before real accumulation; warn once if nonempty.
+  meanCascadedTotal(arg, U)
+
+proc mean*[F: SomeFloat; U: SomeFloat](arg: Tensor[Complex[F]], axis: int;
+    dtype: typedesc[U]): Tensor[U] =
+  ## Cast real components on read, retaining the axis in an independent output.
+  let axis = reductionAxis(arg.rank, axis)
+  meanCascadedTensorAxis(arg, axis, U)
+
+proc mean*[F: SomeFloat; U: SomeInteger or bool](arg: Tensor[Complex[F]];
+    dtype: typedesc[U]): U =
+  ## Integer/bool mean dtypes reject before casts or warnings, including empties.
+  raise newException(ValueError, "Mean output dtype must be floating point or complex")
+
+proc mean*[F: SomeFloat; U: SomeInteger or bool](arg: Tensor[Complex[F]], axis: int;
+    dtype: typedesc[U]): Tensor[U] =
+  ## Dtype rejection precedes axis validation and discarded-imaginary warnings.
+  raise newException(ValueError, "Mean output dtype must be floating point or complex")
 
 proc sum*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T];
                                                dtype: typedesc[U]): U =

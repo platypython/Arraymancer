@@ -585,6 +585,56 @@ proc main() =
       check longColumns.sum(0, dtype = float32) ==
             [[65535'f32 * 16384'f32, 65535'f32 * 16384'f32]].toTensor
 
+    test "Complex means cast before component summation and reciprocal rounding":
+      let rounded = [complex32(1.9, 2), complex32(2.9, -3), complex32(0, 4)].toTensor
+      check cast[uint32](rounded.mean.re) == 1070386382'u32
+      check rounded.mean.im == 1'f32
+      check cast[uint32](rounded.mean(0)[0].re) == 1070386382'u32
+      let precise = [complex(16777217.0, 16777217.0),
+                     complex(-16777216.0, -16777216.0)].toTensor
+      check precise.mean(dtype = Complex[float32]) == complex32(0, 0)
+      check precise.mean(dtype = Complex[float64]) == complex(0.5, 0.5)
+      let wide = [complex(9007199254740992.0, 9007199254740992.0),
+                  complex(1.0, 1.0), complex(-9007199254740992.0, -9007199254740992.0)].toTensor
+      check wide.mean == complex(1.0 / 3.0, 1.0 / 3.0)
+      check wide.mean(dtype = float64) == 0.0
+      let columns = wide.reshape(3, 1).broadcast(3, 2).clone()
+      check columns.mean(0) == [[complex(0.0), complex(0.0)]].toTensor
+      check [true, false, true].toTensor.mean(dtype = Complex[float64]) == complex(2.0 / 3.0)
+      check [high(uint64), high(uint64)].toTensor.mean(dtype = Complex[float64]).re > 1.8e19
+
+    test "Complex means preserve scalar identities, empty shapes and nonfinite division":
+      let negativeZero = cast[float64](0x8000000000000000'u64)
+      let scalar = newTensorWith[Complex[float64]]([], complex(negativeZero, negativeZero))
+      check scalar.mean.re.classify == fcZero
+      check scalar.mean.im.classify == fcZero
+      check scalar.mean(-1)[].re.classify == fcZero
+      let empty = newTensor[Complex[float64]](2, 0, 3)
+      check empty.mean.re.isNaN and empty.mean.im.isNaN
+      let reduced = empty.mean(1, dtype = Complex[float32])
+      check reduced.shape == [2, 1, 3]
+      for value in reduced: check value.re.isNaN and value.im.isNaN
+      check empty.mean(0).shape == [1, 0, 3]
+      let nonfinite = [complex(7.0, NaN)].toTensor
+      check nonfinite.mean.re.isNaN and nonfinite.mean.im.isNaN
+      check nonfinite.mean(dtype = float32) == 7'f32
+      expect IndexDefect: discard scalar.mean(1)
+      expect ValueError: discard empty.mean(dtype = bool)
+      expect ValueError: discard empty.mean(99, dtype = uint16)
+
+    test "Complex mean dtype views retain signed strides and independent outputs":
+      let owner = [complex(99.0, 1.0), complex(1.0, 1.0), complex(2.0, 2.0),
+                   complex(3.0, 3.0), complex(99.0, 1.0)].toTensor
+      let reversed = owner[3..1|-1]
+      check reversed.mean(dtype = Complex[float32]) == complex32(2, 2)
+      check reversed.mean(dtype = float64) == 2.0
+      let broadcast = reversed.reshape(3, 1).broadcast(3, 5)
+      var columns = broadcast.mean(0, dtype = Complex[float32])
+      check columns.shape == [1, 5]
+      for value in columns: check value == complex32(2, 2)
+      columns[0, 0] = complex32(100, 100)
+      check owner[1] == complex(1.0, 1.0)
+
     test "Product":
       let a = [[1,2,4],[8,16,32]].toTensor()
       let a_c = a.asType(Complex[float64])

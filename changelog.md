@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add explicit complex CPU mean dtypes for real, boolean and complex inputs,
+  plus real output dtypes for complex inputs, without conversion buffers.
+  Correct default complex mean reciprocal rounding, scalar zero identities
+  and nonfinite division; retain component-width cascade and column-tail grouping.
 - Add explicit complex CPU cumulative scan dtypes for real, boolean and complex
   inputs, casting on read without conversion buffers. Support complex-to-real
   and integer casts, boolean scalar truth and thread-safe once-per-process

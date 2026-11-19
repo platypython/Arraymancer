@@ -26,6 +26,16 @@ func convertedComplexReductionValue*[T; F: SomeFloat](value: T;
   else:
     result.re = F(value)
 
+func normalizedComplexMean*[F: SomeFloat](value: Complex[F]; count: int): Complex[F] {.inline.} =
+  ## Match complex division's rounded reciprocal and nonfinite cross-products.
+  if count == 0:
+    return Complex[F](re: F(NaN), im: F(NaN))
+  let divisor = F(count)
+  let ratio = F(0) / divisor
+  let scale = F(1) / (divisor + F(0) * ratio)
+  result.re = (value.re + value.im * ratio) * scale
+  result.im = (value.im - value.re * ratio) * scale
+
 var discardedImaginaryWarning: Atomic[bool]
 
 proc warnComplexToRealCast*[T, U](source: typedesc[T]; dtype: typedesc[U];

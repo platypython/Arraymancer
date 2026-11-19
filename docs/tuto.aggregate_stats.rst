@@ -86,5 +86,18 @@ warn. Integer casts truncate the real component, which must fit the output
 dtype before wrapping arithmetic. Boolean scalar copies test both components
 and never warn. The scalar/empty dtype exceptions above apply unchanged.
 
+Complex means accept the same ``Complex[float32]`` and ``Complex[float64]``
+output dtypes for real, boolean and complex inputs. Unlike scans, they sum in
+the requested component width and use complex reciprocal division. Default
+complex means retain their input dtype. Packed reductions preserve CPU cascade
+and column-tail grouping, which can affect cancellation-sensitive results.
+
+For a complex input, ``mean(dtype = float32)`` or ``mean(dtype = float64)``
+discards imaginary components before real arithmetic and shares the
+once-per-process cast warning with scans. Integer and boolean mean output
+dtypes reject before axis validation or warnings, even for scalars and empties.
+Empty complex means have two NaN components; scalar means add the zero identity
+before dividing rather than copying signed-zero components.
+
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

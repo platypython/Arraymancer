@@ -853,7 +853,7 @@ proc complexScanDtypeForOutput[T](source: Tensor[T], spec: JsonNode,
     source, spec, Complex[float64], dtypeName)
   else: raise newException(ValueError, "unsupported complex scan output dtype: " & dtypeName)
 
-proc complexScanDtypeCase[T](spec: JsonNode): JsonNode =
+proc complexScanDtypeSource[T](spec: JsonNode): Tensor[T] =
   var source =
     when T is Complex[float32] or T is Complex[float64]: getComplexTensor[T](spec)
     elif T is float32: realDtypeFloat32Tensor(spec)
@@ -866,7 +866,11 @@ proc complexScanDtypeCase[T](spec: JsonNode): JsonNode =
       realDtypeSpecials(source, spec["nonfinite"])
     else:
       raise newException(ValueError, "nonfinite scan dtype source must be floating point")
-  source = realDtypeLayout(source, spec["layout"].getStr)
+  result = realDtypeLayout(source, spec["layout"].getStr)
+
+
+proc complexScanDtypeCase[T](spec: JsonNode): JsonNode =
+  let source = complexScanDtypeSource[T](spec)
   result = newJObject()
   for dtypeNode in spec["output_dtypes"]:
     let dtypeName = dtypeNode.getStr
@@ -893,6 +897,165 @@ proc complexScanDtype(inputs: JsonNode): JsonNode =
   result = newJObject()
   for name, spec in inputs:
     result[name] = complexScanDtypeBySource(spec)
+proc complexMeanIntegerError[T, U](source: Tensor[T], dtype: typedesc[U],
+                                   label: string): JsonNode =
+  try:
+    discard source.mean(dtype = dtype)
+  except ValueError as error:
+    let message = error.msg.toLowerAscii
+    if not (message.contains("mean") and message.contains("dtype")):
+      raise
+    return %*{"error": "integer_mean_dtype_rejected"}
+  raise newException(ValueError, label & " unexpectedly accepted an integer mean dtype")
+
+proc complexMeanIntegerAxisError[T, U](source: Tensor[T], axis: int,
+                                       dtype: typedesc[U], label: string): JsonNode =
+  try:
+    discard source.mean(axis = axis, dtype = dtype)
+  except ValueError as error:
+    let message = error.msg.toLowerAscii
+    if not (message.contains("mean") and message.contains("dtype")):
+      raise
+    return %*{"error": "integer_mean_dtype_rejected"}
+  raise newException(ValueError, label & " unexpectedly accepted an integer mean dtype")
+
+proc complexMeanInvalidAxis[T, U](source: Tensor[T], axis: int,
+                                  dtype: typedesc[U], label: string): JsonNode =
+  try:
+    discard source.mean(axis = axis, dtype = dtype)
+  except ValueError as error:
+    let message = error.msg.toLowerAscii
+    if not (message.contains("axis") or message.contains("dimension") or
+            message.contains("index") or message.contains("range")):
+      raise
+    return %*{"error": "invalid_axis"}
+  except IndexDefect as error:
+    if not error.msg.toLowerAscii.contains("reduction axis out of bounds"): raise
+    return %*{"error": "invalid_axis"}
+  raise newException(ValueError, label & " unexpectedly accepted an invalid mean axis")
+
+proc complexMeanInvalidDefaultAxis[T](source: Tensor[T], axis: int,
+                                      label: string): JsonNode =
+  try:
+    discard source.mean(axis = axis)
+  except ValueError as error:
+    let message = error.msg.toLowerAscii
+    if not (message.contains("axis") or message.contains("dimension") or
+            message.contains("index") or message.contains("range")):
+      raise
+    return %*{"error": "invalid_axis"}
+  except IndexDefect as error:
+    if not error.msg.toLowerAscii.contains("reduction axis out of bounds"): raise
+    return %*{"error": "invalid_axis"}
+  raise newException(ValueError, label & " unexpectedly accepted an invalid mean axis")
+
+proc complexMeanDtypeTarget[T, U](source: Tensor[T], spec: JsonNode,
+                                  dtype: typedesc[U], dtypeName: string): JsonNode =
+  let integerTarget = dtypeName in [
+    "bool", "int8", "int16", "int32", "int64",
+    "uint8", "uint16", "uint32", "uint64",
+  ]
+  result = newJObject()
+  if integerTarget:
+    result["all"] = complexMeanIntegerError(
+      source, dtype, dtypeName & ".mean.all")
+  else:
+    result["all"] = complexScanDtypeObservation(
+      newTensorWith[U]([], source.mean(dtype = dtype)))
+
+  var axes = newJObject()
+  for axisNode in spec["axes"]:
+    let axis = axisNode.getInt
+    if integerTarget:
+      axes[$axis] = complexMeanIntegerAxisError(
+        source, axis, dtype, dtypeName & ".mean." & $axis)
+    else:
+      axes[$axis] = complexScanDtypeObservation(
+        source.mean(axis = axis, dtype = dtype))
+  result["axes"] = axes
+
+  var invalidAxes = newJObject()
+  for axisNode in spec["invalid_axes"]:
+    let axis = axisNode.getInt
+    if integerTarget:
+      invalidAxes[$axis] = complexMeanIntegerAxisError(
+        source, axis, dtype, dtypeName & ".mean.invalid_axis." & $axis)
+    else:
+      invalidAxes[$axis] = complexMeanInvalidAxis(
+        source, axis, dtype, dtypeName & ".mean.invalid_axis." & $axis)
+  result["invalid_axes"] = invalidAxes
+
+proc complexMeanDefaultTarget[T](source: Tensor[T], spec: JsonNode): JsonNode =
+  result = newJObject()
+  result["all"] = complexScanDtypeObservation(newTensorWith[T]([], source.mean))
+
+  var axes = newJObject()
+  for axisNode in spec["axes"]:
+    let axis = axisNode.getInt
+    axes[$axis] = complexScanDtypeObservation(source.mean(axis = axis))
+  result["axes"] = axes
+
+  var invalidAxes = newJObject()
+  for axisNode in spec["invalid_axes"]:
+    let axis = axisNode.getInt
+    invalidAxes[$axis] = complexMeanInvalidDefaultAxis(
+      source, axis, "default.mean.invalid_axis." & $axis)
+  result["invalid_axes"] = invalidAxes
+
+proc complexMeanDtypeForOutput[T](source: Tensor[T], spec: JsonNode,
+                                  dtypeName: string): JsonNode =
+  case dtypeName
+  of "bool": complexMeanDtypeTarget[T, bool](source, spec, bool, dtypeName)
+  of "uint8": complexMeanDtypeTarget[T, uint8](source, spec, uint8, dtypeName)
+  of "int8": complexMeanDtypeTarget[T, int8](source, spec, int8, dtypeName)
+  of "int16": complexMeanDtypeTarget[T, int16](source, spec, int16, dtypeName)
+  of "int32": complexMeanDtypeTarget[T, int32](source, spec, int32, dtypeName)
+  of "int64": complexMeanDtypeTarget[T, int64](source, spec, int64, dtypeName)
+  of "uint16": complexMeanDtypeTarget[T, uint16](source, spec, uint16, dtypeName)
+  of "uint32": complexMeanDtypeTarget[T, uint32](source, spec, uint32, dtypeName)
+  of "uint64": complexMeanDtypeTarget[T, uint64](source, spec, uint64, dtypeName)
+  of "float32": complexMeanDtypeTarget[T, float32](source, spec, float32, dtypeName)
+  of "float64": complexMeanDtypeTarget[T, float64](source, spec, float64, dtypeName)
+  of "complex64": complexMeanDtypeTarget[T, Complex[float32]](
+    source, spec, Complex[float32], dtypeName)
+  of "complex128": complexMeanDtypeTarget[T, Complex[float64]](
+    source, spec, Complex[float64], dtypeName)
+  else: raise newException(ValueError, "unsupported complex mean output dtype: " & dtypeName)
+
+proc complexMeanDtypeCase[T](spec: JsonNode): JsonNode =
+  let source = complexScanDtypeSource[T](spec)
+  result = newJObject()
+  for dtypeNode in spec["output_dtypes"]:
+    let dtypeName = dtypeNode.getStr
+    if dtypeName == "default":
+      when T is Complex[float32] or T is Complex[float64]:
+        result[dtypeName] = complexMeanDefaultTarget(source, spec)
+      else:
+        raise newException(ValueError, "default complex mean requires a complex input")
+    else:
+      result[dtypeName] = complexMeanDtypeForOutput(source, spec, dtypeName)
+
+proc complexMeanDtypeBySource(spec: JsonNode): JsonNode =
+  case spec["dtype"].getStr
+  of "bool": complexMeanDtypeCase[bool](spec)
+  of "int8": complexMeanDtypeCase[int8](spec)
+  of "int16": complexMeanDtypeCase[int16](spec)
+  of "int32": complexMeanDtypeCase[int32](spec)
+  of "int64": complexMeanDtypeCase[int64](spec)
+  of "uint8": complexMeanDtypeCase[uint8](spec)
+  of "uint16": complexMeanDtypeCase[uint16](spec)
+  of "uint32": complexMeanDtypeCase[uint32](spec)
+  of "uint64": complexMeanDtypeCase[uint64](spec)
+  of "float32": complexMeanDtypeCase[float32](spec)
+  of "float64": complexMeanDtypeCase[float64](spec)
+  of "complex64": complexMeanDtypeCase[Complex[float32]](spec)
+  of "complex128": complexMeanDtypeCase[Complex[float64]](spec)
+  else: raise newException(ValueError, "unsupported complex mean input dtype")
+
+proc complexMeanDtype(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = complexMeanDtypeBySource(spec)
 
 
 proc runCase*(caseData: JsonNode): JsonNode =
@@ -922,6 +1085,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = complexScans(inputs)
   of "tensor.complex_scan_dtype":
     result = complexScanDtype(inputs)
+  of "tensor.complex_mean_dtype":
+    result = complexMeanDtype(inputs)
   of "tensor.transpose_alias":
     var base = getTensor(inputs["a"])
     var view = base.transpose

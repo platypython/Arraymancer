@@ -817,3 +817,52 @@ suite "Pinned PyTorch conformance foundation":
     let integer = malformed["cases"][index]["expected"]["complex_negative"]["int8"]["cumsum"]["axes"]["0"]["forward"]
     integer["values"].elems[0] = newJInt(128)
     expect ValueError: validateFixtureData(malformed, reference)
+
+  test "Complex means preserve reciprocal rounding and distinct row/column trees":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var meanCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.complex_mean_dtype": meanCase = caseData
+    doAssert meanCase.kind == JObject
+    let actual = runCase(meanCase)
+    let expected = meanCase["expected"]
+    check compareObservations(expected, actual,
+      meanCase["atol"].getFloat, meanCase["rtol"].getFloat).len == 0
+    check actual["rounding"]["default"]["all"] == expected["rounding"]["default"]["all"]
+    let precise = actual["double_precision"]["default"]["all"]["values"][0]
+    check precise["real"].getFloat == 1.0 / 3.0
+    check precise["imag"].getFloat == 1.0 / 3.0
+    check actual["double_precision"]["float64"]["all"]["values"] == %*[0.0]
+    let columns = actual["packed_columns_cancellation"]["default"]["axes"]["0"]["values"]
+    check columns[0]["real"].getFloat == 0.0
+    check columns[16]["real"].getFloat > 0.0
+    check actual["scalar_negative_zero"]["default"]["all"]["negative_zero"] ==
+      %*{"real": [], "imag": []}
+    check actual["empty"]["complex64"]["all"]["values"] ==
+      %*[{"real": "nan", "imag": "nan"}]
+    check actual["scalar"]["uint64"]["all"] == %*{"error": "integer_mean_dtype_rejected"}
+
+  test "Reject malformed complex mean dtype and axis contracts":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "tensor.complex_mean_dtype":
+        index = candidate
+    doAssert index >= 0
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["bool"]["output_dtypes"].elems[0] = %"default"
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    let integerAxis = malformed["cases"][index]["expected"]["empty"]["uint64"]["invalid_axes"]["3"]
+    integerAxis["error"] = %"invalid_axis"
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["scalar"]["bool"]["all"] =
+      %*{"shape": [], "numel": 1, "dtype": "bool", "device": "cpu", "values": [true]}
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    let emptyMean = malformed["cases"][index]["expected"]["empty"]["complex64"]["all"]
+    emptyMean["shape"] = %*[0]
+    emptyMean["numel"] = %0
+    emptyMean["values"] = newJArray()
+    expect ValueError: validateFixtureData(malformed, reference)
