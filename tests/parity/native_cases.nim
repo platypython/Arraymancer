@@ -2433,6 +2433,107 @@ proc logcumsumexp(inputs: JsonNode): JsonNode =
   result["complex128"] = logcumsumexpDtype[Complex[float64]](inputs["complex128"])
 
 
+proc logcumsumexpGradientSeedValue[T: SomeFloat or Complex](index: int,
+    kind: string): T =
+  if kind == "zero": return logsumexpGradientZero[T]()
+  when T is Complex:
+    type Component = typeof(default(T).re)
+    if kind == "negative_infinity":
+      return T(re: Component(-Inf), im: Component(0))
+    if kind == "imaginary_infinity":
+      return T(re: Component(1), im: Component(Inf))
+  else:
+    if kind == "negative_infinity": return T(-Inf)
+  let reductionKind = case kind
+    of "mixed": "ramp"
+    of "infinity": "positive_infinity"
+    else: kind
+  logsumexpGradientSeedValue[T](index, reductionKind)
+
+
+proc logcumsumexpGradientSeed[T: SomeFloat or Complex](shape: Metadata,
+    kind: string): Tensor[T] =
+  ## Explicit view metadata keeps offset/step-two seeds strided at every rank.
+  var count = 1
+  for dimension in shape: count *= dimension
+  if kind == "strided":
+    var backing = newTensor[T](count * 2 + 1)
+    for index in 0 ..< count:
+      backing.unsafe_raw_offset[index * 2 + 1] =
+        logcumsumexpGradientSeedValue[T](index, kind)
+    result = backing
+    result.offset += 1
+    result.shape = shape
+    result.strides.len = shape.len
+    var stride = 2
+    for dimension in countdown(int(shape.len) - 1, 0):
+      result.strides[dimension] = stride
+      stride *= shape[dimension]
+    return
+  result = newTensorUninit[T](shape)
+  for index in 0 ..< count:
+    result.unsafe_raw_offset[index] = logcumsumexpGradientSeedValue[T](index, kind)
+
+
+proc logcumsumexpGradientObservation[T: SomeFloat or Complex](
+    source: Tensor[T], axis: int, seedKind: string, invalidSeed = false): JsonNode =
+  let context = newContext Tensor[T]
+  let input = context.variable(source, requires_grad = true)
+  let axisLimit = max(1, source.rank)
+  let invalidAxis = axis < -axisLimit or axis >= axisLimit
+  var output: Variable[Tensor[T]]
+  try:
+    output = input.logcumsumexp(axis)
+  except IndexDefect:
+    if not invalidAxis: raise
+    return %*{"error": "invalid_axis"}
+  if invalidAxis:
+    raise newException(ValueError, "logcumsumexp accepted an invalid gradient axis")
+  if invalidSeed:
+    try:
+      output.backprop(logsumexpGradientInvalidSeed[T](output.value.shape))
+    except ValueError as error:
+      if error.msg != "backprop gradient shape must match the output shape": raise
+      return %*{"error": "seed_shape_mismatch"}
+    raise newException(ValueError, "logcumsumexp accepted a mismatched gradient seed shape")
+  let seed = logcumsumexpGradientSeed[T](output.value.shape, seedKind)
+  output.backprop(seed)
+  %*{
+    "output": logsumexpGradientTensorObservation(output.value),
+    "seed": logsumexpGradientTensorObservation(seed),
+    "gradient": logsumexpGradientTensorObservation(input.grad),
+  }
+
+
+proc logcumsumexpGradientDtype[T: SomeFloat or Complex](profiles: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in profiles:
+    if spec["invalid_seed"]["kind"].getStr != "shape_mismatch":
+      raise newException(ValueError, "unknown logcumsumexp gradient invalid seed kind")
+    let source = logsumexpInputTensor[T](spec)
+    var observations = newJObject()
+    for request in spec["requests"]:
+      let id = request["id"].getStr
+      let axis = request["axis"].getInt
+      for seedKindNode in request["seed_kinds"]:
+        let seedKind = seedKindNode.getStr
+        observations[id & "_seed_" & seedKind] =
+          logcumsumexpGradientObservation(source, axis, seedKind)
+      let axisLimit = max(1, source.rank)
+      if axis >= -axisLimit and axis < axisLimit:
+        observations[id & "_invalid_seed"] =
+          logcumsumexpGradientObservation(source, axis, "", invalidSeed = true)
+    result[name] = observations
+
+
+proc logcumsumexpGradient(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  result["float32"] = logcumsumexpGradientDtype[float32](inputs["float32"])
+  result["float64"] = logcumsumexpGradientDtype[float64](inputs["float64"])
+  result["complex64"] = logcumsumexpGradientDtype[Complex[float32]](inputs["complex64"])
+  result["complex128"] = logcumsumexpGradientDtype[Complex[float64]](inputs["complex128"])
+
+
 
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
@@ -2511,6 +2612,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = pairedExtremaGradient(inputs)
   of "autograd.logsumexp":
     result = logsumexpGradient(inputs)
+  of "autograd.logcumsumexp":
+    result = logcumsumexpGradient(inputs)
   of "autograd.product_gradient":
     for name, spec in inputs:
       var source = getTensor(spec["x"])

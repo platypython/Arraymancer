@@ -4230,6 +4230,247 @@ def logcumsumexp(torch: Any) -> dict[str, Any]:
     )
 
 
+def _logcumsumexp_gradient_raw_inputs() -> dict[str, dict[str, dict[str, Any]]]:
+    inputs: dict[str, dict[str, dict[str, Any]]] = {}
+    seed_names = (
+        "finite", "mixed", "zero", "negative_zero", "infinity",
+        "negative_infinity", "nan", "strided",
+    )
+    for dtype_name in ("float32", "float64", "complex64", "complex128"):
+        is_complex = dtype_name in ("complex64", "complex128")
+        cases: dict[str, dict[str, Any]] = {}
+        inputs[dtype_name] = cases
+
+        def add(
+            name: str,
+            shape: list[int],
+            layout: str,
+            real_values: list[float],
+            complex_values: list[list[float]] | None = None,
+            specials: list[dict[str, Any]] | None = None,
+        ) -> None:
+            values: list[Any]
+            if is_complex:
+                values = (
+                    complex_values
+                    if complex_values is not None
+                    else [[value, 0.0] for value in real_values]
+                )
+            else:
+                values = real_values
+            axis_limit = max(len(shape), 1)
+            requests = [
+                {
+                    "id": f"axis_{axis}",
+                    "axis": axis,
+                    "seed_kinds": [
+                        *seed_names,
+                        *(["imaginary_infinity"] if is_complex else []),
+                    ],
+                }
+                for axis in range(-axis_limit - 1, axis_limit + 1)
+            ]
+            cases[name] = {
+                "dtype": dtype_name,
+                "shape": shape,
+                "layout": layout,
+                "values": values,
+                "specials": [] if specials is None else specials,
+                "requests": requests,
+                "invalid_seed": {"kind": "shape_mismatch"},
+            }
+
+        base_real = [0.0, 1.0, -2.0, 3.0, -1.0, 2.0]
+        base_complex = [
+            [0.0, 0.25], [1.0, -0.5], [-2.0, 7.0],
+            [3.0, 1.0], [-1.0, -2.0], [2.0, 0.0],
+        ]
+        add("dense", [2, 3], "identity", base_real, base_complex)
+        add("transpose", [2, 3], "transpose", base_real, base_complex)
+        add("offset", [2, 3], "offset_columns", base_real, base_complex)
+        add("reverse", [2, 3], "reverse_both", base_real, base_complex)
+        add("broadcast", [1, 3], "broadcast", base_real[:3], base_complex[:3])
+        add("cube", [2, 2, 3], "identity", base_real * 2, base_complex * 2)
+        add(
+            "scalar", [], "identity", [-0.0],
+            [[2.0, 7.0]] if is_complex else None,
+        )
+        add(
+            "scalar_nan", [], "identity", [0.0],
+            [[0.0, 0.0]] if is_complex else None,
+            (
+                [
+                    {"index": 0, "value": "nan", "component": "real"},
+                    {"index": 0, "value": "+inf", "component": "imag"},
+                ]
+                if is_complex
+                else [{"index": 0, "value": "nan"}]
+            ),
+        )
+        add("empty", [2, 0, 3], "identity", [])
+        add("large", [3], "identity", [1000.0, 999.0, -1000.0])
+        add(
+            "all_negative_infinity", [2], "identity", [0.0, 0.0],
+            specials=[
+                {"index": 0, "value": "-inf", **({"component": "real"} if is_complex else {})},
+                {"index": 1, "value": "-inf", **({"component": "real"} if is_complex else {})},
+            ],
+        )
+        add(
+            "nonfinite", [4], "identity", [0.0, 1.0, 0.0, 0.0],
+            specials=[
+                {"index": 0, "value": "-inf", **({"component": "real"} if is_complex else {})},
+                {"index": 2, "value": "+inf", **({"component": "real"} if is_complex else {})},
+                {"index": 3, "value": "nan", **({"component": "real"} if is_complex else {})},
+            ],
+        )
+        if is_complex:
+            add(
+                "complex_phase", [3], "identity", [],
+                [[2.0, 7.0], [1.0, -8.0], [-2.0, 0.5]],
+            )
+            add(
+                "complex_infinity", [3], "identity", [],
+                [[0.0, 0.0], [1.0, 0.0], [0.0, -0.0]],
+                [
+                    {"index": 0, "value": "-inf", "component": "real"},
+                    {"index": 0, "value": "+inf", "component": "imag"},
+                    {"index": 2, "value": "+inf", "component": "real"},
+                ],
+            )
+    return inputs
+
+
+def _logcumsumexp_gradient_seed(
+    torch: Any, output: Any, dtype_name: str, kind: str
+) -> Any:
+    dtype = getattr(torch, dtype_name)
+    count = output.numel()
+    is_complex = dtype_name in ("complex64", "complex128")
+    if kind == "finite":
+        constant = complex(2.0, -0.5) if is_complex else 2.0
+    elif kind == "zero":
+        constant = complex(0.0, 0.0) if is_complex else 0.0
+    elif kind == "negative_zero":
+        constant = complex(-0.0, -0.0) if is_complex else -0.0
+    elif kind == "infinity":
+        constant = complex(float("inf"), 0.0) if is_complex else float("inf")
+    elif kind == "negative_infinity":
+        constant = complex(float("-inf"), 0.0) if is_complex else float("-inf")
+    elif kind == "nan":
+        constant = complex(float("nan"), 0.0) if is_complex else float("nan")
+    elif kind == "imaginary_infinity" and is_complex:
+        constant = complex(1.0, float("inf"))
+    elif kind in ("mixed", "strided"):
+        values = (
+            [
+                complex(index % 5 - 2, (index % 3 - 1) * 0.5)
+                for index in range(count)
+            ]
+            if is_complex
+            else [index % 5 - 2 for index in range(count)]
+        )
+        seed = torch.tensor(values, dtype=dtype, device="cpu").reshape(output.shape)
+        if kind == "strided":
+            backing = torch.zeros(count * 2 + 1, dtype=dtype, device="cpu")
+            backing[1::2] = seed.reshape(-1)
+            seed = backing[1::2].reshape(output.shape)
+        return seed
+    else:
+        raise ValueError(f"unknown logcumsumexp gradient seed kind: {kind}")
+    return torch.tensor([constant] * count, dtype=dtype, device="cpu").reshape(output.shape)
+
+
+def _logcumsumexp_gradient_axis_error(error: Exception) -> str | None:
+    if isinstance(error, IndexError):
+        return "invalid_axis"
+    if isinstance(error, RuntimeError):
+        message = str(error).lower()
+        if "dimension out of range" in message or "dim out of range" in message:
+            return "invalid_axis"
+    return None
+
+
+def _observe_logcumsumexp_gradient_request(
+    torch: Any, source: Any, dtype_name: str, request: dict[str, Any], label: str
+) -> dict[str, Any]:
+    request_id = request["id"]
+    axis = request["axis"]
+    axis_limit = max(source.ndim, 1)
+    invalid_axis = axis < -axis_limit or axis >= axis_limit
+    observations: dict[str, Any] = {}
+    for seed_kind in request["seed_kinds"]:
+        key = f"{request_id}_seed_{seed_kind}"
+        leaf = source.detach().requires_grad_(True)
+        try:
+            output = torch.logcumsumexp(leaf, dim=axis)
+        except (IndexError, RuntimeError) as error:
+            code = _logcumsumexp_gradient_axis_error(error)
+            if invalid_axis and code == "invalid_axis":
+                observations[key] = {"error": code}
+                continue
+            raise ValueError(
+                f"unexpected logcumsumexp gradient rejection for {label}.{seed_kind}: {error}"
+            ) from error
+        if invalid_axis:
+            raise ValueError(f"PyTorch accepted an invalid logcumsumexp axis for {label}")
+        seed = _logcumsumexp_gradient_seed(torch, output, dtype_name, seed_kind)
+        gradient, = torch.autograd.grad(output, leaf, grad_outputs=seed)
+        observations[key] = {
+            "output": _observe_logsumexp_gradient_tensor(output),
+            "seed": _observe_logsumexp_gradient_tensor(seed),
+            "gradient": _observe_logsumexp_gradient_tensor(gradient),
+        }
+
+    if not invalid_axis:
+        invalid_leaf = source.detach().requires_grad_(True)
+        invalid_output = torch.logcumsumexp(invalid_leaf, dim=axis)
+        invalid_seed = torch.zeros(
+            source.numel() + 1, dtype=invalid_output.dtype, device="cpu"
+        )
+        try:
+            torch.autograd.grad(invalid_output, invalid_leaf, grad_outputs=invalid_seed)
+        except RuntimeError as error:
+            message = str(error).lower()
+            if "shape" not in message and "size" not in message:
+                raise
+            observations[f"{request_id}_invalid_seed"] = {
+                "error": "seed_shape_mismatch"
+            }
+        else:
+            raise ValueError(f"PyTorch accepted a mismatched logcumsumexp seed for {label}")
+    return observations
+
+
+def logcumsumexp_gradient(torch: Any) -> dict[str, Any]:
+    """Observe actual CPU logcumsumexp forwards and seeded first-order VJPs."""
+    inputs = _logcumsumexp_gradient_raw_inputs()
+    expected: dict[str, dict[str, dict[str, Any]]] = {}
+    for dtype_name, profiles in inputs.items():
+        expected[dtype_name] = {}
+        for profile, spec in profiles.items():
+            source = _logcumsumexp_source(torch, spec)
+            observations: dict[str, Any] = {}
+            for request in spec["requests"]:
+                observations.update(
+                    _observe_logcumsumexp_gradient_request(
+                        torch,
+                        source,
+                        dtype_name,
+                        request,
+                        f"{dtype_name}.{profile}.{request['id']}",
+                    )
+                )
+            expected[dtype_name][profile] = observations
+    return _case(
+        "autograd.logcumsumexp",
+        "api:autograd",
+        inputs,
+        expected,
+        tolerance=1e-6,
+    )
+
+
 
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
@@ -4244,7 +4485,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
     complex_prod_dtype, indexed_extrema, paired_extrema, paired_extrema_gradient, aminmax,
-    logsumexp, logsumexp_gradient, logcumsumexp,
+    logsumexp, logsumexp_gradient, logcumsumexp, logcumsumexp_gradient,
 )
 
 

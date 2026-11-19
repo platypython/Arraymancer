@@ -1,6 +1,11 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add CPU float32/64 and complex64/128 seeded ``logcumsumexp`` gradients with
+  rounded forward normalizers and fused reverse logarithmic scans. Preserve
+  float32 exponential-channel cancellation, complex phases, component zero
+  signs, scalar/empty shapes and signed/broadcast inputs and seeds without
+  tensor intermediates.
 - Add CPU ``logcumsumexp`` scans for float32/64 and complex64/128 with stable,
   wide ordered carries and continuous complex phases. Preserve scalar bits,
   signed/broadcast views and dtype-before-allocation rejection without

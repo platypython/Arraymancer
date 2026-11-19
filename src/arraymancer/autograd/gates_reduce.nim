@@ -17,6 +17,7 @@ import  ../private/ast_utils,
         ./autograd_common,
         ./private/p_extrema_gradient,
         ./private/p_logsumexp_gradient,
+        ./private/p_logcumsumexp_gradient,
         std/[complex, sequtils]
 when defined(macosx) and defined(arm64):
   import ../tensor/private/p_accelerate
@@ -859,3 +860,34 @@ proc logsumexp*[T: SomeFloat or Complex](a: Variable[Tensor[T]];
   ## Gradients use the rounded forward result, not an unrounded softmax.
   ## This CPU API does not provide higher-order, Metal or output-buffer overloads.
   logsumexpVariable(a, axes, false, keepdim)
+
+type LogcumsumexpGate[T] {.final.} = ref object of Gate[Tensor[T]]
+  cachedInput, cachedNormalizer: Tensor[T]
+  axis: int
+
+proc logcumsumexp_backward_ag[T: SomeFloat or Complex](self: Gate[Tensor[T]];
+    payload: Payload[Tensor[T]]): SmallDiffs[Tensor[T]] =
+  let gate = LogcumsumexpGate[T](self)
+  result = newDiffs[Tensor[T]](1)
+  result[0] = cpuLogcumsumexpGradient(gate.cachedInput, gate.cachedNormalizer,
+    payload.variable.grad, gate.axis)
+
+proc logcumsumexp*[T: SomeFloat or Complex](a: Variable[Tensor[T]];
+    axis = 0): Variable[Tensor[T]] =
+  ## Stable CPU float32/64 and complex64/128 prefixes with seeded first-order VJPs.
+  ## Backward uses rounded outputs and reverse logarithmic scans, allocating only
+  ## one dense input-shaped gradient. Input and seed views need no conversion.
+  ## Saved input/output storage must not be mutated before backward. Scalar VJPs
+  ## copy seeds, including through NaN inputs. Higher-order and Metal are absent.
+  new result
+  result.context = a.context
+  result.value = a.value.logcumsumexp(axis)
+  if a.is_grad_needed:
+    var gate: LogcumsumexpGate[T]
+    new gate
+    gate.cachedInput = a.value
+    gate.cachedNormalizer = result.value
+    gate.axis = if axis < 0: axis + max(1, int(a.value.rank)) else: axis
+    result.grad = zeros_like(result.value)
+    result.requires_grad = true
+    register_node("Logcumsumexp", gate, logcumsumexp_backward_ag[T], result, a)

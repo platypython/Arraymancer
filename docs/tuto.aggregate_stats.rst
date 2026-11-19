@@ -293,6 +293,25 @@ continuous rather than wrapping to the principal logarithm at each step.
 Scalar inputs copy their bits; empty inputs retain their shape. Negative
 axes and signed, offset, transposed and broadcast views are supported, with
 independent dense outputs. Axis validation precedes integer/bool rejection,
-including for scalar and empty inputs. Variable gradients, Metal,
-output-buffer and low-precision overloads are not provided.
+including for scalar and empty inputs.
+
+CPU float32/64 and complex64/128 variables also support first-order seeded
+gradients:
+
+.. code-block:: nim
+
+  let prefixes = source.logcumsumexp(axis = -1)
+  prefixes.backprop(seed)  # Seed shape must exactly match the input.
+
+Backward uses rounded forward normalizers and reverse logarithmic scans.
+Real positive and negative seed channels are exponentiated separately before
+subtraction; preserving their float32 rounding matters under cancellation.
+Complex seeds follow principal-log phases and conjugated exponentials.
+Scalar gradients copy seed bits, even for NaN inputs; empty gradients retain
+their shape. Gradients own dense storage, read signed/offset/broadcast inputs
+and strided seeds directly, and do not allocate tensor intermediates.
+Saved input and forward-output storage must remain unmodified before backward.
+Retained graphs and no-grad mode follow the usual contracts. Higher-order
+gradients, integer/bool differentiation, Metal, output-buffer and low-precision
+overloads remain unsupported.
 

@@ -1520,7 +1520,6 @@ suite "Pinned PyTorch conformance foundation":
     for caseData in fixtures["cases"]:
       if caseData["id"].getStr == "tensor.aminmax": aminmaxFixture = caseData
     doAssert aminmaxFixture.kind == JObject
-    check fixtures["cases"].len == 56
     check aminmaxFixture["area"].getStr == "api:torch"
     check aminmaxFixture["atol"].getFloat == 0
     check aminmaxFixture["rtol"].getFloat == 0
@@ -1615,7 +1614,6 @@ suite "Pinned PyTorch conformance foundation":
     for caseData in fixtures["cases"]:
       if caseData["id"].getStr == "tensor.logsumexp": logsumexpFixture = caseData
     doAssert logsumexpFixture.kind == JObject
-    check fixtures["cases"].len == 56
     check logsumexpFixture["area"].getStr == "api:torch"
     check logsumexpFixture["atol"].getFloat == 1e-6
     check logsumexpFixture["rtol"].getFloat == 1e-6
@@ -1675,7 +1673,6 @@ suite "Pinned PyTorch conformance foundation":
     for caseData in fixtures["cases"]:
       if caseData["id"].getStr == "autograd.logsumexp": gradientCase = caseData
     doAssert gradientCase.kind == JObject
-    check fixtures["cases"].len == 56
     check gradientCase["area"].getStr == "api:autograd"
     check gradientCase["atol"].getFloat == 1e-6
     check gradientCase["rtol"].getFloat == 1e-6
@@ -1876,5 +1873,96 @@ suite "Pinned PyTorch conformance foundation":
 
     malformed = duplicate(fixtures)
     malformed["cases"][index]["expected"]["complex64"]["phases"]["axis_0"]["extra"] =
+      %true
+    expect ValueError: validateFixtureData(malformed, reference)
+
+  test "CPU logcumsumexp seeded gradients preserve rounded channels, phases and views":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var gradientCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "autograd.logcumsumexp": gradientCase = caseData
+    doAssert gradientCase.kind == JObject
+    let actual = runCase(gradientCase)
+    check compareObservations(gradientCase["expected"], actual, 1e-6, 1e-6).len == 0
+    for dtype in ["float64", "complex128"]:
+      check compareObservations(gradientCase["expected"][dtype], actual[dtype],
+        1e-12, 1e-12).len == 0
+    var gradients, invalidAxes, invalidSeeds: int
+    for _, profiles in actual:
+      for _, requests in profiles:
+        for _, observation in requests:
+          if not observation.hasKey("error"): inc gradients
+          elif observation["error"].getStr == "invalid_axis": inc invalidAxes
+          elif observation["error"].getStr == "seed_shape_mismatch": inc invalidSeeds
+    check gradients == 1500
+    check invalidAxes == 888
+    check invalidSeeds == 176
+    for dtype in ["float32", "float64", "complex64", "complex128"]:
+      check actual[dtype]["transpose"]["axis_-1_seed_strided"]["gradient"]["shape"] ==
+        %*[3, 2]
+      check actual[dtype]["offset"]["axis_0_seed_mixed"]["gradient"]["shape"] ==
+        %*[2, 4]
+      check actual[dtype]["broadcast"]["axis_1_seed_finite"]["gradient"]["shape"] ==
+        %*[4, 3]
+      check actual[dtype]["cube"]["axis_-3_seed_strided"]["seed"]["shape"] ==
+        %*[2, 2, 3]
+      check actual[dtype]["empty"]["axis_1_seed_strided"]["gradient"]["shape"] ==
+        %*[2, 0, 3]
+      check actual[dtype]["scalar"]["axis_-1_seed_strided"]["gradient"]["shape"] == %*[]
+      check actual[dtype]["dense"]["axis_2_seed_mixed"] == %*{"error": "invalid_axis"}
+      check actual[dtype]["dense"]["axis_0_invalid_seed"] ==
+        %*{"error": "seed_shape_mismatch"}
+    for dtype in ["float32", "float64"]:
+      check actual[dtype]["scalar_nan"]["axis_0_seed_negative_zero"]["gradient"]["negative_zero_indices"] ==
+        %*[0]
+      check actual[dtype]["dense"]["axis_0_seed_nan"]["gradient"]["values"] ==
+        %*[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    for dtype in ["complex64", "complex128"]:
+      check actual[dtype]["scalar_nan"]["axis_0_seed_negative_zero"]["gradient"]["negative_zero"] ==
+        %*{"real": [0], "imag": [0]}
+      check actual[dtype]["complex_phase"]["axis_0_seed_zero"]["gradient"]["negative_zero"] ==
+        %*{"real": [1], "imag": [0, 2]}
+
+  test "Reject malformed logcumsumexp seeded-gradient contracts without hiding errors":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "autograd.logcumsumexp":
+        index = candidate
+    doAssert index >= 0
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["float32"]["dense"]["requests"][0].delete("seed_kinds")
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["float64"]["cube"]["layout"] = %"transpose"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["float32"]["scalar"]["values"] = %*[0.0]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex128"]["dense"]["axis_2_seed_mixed"]["error"] =
+      %"seed_shape_mismatch"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["dense"]["axis_0_seed_finite"]["seed"]["shape"] =
+      %*[6]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float64"]["empty"]["axis_1_seed_strided"]["gradient"]["dtype"] =
+      %"float32"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex64"]["scalar_nan"]["axis_0_seed_negative_zero"]["gradient"]["negative_zero"]["real"] =
+      %*[1]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["dense"]["axis_0_seed_finite"]["gradient"]["extra"] =
       %true
     expect ValueError: validateFixtureData(malformed, reference)

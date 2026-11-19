@@ -59,7 +59,7 @@ proc logarithmicAdd(x, y: Complex[float64]): Complex[float64] {.inline.} =
     return complex.ln(exponentialComplex(minimum) + exponentialComplex(maximum))
   logarithmicOnePlus(exponentialComplex(minimum - maximum)) + maximum
 
-proc logarithmicScanStep[T, A](accumulated: var A; value: T): T {.inline.} =
+proc logarithmicScanStep*[T, A](accumulated: var A; value: T): T {.inline.} =
   ## Store a rounded observation while keeping the full-width recurrence alive.
   when T is Complex:
     type F = typeof(default(T).re)
