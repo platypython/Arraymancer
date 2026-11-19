@@ -93,7 +93,8 @@ proc broadcastImpl*(t: var AnyTensor, shape: varargs[int]|Metadata) {.noSideEffe
       raise newException(ValueError, "The broadcasted size of the tensor " & strShape &
         ", must match existing size " & $t.shape & " for non-singleton dimension")
 
-proc broadcast2Impl*[T](a, b: AnyTensor[T], result: var tuple[a, b: AnyTensor[T]]) {.noSideEffect.}=
+proc broadcast2Impl*[A, B](a: A, b: B,
+    result: var tuple[a: A, b: B]) {.noSideEffect.}=
   let rank = max(a.rank, b.rank)
 
   var shapeA, stridesA, shapeB, stridesB = Metadata(len: rank) # initialized with 0

@@ -888,17 +888,14 @@ proc main() =
       let a =  [[0, 4, 7],
                 [1, 9, 5],
                 [3, 4, 1]].toTensor
-      check: argmax(a, 0) == [[2, 1, 0]].toTensor
-      check: argmax(a, 1) == [[2],
-                              [1],
-                              [1]].toTensor
+      check: argmax(a, 0) == [2'i64, 1, 0].toTensor
+      check: argmax(a, 1) == [2'i64, 1, 1].toTensor
 
       block:
         let a =  [[0, 1, 2],
                   [3, 4, 5]].toTensor
-        check: argmax(a, 0) == [[1, 1, 1]].toTensor
-        check: argmax(a, 1) == [[2],
-                                [2]].toTensor
+        check: argmax(a, 0) == [1'i64, 1, 1].toTensor
+        check: argmax(a, 1) == [2'i64, 2].toTensor
 
     test "Argmax_3D":
       let a = [
@@ -909,15 +906,15 @@ proc main() =
       ].toTensor
 
       check: argmax(a, 0) == [
-        [[1, 0, 0, 1, 0, 2], [0, 3, 1, 0, 1, 0], [1, 3, 0, 1, 3, 2], [0, 0, 0, 1, 0, 1], [0, 1, 1, 1, 3, 0]]
+        [1'i64, 0, 0, 1, 0, 2], [0'i64, 3, 1, 0, 1, 0], [1'i64, 3, 0, 1, 3, 2], [0'i64, 0, 0, 1, 0, 1], [0'i64, 1, 1, 1, 3, 0]
       ].toTensor
 
       check: argmax(a, 1) == [
-        [[4, 0, 1, 1, 3, 1]], [[0, 3, 1, 2, 1, 3]], [[0, 3, 1, 1, 0, 0]], [[1, 1, 1, 0, 4, 2]]
+        [4'i64, 0, 1, 1, 3, 1], [0'i64, 3, 1, 2, 1, 3], [0'i64, 3, 1, 1, 0, 0], [1'i64, 1, 1, 0, 4, 2]
       ].toTensor
 
       check: argmax(a, 2) == [
-        [[1], [3], [2], [1], [0]], [[0], [2], [3], [1], [0]], [[5], [3], [3], [1], [3]], [[3], [1], [1], [3], [4]]
+        [1'i64, 3, 2, 1, 0], [0'i64, 2, 3, 1, 0], [5'i64, 3, 3, 1, 3], [3'i64, 1, 1, 3, 4]
       ].toTensor
 
     block:
@@ -927,32 +924,29 @@ proc main() =
       ].toTensor
 
       check: argmax(a, 0) == [
-        [[1, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1]]
+        [1'i64, 1, 1, 1], [1'i64, 1, 1, 1], [1'i64, 1, 1, 1]
       ].toTensor
 
       check: argmax(a, 1) == [
-        [[2, 2, 2, 2]], [[2, 2, 2, 2]]
+        [2'i64, 2, 2, 2], [2'i64, 2, 2, 2]
       ].toTensor
 
       check: argmax(a, 2) == [
-        [[3], [3], [3]], [[3], [3], [3]]
+        [3'i64, 3, 3], [3'i64, 3, 3]
       ].toTensor
 
     test "Argmin":
       let a =  [[0, 4, 7],
                 [1, 9, 5],
                 [3, 4, 1]].toTensor
-      check: argmin(a, 0) == [[0, 0, 2]].toTensor
-      check: argmin(a, 1) == [[0],
-                              [0],
-                              [2]].toTensor
+      check: argmin(a, 0) == [0'i64, 0, 2].toTensor
+      check: argmin(a, 1) == [0'i64, 0, 2].toTensor
 
       block:
         let a =  [[0, 1, 2],
                   [3, 4, 5]].toTensor
-        check: argmin(a, 0) == [[0, 0, 0]].toTensor
-        check: argmin(a, 1) == [[0],
-                                [0]].toTensor
+        check: argmin(a, 0) == [0'i64, 0, 0].toTensor
+        check: argmin(a, 1) == [0'i64, 0].toTensor
 
     test "Argmin_3D":
       let a = [
@@ -963,15 +957,15 @@ proc main() =
       ].toTensor
 
       check: argmin(a, 0) == [
-        [[0, 1, 1, 2, 1, 0], [1, 2, 3, 1, 3, 2], [3, 1, 3, 0, 1, 1], [2, 3, 2, 2, 2, 3], [3, 3, 0, 0, 1, 1]]
+        [0'i64, 1, 1, 2, 1, 0], [1'i64, 2, 3, 1, 3, 2], [3'i64, 1, 3, 0, 1, 1], [2'i64, 3, 2, 2, 2, 3], [3'i64, 3, 0, 0, 1, 1]
       ].toTensor
 
       check: argmin(a, 1) == [
-        [[0, 1, 4, 2, 1, 3]], [[1, 0, 0, 1, 0, 2]], [[2, 0, 3, 0, 1, 1]], [[2, 3, 2, 4, 1, 3]]
+        [0'i64, 1, 4, 2, 1, 3], [1'i64, 0, 0, 1, 0, 2], [2'i64, 0, 3, 0, 1, 1], [2'i64, 3, 2, 4, 1, 3]
       ].toTensor
 
       check: argmin(a, 2) == [
-        [[0], [1], [3], [5], [3]], [[1], [3], [1], [2], [4]], [[1], [5], [1], [2], [0]], [[4], [4], [0], [5], [0]]
+        [0'i64, 1, 3, 5, 3], [1'i64, 3, 1, 2, 4], [1'i64, 5, 1, 2, 0], [4'i64, 4, 0, 5, 0]
       ].toTensor
 
     block:
@@ -981,15 +975,15 @@ proc main() =
       ].toTensor
 
       check: argmin(a, 0) == [
-        [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+        [0'i64, 0, 0, 0], [0'i64, 0, 0, 0], [0'i64, 0, 0, 0]
       ].toTensor
 
       check: argmin(a, 1) == [
-        [[0, 0, 0, 0]], [[0, 0, 0, 0]]
+        [0'i64, 0, 0, 0], [0'i64, 0, 0, 0]
       ].toTensor
 
       check: argmin(a, 2) == [
-        [[0], [0], [0]], [[0], [0], [0]]
+        [0'i64, 0, 0], [0'i64, 0, 0]
       ].toTensor
 
       test "Explicit product dtypes cast before output-dtype arithmetic":

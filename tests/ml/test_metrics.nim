@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import ../../src/arraymancer
-import std / unittest
+import std / [unittest, math]
 
 proc main() =
   suite "[ML] Metrics":
@@ -23,6 +23,28 @@ proc main() =
         y_true = [0, 1, 2, 3].toTensor
 
       check: y_pred.accuracy_score(y_true) == 0.5
+
+    test "Accuracy consumes int64 argmax outputs and strided native labels":
+      let predictions = [[1.0, 3.0], [4.0, 2.0], [1.0, 7.0]].toTensor.argmax(1)
+      let backing = [99, 1, 99, 0, 99, 1].toTensor
+      check predictions.accuracy_score(backing[1..^1|2]) == 1.0
+      let single = [[3.0, 1.0]].toTensor.argmax(1)
+      check single.shape == toMetadata([1])
+      check single.accuracy_score([0].toTensor) == 1.0
+
+    test "Mixed label views preserve broadcasting, scalar and empty accuracy":
+      let predictions = [[1'i64], [0'i64]].toTensor
+      let truth = [1, 0, 1].toTensor
+      let views = broadcast2(predictions, truth)
+      check views.a.shape == toMetadata([2, 3])
+      check views.b.shape == toMetadata([2, 3])
+      check views.a.storage == predictions.storage
+      check views.b.storage == truth.storage
+      check predictions.accuracy_score(truth) == 0.5
+      check newTensorWith[int64]([], 1'i64).accuracy_score(truth) == 2.0 / 3.0
+      check newTensor[int64](0, 1).accuracy_score(truth).classify == fcNan
+      expect ValueError:
+        discard newTensor[int64](2, 2).accuracy_score(truth)
 
     test "Mean absolute error":
       var y_true = [0.9, 0.2, 0.1, 0.4, 0.9].toTensor()

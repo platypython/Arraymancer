@@ -2633,6 +2633,196 @@ def extrema(torch: Any) -> dict[str, Any]:
     return _case("tensor.extrema", "api:torch", inputs, expected, tolerance=0.0)
 
 
+_INDEXED_EXTREMA_DTYPES = (
+    "float32", "float64", "int8", "int16", "int32", "int64", "uint8", "bool",
+    "uint16", "uint32", "uint64", "complex64", "complex128",
+)
+_INDEXED_EXTREMA_INTEGER_DTYPES = (
+    "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+)
+
+
+def _indexed_extrema_raw_cases(torch: Any, dtype_name: str) -> dict[str, dict[str, Any]]:
+    def case(
+        shape: list[int],
+        values: list[int | float | str],
+        axes: list[int | None],
+        layout: str = "identity",
+    ) -> dict[str, Any]:
+        return {"shape": shape, "layout": layout, "values": values, "axes": axes}
+
+    cases = {
+        "ties": case([2, 3], [2, 1, 3, 1, 3, 3], [None, 0, 1, -1, 2, -3]),
+        "scalar": case([], [3], [None, 0, -1, 1, -2]),
+        "singleton": case([1], [3], [None, 0, -1, 1]),
+        "singleton_axis": case([2, 1, 3], [2, 1, 3, 1, 3, 3], [None, 1, -2]),
+        "empty_outer": case([0, 3], [], [None, 0, 1, 2]),
+        "empty_reduced": case([2, 0], [], [None, 0, 1, -1]),
+        "empty_singleton": case([0, 1], [], [None, 0, 1]),
+        "empty_scalar_axis": case([0], [], [None, 0, -1]),
+        "transpose": case([2, 3], [2, 1, 3, 1, 3, 3], [None, 0, 1], "transpose"),
+        "offset": case(
+            [3, 4], [index % 3 for index in range(12)], [None, 0, 1], "offset"
+        ),
+        "reverse": case([5], [2, 1, 3, 1, 3], [None, 0, -1], "reverse"),
+        "broadcast": case([1, 3], [1, 3, 2], [None, 0, 1], "broadcast"),
+        "permuted": case(
+            [4, 8, 3], [index % 7 for index in range(96)], [None, 0, 1, 2], "permute"
+        ),
+    }
+    if dtype_name in ("float32", "float64"):
+        cases.update(
+            {
+                "nan_first": case(
+                    [2, 3], [2, "nan", "+inf", "nan", "-inf", "nan"], [None, 0, 1]
+                ),
+                "zero_ties": case(
+                    [2, 3], ["-0", 0, "-0", 0, "-0", 0], [None, 0, 1]
+                ),
+                "infinities": case(
+                    [2, 3], ["-inf", "-inf", "+inf", "+inf", "+inf", "-inf"], [None, 0, 1]
+                ),
+            }
+        )
+    elif dtype_name not in ("bool", "complex64", "complex128"):
+        bounds = torch.iinfo(getattr(torch, dtype_name))
+        cases["integer_bounds"] = case(
+            [2, 2],
+            [str(int(bounds.max)), str(int(bounds.max) - 1), str(int(bounds.min)), str(int(bounds.max))],
+            [None, 0, 1],
+        )
+    return cases
+
+
+def _indexed_extrema_word(value: int | str) -> int:
+    word = int(value)
+    if word >= 1 << 63:
+        word -= 1 << 64
+    return word
+
+
+def _indexed_extrema_input(dtype_name: str, spec: dict[str, Any]) -> dict[str, Any]:
+    result = {key: spec[key] for key in ("shape", "layout", "axes")}
+    if dtype_name in _INDEXED_EXTREMA_INTEGER_DTYPES:
+        result["words"] = [_indexed_extrema_word(value) for value in spec["values"]]
+    elif dtype_name in ("complex64", "complex128"):
+        result["values"] = [[value, 0] for value in spec["values"]]
+    else:
+        result["values"] = spec["values"]
+    return result
+
+
+def _indexed_extrema_number(value: int | float | str) -> int | float:
+    if isinstance(value, str):
+        return {"nan": float("nan"), "+inf": float("inf"), "-inf": -float("inf"), "-0": -0.0}[
+            value
+        ]
+    return value
+
+
+def _indexed_extrema_source(torch: Any, dtype_name: str, spec: dict[str, Any]) -> Any:
+    dtype = getattr(torch, dtype_name)
+    if "words" in spec:
+        words = spec["words"]
+        if dtype_name == "uint64":
+            values = [word + (1 << 64) if word < 0 else word for word in words]
+        else:
+            values = words
+        source = torch.tensor(values, dtype=dtype, device="cpu")
+    elif dtype_name in ("complex64", "complex128"):
+        source = torch.tensor(
+            [complex(real, imaginary) for real, imaginary in spec["values"]],
+            dtype=dtype,
+            device="cpu",
+        )
+    else:
+        source = torch.tensor(
+            [_indexed_extrema_number(value) for value in spec["values"]],
+            dtype=dtype,
+            device="cpu",
+        )
+    source = source.reshape(spec["shape"])
+    layout = spec["layout"]
+    if layout == "transpose":
+        return source.transpose(0, 1)
+    if layout == "offset":
+        return source.transpose(0, 1)[:, 1:]
+    if layout == "reverse":
+        return source.flip([0])
+    if layout == "broadcast":
+        return source.expand(4, 3)
+    if layout == "permute":
+        return source.permute(2, 1, 0)
+    return source
+
+
+def _indexed_extrema_request_id(operation: str, axis: int | None, keepdim: bool) -> str:
+    axis_name = "all" if axis is None else f"axis_{axis}"
+    return f"{operation}_{axis_name}_{'keep' if keepdim else 'drop'}"
+
+
+def _indexed_extrema_error_code(error: Exception) -> str | None:
+    message = str(error).lower().replace("non-zero", "nonzero")
+    if isinstance(error, (NotImplementedError, TypeError)):
+        return "unsupported_dtype"
+    if "dimension out of range" in message or "axis out of range" in message:
+        return "axis_out_of_range"
+    if "nonzero size" in message or "empty reduced axis" in message:
+        return "empty_reduced_axis"
+    if "expected reduction dim to be specified" in message or "empty reduction" in message:
+        return "empty_reduction"
+    if "not implemented" in message or ("unsupported" in message and "dtype" in message):
+        return "unsupported_dtype"
+    return None
+
+
+def _observe_indexed_extrema_request(
+    torch: Any, source: Any, operation: str, axis: int | None, keepdim: bool, label: str
+) -> dict[str, Any]:
+    method = getattr(torch, operation)
+    try:
+        if axis is None:
+            output = method(source, keepdim=keepdim)
+        else:
+            output = method(source, dim=axis, keepdim=keepdim)
+    except (IndexError, NotImplementedError, RuntimeError, TypeError) as error:
+        code = _indexed_extrema_error_code(error)
+        if code is None:
+            raise ValueError(f"unexpected indexed {operation} rejection for {label}: {error}") from error
+        return {"error": code}
+    if str(output.dtype).removeprefix("torch.") != "int64":
+        raise ValueError(f"indexed {operation} returned non-int64 indices for {label}")
+    return _observe_integer_output(output)
+
+
+def indexed_extrema(torch: Any) -> dict[str, Any]:
+    """Observe CPU argmin/argmax dtype, shape, layout and rejection contracts."""
+    inputs: dict[str, dict[str, dict[str, Any]]] = {}
+    expected: dict[str, dict[str, dict[str, Any]]] = {}
+    for dtype_name in _INDEXED_EXTREMA_DTYPES:
+        inputs[dtype_name] = {}
+        expected[dtype_name] = {}
+        for case_name, raw_spec in _indexed_extrema_raw_cases(torch, dtype_name).items():
+            spec = _indexed_extrema_input(dtype_name, raw_spec)
+            inputs[dtype_name][case_name] = spec
+            source = _indexed_extrema_source(torch, dtype_name, spec)
+            by_request: dict[str, Any] = {}
+            for operation in ("argmin", "argmax"):
+                for axis in spec["axes"]:
+                    for keepdim in (False, True):
+                        request_id = _indexed_extrema_request_id(operation, axis, keepdim)
+                        by_request[request_id] = _observe_indexed_extrema_request(
+                            torch,
+                            source,
+                            operation,
+                            axis,
+                            keepdim,
+                            f"{dtype_name}.{case_name}.{request_id}",
+                        )
+            expected[dtype_name][case_name] = by_request
+    return _case("tensor.indexed_extrema", "api:torch", inputs, expected, tolerance=0.0)
+
+
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
@@ -2645,7 +2835,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
-    complex_prod_dtype,
+    complex_prod_dtype, indexed_extrema,
 )
 
 

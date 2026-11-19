@@ -686,6 +686,80 @@ suite "Pinned PyTorch conformance foundation":
 
 
 
+  test "CPU indexed extrema match the complete PyTorch probe contract":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var indexedCaseIndex = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "tensor.indexed_extrema":
+        indexedCaseIndex = index
+    doAssert indexedCaseIndex >= 0
+    let indexedCase = fixtures["cases"][indexedCaseIndex]
+    let expected = indexedCase["expected"]
+    check indexedCase["atol"].getFloat == 0
+    check indexedCase["rtol"].getFloat == 0
+    let actual = runCase(indexedCase)
+    check compareObservations(expected, actual, 0, 0).len == 0
+
+    var successes = 0
+    var errors = 0
+    for _, byCase in expected:
+      for _, byRequest in byCase:
+        for _, observation in byRequest:
+          if observation.hasKey("error"): inc errors
+          else: inc successes
+    check successes == 1112
+    check errors == 1552
+    check successes + errors == 2664
+
+    check expected["int64"]["scalar"]["argmin_all_keep"]["shape"] == %*[]
+    check expected["int64"]["singleton"]["argmin_all_keep"]["shape"] == %*[1]
+    check expected["float32"]["ties"]["argmin_all_drop"]["values"] == %*[1]
+    check expected["float32"]["ties"]["argmax_all_drop"]["values"] == %*[2]
+    check expected["float32"]["nan_first"]["argmin_all_drop"]["values"] == %*[1]
+    check expected["float32"]["nan_first"]["argmax_all_drop"]["values"] == %*[1]
+    check expected["float32"]["zero_ties"]["argmin_all_drop"]["values"] == %*[0]
+    check expected["float32"]["zero_ties"]["argmax_all_drop"]["values"] == %*[0]
+    check expected["float32"]["ties"]["argmin_axis_2_drop"]["error"].getStr ==
+      "axis_out_of_range"
+    check expected["bool"]["ties"]["argmin_all_drop"]["error"].getStr == "unsupported_dtype"
+    check expected["complex128"]["ties"]["argmax_all_drop"]["error"].getStr == "unsupported_dtype"
+    check expected["uint16"]["scalar"]["argmin_axis_0_drop"]["error"].getStr ==
+      "unsupported_dtype"
+    check expected["uint16"]["singleton_axis"]["argmax_axis_1_drop"]["shape"] == %*[2, 3]
+    check expected["uint16"]["singleton_axis"]["argmax_axis_1_drop"]["values"] == %*[0, 0, 0, 0, 0, 0]
+    check expected["uint16"]["empty_outer"]["argmin_axis_1_drop"]["shape"] == %*[0]
+    check expected["uint16"]["empty_outer"]["argmin_axis_1_drop"]["values"].len == 0
+    check expected["int64"]["integer_bounds"]["argmin_all_drop"]["values"] == %*[2]
+    check expected["int64"]["integer_bounds"]["argmax_all_drop"]["values"] == %*[0]
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][indexedCaseIndex]["inputs"]["float32"].delete("ties")
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][indexedCaseIndex]["inputs"]["float32"]["ties"]["unexpected"] = %1
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][indexedCaseIndex]["inputs"]["float32"]["ties"]["axes"].elems[1] = %99
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][indexedCaseIndex]["expected"]["float32"]["ties"][
+      "argmin_all_drop"]["dtype"] = %"float32"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][indexedCaseIndex]["expected"]["float32"]["ties"][
+      "argmin_all_drop"]["shape"] = %*[1]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][indexedCaseIndex]["expected"]["bool"]["ties"][
+      "argmin_all_drop"]["error"] = %"axis_out_of_range"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+
   test "Shape differs even when flattened values match":
     let expected = %*{"result": {"shape": [2, 2], "values": [1.0, 2.0, 3.0, 4.0]}}
     let actual = %*{"result": {"shape": [4], "values": [1.0, 2.0, 3.0, 4.0]}}

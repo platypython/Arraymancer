@@ -1447,7 +1447,8 @@ proc extremaErrorCode(message: string): string =
     return "axis_out_of_range"
   if normalized.contains("extrema empty reduced axis"):
     return "empty_reduced_axis"
-  if normalized.contains("extrema empty reduction requires dimensions"):
+  if normalized.contains("extrema empty reduction requires dimensions") or
+      normalized.contains("indexed extrema empty reduction requires an axis"):
     return "empty_reduction"
   if normalized.contains("extrema duplicate reduction axis"):
     return "duplicate_axes"
@@ -1500,6 +1501,124 @@ proc extrema(inputs: JsonNode): JsonNode =
         of "complex64": extremaCase[Complex[float32]](spec)
         of "complex128": extremaCase[Complex[float64]](spec)
         else: raise newException(ValueError, "unsupported extrema input dtype")
+
+
+proc indexedExtremaFloatValue[T: SomeFloat](node: JsonNode): T =
+  if node.kind == JString:
+    case node.getStr
+    of "nan": result = T(NaN)
+    of "+inf": result = T(Inf)
+    of "-inf": result = T(NegInf)
+    of "-0": result = T(-0.0)
+    else: raise newException(ValueError, "unknown indexed extrema floating value")
+  else:
+    result = T(node.getFloat)
+
+
+proc indexedExtremaFloatTensor[T: SomeFloat](spec: JsonNode): Tensor[T] =
+  let shapeNode = spec["shape"]
+  if shapeNode.len > LASER_MAXRANK:
+    raise newException(ValueError, "input rank exceeds LASER_MAXRANK")
+  var shape = newSeq[int](shapeNode.len)
+  for index in 0 ..< shapeNode.len: shape[index] = shapeNode[index].getInt
+  result = newTensorUninit[T](toMetadata(shape))
+  let values = spec["values"]
+  if values.len != result.size:
+    raise newException(ValueError, "indexed extrema input value count mismatch")
+  var raw = result.unsafe_raw_offset
+  for index in 0 ..< values.len:
+    raw[index] = indexedExtremaFloatValue[T](values[index])
+
+
+proc indexedExtremaInputTensor[T](spec: JsonNode): Tensor[T] =
+  when T is Complex[float32] or T is Complex[float64]:
+    result = getComplexTensor[T](spec)
+  elif T is SomeFloat:
+    result = indexedExtremaFloatTensor[T](spec)
+  else:
+    result = getIntegerTensor[T](spec)
+  let layout = spec["layout"].getStr
+  if layout == "permute":
+    result = result.permute(2, 1, 0)
+  else:
+    result = realDtypeLayout(result, layout)
+
+
+proc indexedExtremaOutput[T](source: Tensor[T], operation: string,
+    axis: JsonNode, keepdim: bool): Tensor[int64] =
+  if axis.kind == JNull:
+    case operation
+    of "argmin":
+      result = if keepdim: source.argmin(keepdim = true) else: source.argmin()
+    of "argmax":
+      result = if keepdim: source.argmax(keepdim = true) else: source.argmax()
+    else: raise newException(ValueError, "unknown indexed extrema operation")
+  else:
+    let dimension = axis.getInt
+    case operation
+    of "argmin":
+      result = if keepdim: source.argmin(dimension, keepdim = true) else: source.argmin(dimension)
+    of "argmax":
+      result = if keepdim: source.argmax(dimension, keepdim = true) else: source.argmax(dimension)
+    else: raise newException(ValueError, "unknown indexed extrema operation")
+
+
+proc indexedExtremaRequestId(operation: string, axis: JsonNode,
+    keepdim: bool): string =
+  let axisName = if axis.kind == JNull: "all" else: "axis_" & $axis.getInt
+  result = operation & "_" & axisName & (if keepdim: "_keep" else: "_drop")
+
+
+proc indexedExtremaObservation[T](source: Tensor[T], operation: string,
+    axis: JsonNode, keepdim: bool): JsonNode =
+  try:
+    result = tensorObservation(indexedExtremaOutput(source, operation, axis, keepdim))
+  except IndexDefect as error:
+    let code = extremaErrorCode(error.msg)
+    if code notin ["axis_out_of_range", "empty_reduced_axis", "empty_reduction"]:
+      raise
+    result = %*{"error": code}
+  except ValueError as error:
+    let code = extremaErrorCode(error.msg)
+    if code notin ["empty_reduction", "unsupported_dtype"]:
+      raise
+    result = %*{"error": code}
+
+
+proc indexedExtremaCase[T](spec: JsonNode): JsonNode =
+  let source = indexedExtremaInputTensor[T](spec)
+  result = newJObject()
+  for operation in ["argmin", "argmax"]:
+    for axis in spec["axes"]:
+      for keepdim in [false, true]:
+        let requestId = indexedExtremaRequestId(operation, axis, keepdim)
+        result[requestId] = indexedExtremaObservation(source, operation, axis, keepdim)
+
+
+proc indexedExtremaDtype[T](inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = indexedExtremaCase[T](spec)
+
+
+proc indexedExtrema(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for dtype, cases in inputs:
+    result[dtype] = case dtype
+      of "bool": indexedExtremaDtype[bool](cases)
+      of "int8": indexedExtremaDtype[int8](cases)
+      of "int16": indexedExtremaDtype[int16](cases)
+      of "int32": indexedExtremaDtype[int32](cases)
+      of "int64": indexedExtremaDtype[int64](cases)
+      of "uint8": indexedExtremaDtype[uint8](cases)
+      of "uint16": indexedExtremaDtype[uint16](cases)
+      of "uint32": indexedExtremaDtype[uint32](cases)
+      of "uint64": indexedExtremaDtype[uint64](cases)
+      of "float32": indexedExtremaDtype[float32](cases)
+      of "float64": indexedExtremaDtype[float64](cases)
+      of "complex64": indexedExtremaDtype[Complex[float32]](cases)
+      of "complex128": indexedExtremaDtype[Complex[float64]](cases)
+      else: raise newException(ValueError, "unsupported indexed extrema input dtype")
 
 
 proc extremaGradientNumber[T: SomeFloat](node: JsonNode): T =
@@ -1643,6 +1762,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = integerReductions(inputs)
   of "tensor.extrema":
     result = extrema(inputs)
+  of "tensor.indexed_extrema":
+    result = indexedExtrema(inputs)
   of "tensor.integer_output_dtype":
     result = integerOutputDtype(inputs)
   of "tensor.mean_dtype":

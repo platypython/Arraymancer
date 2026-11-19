@@ -21,7 +21,7 @@ when defined(macosx) and defined(arm64) and defined(clang):
   # Inlined strided spans must not become per-lane outlined helper calls.
   {.localPassC: "-mno-outline".}
 
-proc normalizedExtremaAxis(rank, axis: int): int {.inline.} =
+proc normalizedExtremaAxis*(rank, axis: int): int {.inline.} =
   ## Scalars expose one virtual axis, without gaining an output dimension.
   let count = max(rank, 1)
   if axis < -count or axis >= count:

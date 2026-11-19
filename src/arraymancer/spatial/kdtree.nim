@@ -115,7 +115,7 @@ proc build[T](tree: KDTree[T],
   else:
     var data = tree.data[idx]
     # select dimension with largest difference in mins / maxes
-    let d = argmax(maxes -. mins, axis = 0)[0]
+    let d = argmax(maxes -. mins, axis = 0).atContiguousIndex(0).int
     let maxVal = maxes[d]
     let minVal = mins[d]
     if maxVal == minVal:

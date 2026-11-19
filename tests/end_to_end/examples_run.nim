@@ -99,7 +99,7 @@ proc ex02() =
       var score = 0.0
       var loss = 0.0
       for i in 0 ..< 1:
-        let y_pred = model.forward(X_test[i*1000 ..< (i+1)*1000, _]).value.softmax.argmax(axis = 1).squeeze
+        let y_pred = model.forward(X_test[i*1000 ..< (i+1)*1000, _]).value.softmax.argmax(axis = 1)
         score += y_pred.accuracy_score(y_test[i*1000 ..< (i+1)*1000])
 
         loss += model.forward(X_test[i*1000 ..< (i+1)*1000, _]).sparse_softmax_cross_entropy(y_test[i*1000 ..< (i+1)*1000]).value.unsafe_raw_buf[0]

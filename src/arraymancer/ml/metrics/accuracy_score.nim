@@ -12,15 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+## Provides label accuracy without materializing comparisons or numeric casts.
 import ../../tensor
 
 
-proc accuracy_score*[T](y_pred, y_true: Tensor[T]): float =
+proc accuracy_score*[P,T](y_pred: Tensor[P], y_true: Tensor[T]): float =
   ## Input:
   ##   - y_true: Tensor[T] containing the ground truth (correct) labels
-  ##   - y_pred: Tensor[T] containing the predicted labels
+  ##   - y_pred: Tensor[P] containing comparable predicted labels
   ##
   ## Returns:
   ##   - The proportion of correctly classified samples (as float).
 
-  result = (y_true ==. y_pred).asType(float).mean
+  let (prediction, truth) = broadcast2(y_pred, y_true)
+  var correct = 0
+  for predicted, expected in zip(prediction, truth):
+    if predicted == expected: inc correct
+  result = float(correct) / float(prediction.size)

@@ -211,7 +211,6 @@ Oh, and for those who wants to see real Nim code for neural networks, here is a 
                       .value
                       .softmax
                       .argmax(axis = 1)
-                      .squeeze
 
         let score = y_pred.accuracy_score(y_train)
         echo &"Accuracy: {score:.3f}%"
@@ -229,19 +228,19 @@ Oh, and for those who wants to see real Nim code for neural networks, here is a 
     let X_buzz = ctx.variable x_buzz
 
     # Pass it through the network
+    var y_buzz: Tensor[int64]
     ctx.no_grad_mode:
-      let y_buzz = model
+      y_buzz = model
                     .forward(X_buzz)
                     .value
                     .softmax
                     .argmax(axis = 1)
-                    .squeeze
 
     # Extract the answer
     var answer: seq[string] = @[]
 
     for i in 1..100:
-      answer.add fizz_buzz(i, y_buzz[i - 1])
+      answer.add fizz_buzz(i, y_buzz[i - 1].int)
 
     echo answer
     # @["1", "2", "fizz", "4", "buzz", "6", "7", "8", "fizz", "10",

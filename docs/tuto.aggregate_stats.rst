@@ -168,5 +168,28 @@ with nonfinite seeds; NaN reductions produce NaN gradients. Do not mutate the
 input or saved output before backward. Metal extrema gradients and higher-order
 extrema differentiation are not provided.
 
+``argmin`` and ``argmax`` return independent ``Tensor[int64]`` indices.
+Omitting ``axis`` selects the first extremum in logical row-major order;
+an explicit axis returns indices within that dimension. Reduced axes disappear
+unless ``keepdim = true``. Scalars remain rank zero, accepting axes 0 and -1.
+Equal values, including signed zeros and infinities, select the first index.
+Any NaN takes precedence over numeric values; the first NaN wins.
+
+.. code-block:: nim
+
+  let scores = [[3.0, 1.0, 3.0], [2.0, 5.0, 5.0]].toTensor
+  echo scores.argmax(1)                  # [0, 1], dtype int64
+  echo scores.argmin(0, keepdim = true)   # [[1, 0, 0]], shape [1, 3]
+  echo scores.argmax()                   # scalar tensor containing 4
+
+CPU float32/float64, signed integers and uint8 are supported without input
+copies, including offset, transposed, reversed and broadcast views.
+Bool and complex inputs reject before dimension validation. Wider unsigned
+inputs reject except for explicit singleton dimensions on positive-rank
+inputs and valid empty outputs. Empty whole reductions and zero-length reduced
+axes reject. These index-only operations do not provide autograd or Metal
+implementations; legacy ``argmin_min``/``argmax_max`` retain their two-output
+contracts.
+
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

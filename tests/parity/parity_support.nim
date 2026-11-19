@@ -62,7 +62,7 @@ const
     "tensor.mean_dtype", "tensor.sum_dtype", "tensor.cumsum_dtype", "tensor.cumprod_dtype",
     "tensor.prod_dtype", "tensor.integer_output_dtype", "tensor.complex_scans",
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
-    "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema"]
+    "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema", "tensor.indexed_extrema"]
   RequiredCaseAreas: array[RequiredCaseIds.len, string] = [
     "api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
@@ -73,7 +73,7 @@ const
     "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch",
     "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
-    "api:torch", "api:torch", "api:torch", "api:autograd"]
+    "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -1989,6 +1989,271 @@ proc expectExtremaExpected(expected, inputs: JsonNode) =
         expectExtremaTensor(observed, outputShape, spec["dtype"].getStr, label)
 
 
+const
+  IndexedExtremaDtypeNames = [
+    "float32", "float64", "int8", "int16", "int32", "int64", "uint8", "bool",
+    "uint16", "uint32", "uint64", "complex64", "complex128"]
+  IndexedExtremaCommonCaseNames = [
+    "ties", "scalar", "singleton", "singleton_axis", "empty_outer", "empty_reduced",
+    "empty_singleton", "empty_scalar_axis", "transpose", "offset", "reverse", "broadcast",
+    "permuted"]
+
+
+proc indexedExtremaCaseNames(dtype: string): seq[string] =
+  for name in IndexedExtremaCommonCaseNames: result.add name
+  if dtype in ["float32", "float64"]:
+    result.add "nan_first"
+    result.add "zero_ties"
+    result.add "infinities"
+  elif dtype notin ["bool", "complex64", "complex128"]:
+    result.add "integer_bounds"
+
+
+proc indexedExtremaInputShape(name: string): seq[int] =
+  case name
+  of "ties", "transpose": @[2, 3]
+  of "scalar": @[]
+  of "singleton": @[1]
+  of "singleton_axis": @[2, 1, 3]
+  of "empty_outer": @[0, 3]
+  of "empty_reduced": @[2, 0]
+  of "empty_singleton": @[0, 1]
+  of "empty_scalar_axis": @[0]
+  of "offset": @[3, 4]
+  of "reverse": @[5]
+  of "broadcast": @[1, 3]
+  of "permuted": @[4, 8, 3]
+  of "nan_first", "zero_ties", "infinities": @[2, 3]
+  of "integer_bounds": @[2, 2]
+  else: invalid("unknown indexed extrema input " & name)
+
+
+proc indexedExtremaInputLayout(name: string): string =
+  case name
+  of "transpose", "offset", "reverse", "broadcast": name
+  of "permuted": "permute"
+  else: "identity"
+
+
+proc indexedExtremaInputAxes(name: string): JsonNode =
+  result = newJArray()
+  result.add newJNull()
+  let axes = case name
+    of "ties": @[0, 1, -1, 2, -3]
+    of "scalar": @[0, -1, 1, -2]
+    of "singleton": @[0, -1, 1]
+    of "singleton_axis": @[1, -2]
+    of "empty_outer": @[0, 1, 2]
+    of "empty_reduced": @[0, 1, -1]
+    of "empty_singleton": @[0, 1]
+    of "empty_scalar_axis": @[0, -1]
+    of "transpose", "offset", "broadcast", "nan_first", "zero_ties", "infinities",
+        "integer_bounds": @[0, 1]
+    of "reverse": @[0, -1]
+    of "permuted": @[0, 1, 2]
+    else: invalid("unknown indexed extrema input axes " & name)
+  for axis in axes: result.add newJInt(axis)
+
+
+proc indexedExtremaCommonValues(name: string): seq[int64] =
+  case name
+  of "ties", "transpose", "singleton_axis": result = @[2'i64, 1, 3, 1, 3, 3]
+  of "scalar", "singleton": result = @[3'i64]
+  of "empty_outer", "empty_reduced", "empty_singleton", "empty_scalar_axis": result = @[]
+  of "offset":
+    for index in 0 ..< 12: result.add (index mod 3).int64
+  of "reverse": result = @[2'i64, 1, 3, 1, 3]
+  of "broadcast": result = @[1'i64, 3, 2]
+  of "permuted":
+    for index in 0 ..< 96: result.add (index mod 7).int64
+  else: invalid("unknown indexed extrema common values " & name)
+
+
+proc indexedExtremaInputWords(name, dtype: string): seq[int64] =
+  if name != "integer_bounds":
+    return indexedExtremaCommonValues(name)
+  case dtype
+  of "int8":
+    result = @[high(int8).int64, high(int8).int64 - 1, low(int8).int64, high(int8).int64]
+  of "int16":
+    result = @[high(int16).int64, high(int16).int64 - 1, low(int16).int64, high(int16).int64]
+  of "int32":
+    result = @[high(int32).int64, high(int32).int64 - 1, low(int32).int64, high(int32).int64]
+  of "int64":
+    result = @[high(int64), high(int64) - 1, low(int64), high(int64)]
+  of "uint8":
+    result = @[high(uint8).int64, high(uint8).int64 - 1, 0'i64, high(uint8).int64]
+  of "uint16":
+    result = @[high(uint16).int64, high(uint16).int64 - 1, 0'i64, high(uint16).int64]
+  of "uint32":
+    result = @[high(uint32).int64, high(uint32).int64 - 1, 0'i64, high(uint32).int64]
+  of "uint64":
+    result = @[-1'i64, -2, 0, -1]
+  else: invalid("indexed extrema bounds are invalid for " & dtype)
+
+
+proc indexedExtremaRealValues(name: string): JsonNode =
+  case name
+  of "ties", "transpose", "singleton_axis": result = %*[2, 1, 3, 1, 3, 3]
+  of "scalar", "singleton": result = %*[3]
+  of "empty_outer", "empty_reduced", "empty_singleton", "empty_scalar_axis":
+    result = newJArray()
+  of "offset": result = %*[0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2]
+  of "reverse": result = %*[2, 1, 3, 1, 3]
+  of "broadcast": result = %*[1, 3, 2]
+  of "permuted":
+    result = newJArray()
+    for index in 0 ..< 96: result.add newJInt(index mod 7)
+  of "nan_first": result = %*[2, "nan", "+inf", "nan", "-inf", "nan"]
+  of "zero_ties": result = %*["-0", 0, "-0", 0, "-0", 0]
+  of "infinities": result = %*["-inf", "-inf", "+inf", "+inf", "+inf", "-inf"]
+  else: invalid("unknown indexed extrema real values " & name)
+
+
+proc indexedExtremaComplexValues(name: string): JsonNode =
+  result = newJArray()
+  for value in indexedExtremaCommonValues(name):
+    result.add %*[value, 0]
+
+
+proc indexedExtremaLogicalShape(shape: seq[int], layout: string): seq[int] =
+  result = shape
+  case layout
+  of "transpose": swap(result[0], result[1])
+  of "offset": result = @[shape[1], shape[0] - 1]
+  of "broadcast": result = @[4, 3]
+  of "permute": result = @[shape[2], shape[1], shape[0]]
+  else: discard
+
+
+proc indexedExtremaRequestId(operation: string, axis: JsonNode, keepdim: bool): string =
+  let axisName = if axis.kind == JNull: "all" else: "axis_" & $axis.getInt
+  result = operation & "_" & axisName & (if keepdim: "_keep" else: "_drop")
+
+
+proc indexedExtremaExpectedError(dtype: string, shape: seq[int], axis: JsonNode): string =
+  if dtype in ["bool", "complex64", "complex128"]:
+    return "unsupported_dtype"
+  let rank = shape.len
+  let axisLimit = max(1, rank)
+  var normalizedAxis = -1
+  if axis.kind == JInt:
+    let value = axis.getInt
+    if value < -axisLimit or value >= axisLimit:
+      return "axis_out_of_range"
+    if rank > 0:
+      normalizedAxis = if value < 0: value + rank else: value
+  var emptyInput = false
+  for dimension in shape:
+    if dimension == 0: emptyInput = true
+  if emptyInput:
+    if axis.kind == JNull: return "empty_reduction"
+    if rank > 0 and shape[normalizedAxis] == 0: return "empty_reduced_axis"
+  if dtype in ["uint16", "uint32", "uint64"]:
+    if rank == 0 or axis.kind == JNull:
+      return "unsupported_dtype"
+    if shape[normalizedAxis] == 1 or emptyInput:
+      return ""
+    return "unsupported_dtype"
+
+
+proc indexedExtremaOutputShape(shape: seq[int], axis: JsonNode, keepdim: bool): seq[int] =
+  var reduced = newSeq[bool](shape.len)
+  if axis.kind == JNull:
+    for dimension in 0 ..< shape.len: reduced[dimension] = true
+  elif shape.len > 0:
+    let value = axis.getInt
+    let normalized = if value < 0: value + shape.len else: value
+    reduced[normalized] = true
+  for dimension, size in shape:
+    if reduced[dimension]:
+      if keepdim: result.add 1
+    else:
+      result.add size
+
+
+proc expectIndexedExtremaInputs(inputs: JsonNode) =
+  require(inputs.kind == JObject and inputs.len == IndexedExtremaDtypeNames.len,
+    "indexed extrema inputs do not match required dtypes")
+  for dtype in IndexedExtremaDtypeNames:
+    let cases = field(inputs, dtype)
+    let caseNames = indexedExtremaCaseNames(dtype)
+    require(cases.kind == JObject and cases.len == caseNames.len,
+      "indexed extrema cases do not match required coverage for " & dtype)
+    for name in caseNames:
+      let spec = field(cases, name)
+      let integerInput = dtype in [
+        "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
+      let payloadKey = if integerInput: "words" else: "values"
+      expectExtremaFields(spec, ["shape", "layout", "axes", payloadKey],
+        "indexed extrema input " & dtype & "." & name)
+      let shape = indexedExtremaInputShape(name)
+      require(field(spec, "shape") == jsonShape(shape),
+        "indexed extrema input shape mismatch for " & dtype & "." & name)
+      require(text(field(spec, "layout"), "indexed extrema layout") ==
+        indexedExtremaInputLayout(name), "indexed extrema layout mismatch for " & name)
+      require(field(spec, "axes") == indexedExtremaInputAxes(name),
+        "indexed extrema axes mismatch for " & name)
+      let payload = field(spec, payloadKey)
+      let expectedPayload = if integerInput:
+          block:
+            var values = newJArray()
+            for word in indexedExtremaInputWords(name, dtype): values.add newJInt(word)
+            values
+        elif dtype in ["complex64", "complex128"]:
+          indexedExtremaComplexValues(name)
+        else:
+          indexedExtremaRealValues(name)
+      require(payload == expectedPayload,
+        "indexed extrema input values mismatch for " & dtype & "." & name)
+
+
+proc expectIndexedExtremaExpected(expected, inputs: JsonNode) =
+  require(expected.kind == JObject and expected.len == IndexedExtremaDtypeNames.len,
+    "indexed extrema expected dtypes are incomplete")
+  for dtype in IndexedExtremaDtypeNames:
+    let byCase = field(expected, dtype)
+    let caseNames = indexedExtremaCaseNames(dtype)
+    require(byCase.kind == JObject and byCase.len == caseNames.len,
+      "indexed extrema expected cases are incomplete for " & dtype)
+    for name in caseNames:
+      let spec = inputs[dtype][name]
+      let byRequest = field(byCase, name)
+      let axes = field(spec, "axes")
+      require(byRequest.kind == JObject and byRequest.len == axes.len * 4,
+        "indexed extrema request observations are incomplete for " & dtype & "." & name)
+      let shape = indexedExtremaLogicalShape(indexedExtremaInputShape(name),
+        indexedExtremaInputLayout(name))
+      for operation in ["argmin", "argmax"]:
+        for axis in axes:
+          for keepdim in [false, true]:
+            let requestId = indexedExtremaRequestId(operation, axis, keepdim)
+            let observed = field(byRequest, requestId)
+            let label = "indexed extrema " & dtype & "." & name & "." & requestId
+            let expectedError = indexedExtremaExpectedError(dtype, shape, axis)
+            if expectedError.len > 0:
+              expectExtremaFields(observed, ["error"], label)
+              require(text(field(observed, "error"), label & " error") == expectedError,
+                label & " error classification mismatch")
+            else:
+              let outputShape = indexedExtremaOutputShape(shape, axis, keepdim)
+              expectExtremaFields(observed, ["shape", "numel", "dtype", "device", "values"], label)
+              expectTensor(observed, false, "int64")
+              require(field(observed, "shape") == jsonShape(outputShape),
+                label & " shape mismatch")
+              let values = field(observed, "values")
+              let limit = if axis.kind == JNull:
+                  extremaNumel(shape)
+                elif shape.len == 0:
+                  1
+                else:
+                  let value = axis.getInt
+                  shape[if value < 0: value + shape.len else: value]
+              for value in values:
+                require(value.getBiggestInt >= 0 and value.getBiggestInt < limit.int64,
+                  label & " index is outside its reduced dimension")
+
+
 const ExtremaGradientInputNames = [
   "rows_ties", "columns_ties", "multi_axes", "empty_axes_all", "whole", "nan_row",
   "infinite_values", "infinite_seed", "negative_zero_seed", "nan_seed", "scalar_negative_zero",
@@ -2298,6 +2563,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "extrema fixtures require exact-value tolerances")
       expectExtremaInputs(inputs)
+    of "tensor.indexed_extrema":
+      require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
+        "indexed extrema fixtures require exact-value tolerances")
+      expectIndexedExtremaInputs(inputs)
     of "tensor.integer_reductions":
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "integer reduction fixtures require exact-value tolerances")
@@ -2447,6 +2716,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectExtremaGradientExpected(expected, inputs)
     of "tensor.extrema":
       expectExtremaExpected(expected, inputs)
+    of "tensor.indexed_extrema":
+      expectIndexedExtremaExpected(expected, inputs)
     of "tensor.integer_output_dtype":
       expectIntegerOutputExpected(expected, inputs)
     of "tensor.float64_reductions":

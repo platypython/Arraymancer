@@ -24,7 +24,8 @@ import  ./data_structure,
         ./algorithms,
         ./private/p_empty_tensors,
         ./private/p_accelerate,
-        ./private/p_extrema
+        ./private/p_extrema,
+        ./private/p_argextrema
 import std / [math, macros]
 import complex except Complex64, Complex32
 import ../laser/compiler_optim_hints
@@ -1026,8 +1027,8 @@ proc argmax_max*[T: SomeNumber](arg: Tensor[T], axis: int): tuple[indices: Tenso
   ##     let a = [[0, 4, 7],
   ##              [1, 9, 5],
   ##              [3, 4, 1]].toTensor
-  ##     assert argmax(a, 0).indices == [[2, 1, 0]].toTensor
-  ##     assert argmax(a, 1).indices == [[2],
+  ##     assert argmax_max(a, 0).indices == [[2, 1, 0]].toTensor
+  ##     assert argmax_max(a, 1).indices == [[2],
   ##                                     [1],
   ##                                     [1]].toTensor
 
@@ -1047,26 +1048,23 @@ proc argmax_max*[T: SomeNumber](arg: Tensor[T], axis: int): tuple[indices: Tenso
         dind[j] = i
         dmax[j] = val
 
-proc argmax*[T](arg: Tensor[T], axis: int): Tensor[int] {.inline.}=
-  ## Returns the index of the maximum along an axis
-  ##
-  ## Input:
-  ##   - A tensor
-  ##   - An axis (int)
-  ##
-  ## Returns:
-  ##   - A tensor of index of the maximums along this axis
-  ##
-  ## Example:
-  ##   .. code:: nim
-  ##     let a = [[0, 4, 7],
-  ##              [1, 9, 5],
-  ##              [3, 4, 1]].toTensor
-  ##     assert argmax(a, 0) == [[2, 1, 0]].toTensor
-  ##     assert argmax(a, 1) == [[2],
-  ##                             [1],
-  ##                             [1]].toTensor
-  argmax_max(arg, axis).indices
+proc argmax*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    keepdim = false): Tensor[int64] =
+  ## Return independent int64 indices of the first maximum in logical flat order.
+  ## NaNs win over numeric values; the first NaN wins over later NaNs.
+  ## With ``keepdim``, every input dimension remains as a singleton.
+  ## Bool/complex inputs and empty whole reductions reject.
+  ## Wider unsigned whole inputs reject, including scalars.
+  reduceArgExtrema(arg, 0, true, keepdim, true)
+
+proc argmax*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int;
+    keepdim = false): Tensor[int64] =
+  ## Return independent int64 indices of the first maximum along ``axis``.
+  ## Negative axes normalize; the reduced axis is removed unless ``keepdim``.
+  ## Signed/broadcast views are read without copying. Empty reduced axes reject;
+  ## unreduced empty axes produce empty outputs. Bool/complex inputs reject.
+  ## Wider unsigned inputs only support empty outputs or explicit singleton axes.
+  reduceArgExtrema(arg, axis, false, keepdim, true)
 
 proc argmin_min*[T: SomeNumber](arg: Tensor[T], axis: int): tuple[indices: Tensor[int], mins: Tensor[T]] {.noinit.} =
   ## Returns (indices, mins) along an axis
@@ -1083,8 +1081,8 @@ proc argmin_min*[T: SomeNumber](arg: Tensor[T], axis: int): tuple[indices: Tenso
   ##     let a = [[0, 4, 7],
   ##              [1, 9, 5],
   ##              [3, 4, 1]].toTensor
-  ##     assert argmin(a, 0).indices == [[0, 0, 2]].toTensor
-  ##     assert argmin(a, 1).indices == [[0],
+  ##     assert argmin_min(a, 0).indices == [[0, 0, 2]].toTensor
+  ##     assert argmin_min(a, 1).indices == [[0],
   ##                                     [0],
   ##                                     [2]].toTensor
 
@@ -1104,26 +1102,23 @@ proc argmin_min*[T: SomeNumber](arg: Tensor[T], axis: int): tuple[indices: Tenso
         dind[j] = i
         dmin[j] = val
 
-proc argmin*[T](arg: Tensor[T], axis: int): Tensor[int] {.inline.}=
-  ## Returns the index of the minimum along an axis
-  ##
-  ## Input:
-  ##   - A tensor
-  ##   - An axis (int)
-  ##
-  ## Returns:
-  ##   - A tensor of index of the minimums along this axis
-  ##
-  ## Example:
-  ##   .. code:: nim
-  ##     let a = [[0, 4, 7],
-  ##              [1, 9, 5],
-  ##              [3, 4, 1]].toTensor
-  ##     assert argmin(a, 0) == [[2, 1, 0]].toTensor
-  ##     assert argmin(a, 1) == [[2],
-  ##                             [1],
-  ##                             [1]].toTensor
-  argmin_min(arg, axis).indices
+proc argmin*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    keepdim = false): Tensor[int64] =
+  ## Return independent int64 indices of the first minimum in logical flat order.
+  ## NaNs win over numeric values; the first NaN wins over later NaNs.
+  ## With ``keepdim``, every input dimension remains as a singleton.
+  ## Bool/complex inputs and empty whole reductions reject.
+  ## Wider unsigned whole inputs reject, including scalars.
+  reduceArgExtrema(arg, 0, true, keepdim, false)
+
+proc argmin*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int;
+    keepdim = false): Tensor[int64] =
+  ## Return independent int64 indices of the first minimum along ``axis``.
+  ## Negative axes normalize; the reduced axis is removed unless ``keepdim``.
+  ## Signed/broadcast views are read without copying. Empty reduced axes reject;
+  ## unreduced empty axes produce empty outputs. Bool/complex inputs reject.
+  ## Wider unsigned inputs only support empty outputs or explicit singleton axes.
+  reduceArgExtrema(arg, axis, false, keepdim, false)
 
 proc percentile*[T](arg: Tensor[T], p: int, isSorted = false): float =
   ## statistical percentile value of ``t``, where ``p`` percentile value

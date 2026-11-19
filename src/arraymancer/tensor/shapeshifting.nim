@@ -201,8 +201,8 @@ template bc*(t: (Tensor|SomeNumber), shape: Metadata): untyped =
   ## Alias for ``broadcast``
   t.broadcast(shape)
 
-proc broadcast2*[T](a, b: Tensor[T]): tuple[a, b: Tensor[T]] {.noSideEffect, noinit.}=
-  ## Broadcast 2 tensors so they have compatible shapes for element-wise computations.
+proc broadcast2*[T,U](a: Tensor[T], b: Tensor[U]): tuple[a: Tensor[T], b: Tensor[U]] {.noSideEffect, noinit.}=
+  ## Broadcast 2 tensors, preserving each dtype, for element-wise computations.
   ##
   ## Tensors in the tuple can be accessed with output.a and output.b
   ##

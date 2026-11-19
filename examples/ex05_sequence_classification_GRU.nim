@@ -119,7 +119,6 @@ for epoch in 0 ..< Epochs:
                   .value
                   .softmax
                   .argmax(axis = 1)
-                  .squeeze
 
     let score = y_pred.accuracy_score(y)
     echo &"Epoch #{epoch:> 04}. Accuracy: {score*100:00.3f}%"
@@ -175,7 +174,6 @@ block:
                 .value
                 .softmax
                 .argmax(axis = 1)
-                .squeeze
                 .asType(SeqKind)
 
   echo "\nTesting the model with:"

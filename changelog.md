@@ -1,6 +1,12 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Return independent int64 CPU ``argmin``/``argmax`` indices, removing reduced
+  dimensions by default. Support whole reductions, negative axes and ``keepdim``;
+  select first ties and NaNs in logical order without discarded value tensors.
+  Preserve dtype rejection and singleton/empty unsigned dispatch exceptions.
+  Migrate classification and k-d tree callers; compare mixed label dtypes
+  without converted-label or comparison tensors.
 - Add CPU float32/float64 seeded ``amin``/``amax`` gradients with equal tie
   splitting, strided inputs/seeds and independent input-shaped outputs.
   Match divide-then-mask behavior for NaNs, infinities and signed zeros without
