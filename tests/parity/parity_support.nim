@@ -63,7 +63,7 @@ const
     "tensor.prod_dtype", "tensor.integer_output_dtype", "tensor.complex_scans",
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
     "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema", "tensor.indexed_extrema",
-    "tensor.paired_extrema", "autograd.paired_extrema"]
+    "tensor.paired_extrema", "autograd.paired_extrema", "tensor.aminmax"]
   RequiredCaseAreas: array[RequiredCaseIds.len, string] = [
     "api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
@@ -75,7 +75,7 @@ const
     "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch", "api:torch",
-    "api:autograd"]
+    "api:autograd", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -2577,6 +2577,313 @@ proc expectPairedExtremaExpected(expected, inputs: JsonNode) =
                   label & " index is outside its reduced dimension")
 
 
+const AminmaxInputNames = [
+  "bool", "int8", "int16", "int32", "int64", "uint8", "transpose", "offset",
+  "reverse", "broadcast", "scalar", "empty_reduced", "empty_outer", "zero_ties_f32",
+  "zero_ties_f64", "payload_f32", "payload_f64", "scalar_payload_f32",
+  "scalar_payload_f64", "infinities_f32", "infinities_f64", "uint16_matrix",
+  "uint32_singleton", "uint64_empty", "uint16_scalar", "uint32_scalar", "uint64_scalar",
+  "complex64_empty", "complex128_scalar"]
+
+
+proc aminmaxInputDtype(name: string): string =
+  case name
+  of "bool": result = "bool"
+  of "int8", "int16", "int32", "int64", "uint8", "uint16_matrix", "uint16_scalar",
+      "uint32_singleton", "uint32_scalar", "uint64_empty", "uint64_scalar",
+      "scalar", "offset", "broadcast", "empty_reduced", "empty_outer":
+    result = case name
+      of "uint16_matrix", "uint16_scalar": "uint16"
+      of "uint32_singleton", "uint32_scalar": "uint32"
+      of "uint64_empty", "uint64_scalar": "uint64"
+      of "scalar", "int64": "int64"
+      of "int8", "empty_reduced", "empty_outer": "int8"
+      of "int16": "int16"
+      of "int32", "offset": "int32"
+      of "uint8", "broadcast": "uint8"
+      else: name
+  of "transpose", "zero_ties_f64", "payload_f64", "scalar_payload_f64", "infinities_f64":
+    result = "float64"
+  of "reverse", "zero_ties_f32", "payload_f32", "scalar_payload_f32", "infinities_f32":
+    result = "float32"
+  of "complex64_empty": result = "complex64"
+  of "complex128_scalar": result = "complex128"
+  else: invalid("unknown aminmax input " & name)
+
+
+proc aminmaxInputShape(name: string): seq[int] =
+  case name
+  of "bool", "int8", "int64", "uint8", "zero_ties_f32", "zero_ties_f64",
+      "infinities_f32", "infinities_f64", "uint16_matrix", "complex128_scalar":
+    if name == "complex128_scalar": result = @[]
+    elif name == "int64" or name == "bool" or name == "int8" or name == "uint8" or
+        name.startsWith("zero_ties") or name.startsWith("infinities") or
+        name == "uint16_matrix":
+      result = @[2, 3]
+  of "int16", "int32", "payload_f64": result = @[2, 2]
+  of "transpose", "payload_f32": result = @[2, if name == "transpose": 3 else: 4]
+  of "offset": result = @[3, 4]
+  of "reverse": result = @[5]
+  of "uint32_singleton": result = @[1]
+  of "broadcast": result = @[1, 3]
+  of "scalar", "scalar_payload_f32", "scalar_payload_f64", "uint16_scalar",
+      "uint32_scalar", "uint64_scalar": result = @[]
+  of "empty_reduced": result = @[2, 0]
+  of "empty_outer", "uint64_empty", "complex64_empty": result = @[0, 3]
+  else: invalid("unknown aminmax input shape " & name)
+
+
+proc aminmaxInputLayout(name: string): string =
+  result = if name in ["transpose", "offset", "reverse", "broadcast"]:
+    name
+  else:
+    "identity"
+
+
+proc aminmaxInputPayload(name: string): tuple[key: string, data: JsonNode] =
+  result.key = "words"
+  case name
+  of "bool": result.data = %*[0, 1, 0, 1, 0, 1]
+  of "int8": result.data = %*[-128, 127, -1, 1, 2, 3]
+  of "int16": result.data = %*[-32768, 32767, -1, 5]
+  of "int32": result.data = %*[-2147483648, 2147483647, -1, 5]
+  of "int64": result.data = %*[low(int64), high(int64), -2, 1, 4, -9]
+  of "uint8": result.data = %*[0, 255, 1, 2, 128, 3]
+  of "transpose":
+    result.key = "values"
+    result.data = %*[2.0, -3.0, 5.0, 7.0, 0.0, -1.0]
+  of "offset": result.data = %*[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  of "reverse":
+    result.key = "values"
+    result.data = %*[1.0, -5.0, 2.0, 0.0, 4.0]
+  of "broadcast": result.data = %*[2, 3, 0]
+  of "scalar": result.data = %*[low(int64)]
+  of "empty_reduced", "empty_outer", "uint64_empty", "complex64_empty":
+    if name == "complex64_empty": result.key = "values"
+    result.data = newJArray()
+  of "zero_ties_f32":
+    result.key = "bits"
+    result.data = %*["0x80000000", "0x00000000", "0x80000000",
+      "0x00000000", "0x80000000", "0x00000000"]
+  of "zero_ties_f64":
+    result.key = "bits"
+    result.data = %*["0x8000000000000000", "0x0000000000000000",
+      "0x8000000000000000", "0x0000000000000000", "0x8000000000000000",
+      "0x0000000000000000"]
+  of "payload_f32":
+    result.key = "bits"
+    result.data = %*["0x3f800000", "0x7fc12345", "0x3f800000", "0x3f800000",
+      "0x7fc54321", "0x3f800000", "0x3f800000", "0x3f800000"]
+  of "payload_f64":
+    result.key = "bits"
+    result.data = %*["0x3ff0000000000000", "0x7ff8123456789abc",
+      "0x7ff876543210abcd", "0x3ff0000000000000"]
+  of "scalar_payload_f32":
+    result.key = "bits"
+    result.data = %*["0x7fc12345"]
+  of "scalar_payload_f64":
+    result.key = "bits"
+    result.data = %*["0x7ff8123456789abc"]
+  of "infinities_f32":
+    result.key = "bits"
+    result.data = %*["0xff800000", "0x7f800000", "0x00000000", "0x7f800000",
+      "0xff800000", "0x3f800000"]
+  of "infinities_f64":
+    result.key = "bits"
+    result.data = %*["0xfff0000000000000", "0x7ff0000000000000",
+      "0x0000000000000000", "0x7ff0000000000000", "0xfff0000000000000",
+      "0x3ff0000000000000"]
+  of "uint16_matrix": result.data = %*[0, 65535, 1, 2, 40000, 3]
+  of "uint32_singleton": result.data = %*[4294967295]
+  of "uint16_scalar": result.data = %*[65535]
+  of "uint32_scalar": result.data = %*[4294967295]
+  of "uint64_scalar": result.data = %*[-1]
+  of "complex128_scalar":
+    result.key = "values"
+    result.data = %*[[1.0, -2.0]]
+  else: invalid("unknown aminmax input payload " & name)
+
+
+proc aminmaxRequestId(dimensions: JsonNode, keepdim: bool): string =
+  let dimName = if dimensions.kind == JNull: "all" else: "axis_" & $dimensions.getInt
+  result = dimName & (if keepdim: "_keep" else: "_drop")
+
+
+proc aminmaxAxes(name: string): seq[int] =
+  if name in ["reverse", "uint32_singleton", "scalar", "scalar_payload_f32",
+      "scalar_payload_f64", "uint16_scalar", "uint32_scalar", "uint64_scalar",
+      "complex128_scalar"]:
+    result = @[0, -1, 1, -2]
+  else:
+    result = @[0, 1, -1, -2, 2, -3]
+
+
+proc aminmaxRequests(name: string): JsonNode =
+  result = newJArray()
+  var dimensions = @[newJNull()]
+  for axis in aminmaxAxes(name): dimensions.add newJInt(axis)
+  for dimension in dimensions:
+    for keepdim in [false, true]:
+      var request = newJObject()
+      request["id"] = %aminmaxRequestId(dimension, keepdim)
+      request["dim"] = if dimension.kind == JNull: newJNull() else: newJInt(dimension.getInt)
+      request["keepdim"] = %keepdim
+      result.add request
+
+
+proc aminmaxShapeNode(shape: seq[int]): JsonNode =
+  result = newJArray()
+  for dimension in shape: result.add newJInt(dimension)
+
+
+proc expectAminmaxInputs(inputs: JsonNode) =
+  expectExtremaFields(inputs, AminmaxInputNames, "aminmax inputs")
+  for name in AminmaxInputNames:
+    let spec = field(inputs, name)
+    let payload = aminmaxInputPayload(name)
+    expectExtremaFields(spec, ["dtype", "shape", "layout", payload.key, "requests"],
+      "aminmax input " & name)
+    require(field(spec, "dtype") == %aminmaxInputDtype(name),
+      "aminmax dtype mismatch for " & name)
+    require(field(spec, "shape") == aminmaxShapeNode(aminmaxInputShape(name)),
+      "aminmax shape mismatch for " & name)
+    require(field(spec, "layout") == %aminmaxInputLayout(name),
+      "aminmax layout mismatch for " & name)
+    require(field(spec, payload.key) == payload.data,
+      "aminmax payload mismatch for " & name)
+    require(field(spec, "requests") == aminmaxRequests(name),
+      "aminmax requests mismatch for " & name)
+
+
+proc aminmaxLogicalShape(name: string): seq[int] =
+  let shape = aminmaxInputShape(name)
+  case name
+  of "transpose": result = @[shape[1], shape[0]]
+  of "offset": result = @[shape[1], shape[0] - 1]
+  of "broadcast": result = @[4, 3]
+  else: result = shape
+
+
+proc aminmaxExpectedError(dtype: string, shape: seq[int], dimensions: JsonNode): string =
+  if dtype in ["complex64", "complex128"]:
+    return "unsupported_dtype"
+  let rank = shape.len
+  if dimensions.kind == JNull:
+    for size in shape:
+      if size == 0: return "empty_reduction"
+    if dtype in ["uint16", "uint32", "uint64"]: return "unsupported_dtype"
+    return ""
+  require(dimensions.kind == JInt, "aminmax dim must be null or an integer")
+  let axis = dimensions.getInt
+  let axisLimit = max(1, rank)
+  if axis < -axisLimit or axis >= axisLimit: return "axis_out_of_range"
+  if rank > 0:
+    let normalized = if axis < 0: axis + rank else: axis
+    if shape[normalized] == 0: return "empty_reduced_axis"
+    if dtype in ["uint16", "uint32", "uint64"]: return "unsupported_dtype"
+
+
+proc aminmaxOutputShape(shape: seq[int], dimensions: JsonNode,
+                        keepdim: bool): seq[int] =
+  if dimensions.kind == JNull:
+    if keepdim:
+      result = newSeq[int](shape.len)
+      for index in 0 ..< result.len: result[index] = 1
+    return
+  if shape.len == 0: return @[]
+  let axis = dimensions.getInt
+  let normalized = if axis < 0: axis + shape.len else: axis
+  if keepdim:
+    result = newSeq[int](shape.len)
+    for index, size in shape: result[index] = size
+    result[normalized] = 1
+  else:
+    for index, size in shape:
+      if index != normalized: result.add size
+
+
+proc aminmaxHexBits(node: JsonNode, dtype, label: string): uint64 =
+  require(node.kind == JString, label & " bit pattern must be a string")
+  let value = node.getStr
+  let digits = if dtype == "float32": 8 else: 16
+  require(value.len == digits + 2 and value[0 .. 1] == "0x",
+    label & " bit pattern has an invalid width or prefix")
+  for index in 2 ..< value.len:
+    var nibble = 0'u64
+    case value[index]
+    of '0' .. '9': nibble = uint64(ord(value[index]) - ord('0'))
+    of 'a' .. 'f': nibble = uint64(ord(value[index]) - ord('a') + 10)
+    else: require(false, label & " bit pattern is not lowercase hexadecimal")
+    result = (result shl 4) or nibble
+
+
+proc expectAminmaxFloatValue(valueNode, bitsNode: JsonNode,
+                             dtype, label: string) =
+  let bits = aminmaxHexBits(bitsNode, dtype, label)
+  let decoded = if dtype == "float32": float64(cast[float32](uint32(bits)))
+    else: cast[float64](bits)
+  if valueNode.kind == JString:
+    case valueNode.getStr
+    of "nan": require(classify(decoded) == fcNan, label & " NaN bits mismatch")
+    of "+inf": require(classify(decoded) == fcInf, label & " positive infinity bits mismatch")
+    of "-inf": require(classify(decoded) == fcNegInf, label & " negative infinity bits mismatch")
+    else: invalid(label & " has an invalid non-finite observation")
+  else:
+    require(valueNode.kind in {JInt, JFloat}, label & " float observation must be numeric")
+    let observed = valueNode.getFloat
+    let observedBits = if dtype == "float32":
+      uint64(cast[uint32](observed.float32))
+    else:
+      cast[uint64](observed)
+    require(bits == observedBits, label & " value and bit pattern disagree")
+
+
+proc expectAminmaxTensor(node: JsonNode, shape: seq[int], dtype, label: string) =
+  if dtype in ["float32", "float64"]:
+    expectExtremaFields(node, ["shape", "numel", "dtype", "device", "values", "bits"], label)
+    expectTensor(node, false, dtype)
+    let count = extremaNumel(shape)
+    require(field(node, "shape") == aminmaxShapeNode(shape) and
+      field(node, "numel").kind == JInt and field(node, "numel").getInt == count and
+      field(node, "device") == %"cpu", label & " metadata mismatch")
+    let values = field(node, "values")
+    let bits = field(node, "bits")
+    require(values.kind == JArray and bits.kind == JArray and
+      values.len == count and bits.len == count, label & " values/bits count mismatch")
+    for index in 0 ..< count:
+      expectAminmaxFloatValue(values[index], bits[index], dtype, label & "[" & $index & "]")
+  else:
+    expectIntegerOutputTensor(node, shape, dtype)
+
+
+proc expectAminmaxExpected(expected, inputs: JsonNode) =
+  expectExtremaFields(expected, AminmaxInputNames, "aminmax expected inputs")
+  for name in AminmaxInputNames:
+    let spec = field(inputs, name)
+    let requests = field(spec, "requests")
+    let byRequest = field(expected, name)
+    var requestNames: seq[string]
+    for request in requests: requestNames.add request["id"].getStr
+    expectExtremaFields(byRequest, requestNames, "aminmax requests for " & name)
+    let dtype = aminmaxInputDtype(name)
+    let shape = aminmaxLogicalShape(name)
+    for request in requests:
+      let requestId = request["id"].getStr
+      let observed = field(byRequest, requestId)
+      let label = "aminmax " & name & "." & requestId
+      let expectedError = aminmaxExpectedError(dtype, shape, request["dim"])
+      if expectedError.len > 0:
+        expectExtremaFields(observed, ["error"], label)
+        require(field(observed, "error") == %expectedError, label & " error precedence mismatch")
+      else:
+        expectExtremaFields(observed, ["min", "max", "distinct"], label)
+        let outputShape = aminmaxOutputShape(shape, request["dim"], request["keepdim"].getBool)
+        expectAminmaxTensor(field(observed, "min"), outputShape, dtype, label & " min")
+        expectAminmaxTensor(field(observed, "max"), outputShape, dtype, label & " max")
+        require(field(observed, "distinct").kind == JBool and
+          field(observed, "distinct").getBool, label & " tuple outputs must be independent")
+
+
 const PairedExtremaGradientInputNames = [
   "ties", "transpose", "reverse", "broadcast", "nan_first", "zero_ties",
   "scalar", "empty", "cube", "offset", "infinities"]
@@ -2862,6 +3169,11 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "paired extrema fixtures require exact-value tolerances")
       expectPairedExtremaInputs(inputs)
+    of "tensor.aminmax":
+      require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
+        "aminmax fixtures require exact-value tolerances")
+      expectAminmaxInputs(inputs)
+
     of "tensor.integer_reductions":
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "integer reduction fixtures require exact-value tolerances")
@@ -3017,6 +3329,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectIndexedExtremaExpected(expected, inputs)
     of "tensor.paired_extrema":
       expectPairedExtremaExpected(expected, inputs)
+    of "tensor.aminmax":
+      expectAminmaxExpected(expected, inputs)
     of "tensor.integer_output_dtype":
       expectIntegerOutputExpected(expected, inputs)
     of "tensor.float64_reductions":

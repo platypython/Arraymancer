@@ -3058,7 +3058,313 @@ def paired_extrema(torch: Any) -> dict[str, Any]:
     return _case("tensor.paired_extrema", "api:torch", inputs, expected, tolerance=0.0)
 
 
+def _aminmax_request_id(dim: int | None, keepdim: bool) -> str:
+    axis_name = "all" if dim is None else f"axis_{dim}"
+    return f"{axis_name}_{'keep' if keepdim else 'drop'}"
 
+
+def _aminmax_raw_inputs() -> dict[str, dict[str, Any]]:
+    rank_two_dims = [None, 0, 1, -1, -2, 2, -3]
+    scalar_dims = [None, 0, -1, 1, -2]
+    inputs: dict[str, dict[str, Any]] = {}
+
+    def add(
+        name: str,
+        dtype: str,
+        shape: list[int],
+        layout: str,
+        payload_key: str,
+        payload: list[Any],
+        dims: list[int | None],
+    ) -> None:
+        inputs[name] = {
+            "dtype": dtype,
+            "shape": shape,
+            "layout": layout,
+            payload_key: payload,
+            "requests": [
+                {
+                    "id": _aminmax_request_id(dim, keepdim),
+                    "dim": dim,
+                    "keepdim": keepdim,
+                }
+                for dim in dims
+                for keepdim in (False, True)
+            ],
+        }
+
+    add("bool", "bool", [2, 3], "identity", "words", [0, 1, 0, 1, 0, 1], rank_two_dims)
+    add("int8", "int8", [2, 3], "identity", "words", [-128, 127, -1, 1, 2, 3], rank_two_dims)
+    add("int16", "int16", [2, 2], "identity", "words", [-32768, 32767, -1, 5], rank_two_dims)
+    add(
+        "int32",
+        "int32",
+        [2, 2],
+        "identity",
+        "words",
+        [-(1 << 31), (1 << 31) - 1, -1, 5],
+        rank_two_dims,
+    )
+    add(
+        "int64",
+        "int64",
+        [2, 3],
+        "identity",
+        "words",
+        [-(1 << 63), (1 << 63) - 1, -2, 1, 4, -9],
+        rank_two_dims,
+    )
+    add("uint8", "uint8", [2, 3], "identity", "words", [0, 255, 1, 2, 128, 3], rank_two_dims)
+    add(
+        "transpose",
+        "float64",
+        [2, 3],
+        "transpose",
+        "values",
+        [2.0, -3.0, 5.0, 7.0, 0.0, -1.0],
+        rank_two_dims,
+    )
+    add("offset", "int32", [3, 4], "offset", "words", list(range(12)), rank_two_dims)
+    add("reverse", "float32", [5], "reverse", "values", [1.0, -5.0, 2.0, 0.0, 4.0], scalar_dims)
+    add("broadcast", "uint8", [1, 3], "broadcast", "words", [2, 3, 0], rank_two_dims)
+    add("scalar", "int64", [], "identity", "words", [-(1 << 63)], scalar_dims)
+    add("empty_reduced", "int8", [2, 0], "identity", "words", [], rank_two_dims)
+    add("empty_outer", "int8", [0, 3], "identity", "words", [], rank_two_dims)
+    add(
+        "zero_ties_f32",
+        "float32",
+        [2, 3],
+        "identity",
+        "bits",
+        ["0x80000000", "0x00000000", "0x80000000", "0x00000000", "0x80000000", "0x00000000"],
+        rank_two_dims,
+    )
+    add(
+        "zero_ties_f64",
+        "float64",
+        [2, 3],
+        "identity",
+        "bits",
+        [
+            "0x8000000000000000",
+            "0x0000000000000000",
+            "0x8000000000000000",
+            "0x0000000000000000",
+            "0x8000000000000000",
+            "0x0000000000000000",
+        ],
+        rank_two_dims,
+    )
+    add(
+        "payload_f32",
+        "float32",
+        [2, 4],
+        "identity",
+        "bits",
+        [
+            "0x3f800000",
+            "0x7fc12345",
+            "0x3f800000",
+            "0x3f800000",
+            "0x7fc54321",
+            "0x3f800000",
+            "0x3f800000",
+            "0x3f800000",
+        ],
+        rank_two_dims,
+    )
+    add(
+        "payload_f64",
+        "float64",
+        [2, 2],
+        "identity",
+        "bits",
+        [
+            "0x3ff0000000000000",
+            "0x7ff8123456789abc",
+            "0x7ff876543210abcd",
+            "0x3ff0000000000000",
+        ],
+        rank_two_dims,
+    )
+    add("scalar_payload_f32", "float32", [], "identity", "bits", ["0x7fc12345"], scalar_dims)
+    add(
+        "scalar_payload_f64",
+        "float64",
+        [],
+        "identity",
+        "bits",
+        ["0x7ff8123456789abc"],
+        scalar_dims,
+    )
+    add(
+        "infinities_f32",
+        "float32",
+        [2, 3],
+        "identity",
+        "bits",
+        [
+            "0xff800000",
+            "0x7f800000",
+            "0x00000000",
+            "0x7f800000",
+            "0xff800000",
+            "0x3f800000",
+        ],
+        rank_two_dims,
+    )
+    add(
+        "infinities_f64",
+        "float64",
+        [2, 3],
+        "identity",
+        "bits",
+        [
+            "0xfff0000000000000",
+            "0x7ff0000000000000",
+            "0x0000000000000000",
+            "0x7ff0000000000000",
+            "0xfff0000000000000",
+            "0x3ff0000000000000",
+        ],
+        rank_two_dims,
+    )
+    add(
+        "uint16_matrix",
+        "uint16",
+        [2, 3],
+        "identity",
+        "words",
+        [0, 65535, 1, 2, 40000, 3],
+        rank_two_dims,
+    )
+    add("uint32_singleton", "uint32", [1], "identity", "words", [(1 << 32) - 1], scalar_dims)
+    add("uint64_empty", "uint64", [0, 3], "identity", "words", [], rank_two_dims)
+    add("uint16_scalar", "uint16", [], "identity", "words", [65535], scalar_dims)
+    add("uint32_scalar", "uint32", [], "identity", "words", [(1 << 32) - 1], scalar_dims)
+    add("uint64_scalar", "uint64", [], "identity", "words", [(1 << 64) - 1], scalar_dims)
+    add("complex64_empty", "complex64", [0, 3], "identity", "values", [], rank_two_dims)
+    add(
+        "complex128_scalar",
+        "complex128",
+        [],
+        "identity",
+        "values",
+        [[1.0, -2.0]],
+        scalar_dims,
+    )
+    for name in ("uint64_empty", "uint64_scalar"):
+        inputs[name]["words"] = [
+            _indexed_extrema_word(value) for value in inputs[name]["words"]
+        ]
+    return inputs
+
+
+def _aminmax_source(torch: Any, spec: dict[str, Any]) -> Any:
+    dtype_name = spec["dtype"]
+    dtype = getattr(torch, dtype_name)
+    if "words" in spec:
+        words = spec["words"]
+        values = [word + (1 << 64) if dtype_name == "uint64" and word < 0 else word for word in words]
+        source = torch.tensor(values, dtype=dtype, device="cpu")
+    elif "bits" in spec:
+        if dtype_name == "float32":
+            words = [int(word, 16) for word in spec["bits"]]
+            words = [word - (1 << 32) if word >= 1 << 31 else word for word in words]
+            source = torch.tensor(words, dtype=torch.int32, device="cpu").view(dtype)
+        else:
+            words = [_indexed_extrema_word(int(word, 16)) for word in spec["bits"]]
+            source = torch.tensor(words, dtype=torch.int64, device="cpu").view(dtype)
+    elif dtype_name in ("complex64", "complex128"):
+        source = torch.tensor(
+            [complex(real, imaginary) for real, imaginary in spec["values"]],
+            dtype=dtype,
+            device="cpu",
+        )
+    else:
+        source = torch.tensor(spec["values"], dtype=dtype, device="cpu")
+    source = source.reshape(spec["shape"])
+    layout = spec["layout"]
+    if layout == "transpose":
+        return source.transpose(0, 1)
+    if layout == "offset":
+        return source.transpose(0, 1)[:, 1:]
+    if layout == "reverse":
+        return source.flip([0])
+    if layout == "broadcast":
+        return source.expand(4, 3)
+    return source
+
+
+def _observe_aminmax_tensor(torch: Any, tensor: Any) -> dict[str, Any]:
+    if not tensor.is_floating_point() and not tensor.is_complex():
+        return _observe_integer_output(tensor)
+    observation = _observe(tensor)
+    if observation["dtype"] in ("float32", "float64"):
+        width = 8 if observation["dtype"] == "float32" else 16
+        word_dtype = torch.uint32 if width == 8 else torch.uint64
+        observation["bits"] = [
+            f"0x{int(word):0{width}x}"
+            for word in tensor.detach().reshape(-1).view(word_dtype).tolist()
+        ]
+    return observation
+
+
+def _aminmax_error_code(error: Exception) -> str | None:
+    message = str(error).lower().replace("non-zero", "nonzero")
+    if isinstance(error, (NotImplementedError, TypeError)):
+        return "unsupported_dtype"
+    if isinstance(error, IndexError):
+        if "dimension out of range" in message or "axis out of range" in message:
+            return "axis_out_of_range"
+        if "nonzero size" in message or "empty reduced axis" in message:
+            return "empty_reduced_axis"
+    if isinstance(error, RuntimeError):
+        if "nonzero size" in message or "empty reduced axis" in message:
+            return "empty_reduced_axis"
+        if (
+            "empty dimension" in message
+            or "empty reduction" in message
+            or "numel() == 0" in message
+            or "reduction dim to be specified" in message
+        ):
+            return "empty_reduction"
+        if "not implemented" in message or "unsupported" in message:
+            return "unsupported_dtype"
+    return None
+
+
+def _observe_aminmax_request(
+    torch: Any, source: Any, request: dict[str, Any], label: str
+) -> dict[str, Any]:
+    try:
+        output = torch.aminmax(source, dim=request["dim"], keepdim=request["keepdim"])
+    except (IndexError, NotImplementedError, RuntimeError, TypeError) as error:
+        code = _aminmax_error_code(error)
+        if code is None:
+            raise ValueError(f"unexpected aminmax rejection for {label}: {error}") from error
+        return {"error": code}
+    minimum, maximum = output.min, output.max
+    return {
+        "min": _observe_aminmax_tensor(torch, minimum),
+        "max": _observe_aminmax_tensor(torch, maximum),
+        "distinct": minimum.numel() == 0 or minimum.data_ptr() != maximum.data_ptr(),
+    }
+
+
+def aminmax(torch: Any) -> dict[str, Any]:
+    """Observe authentic PyTorch CPU joint aminmax tuple results and rejections."""
+    inputs = _aminmax_raw_inputs()
+    expected: dict[str, dict[str, Any]] = {}
+    for name, spec in inputs.items():
+        source = _aminmax_source(torch, spec)
+        expected[name] = {
+            request["id"]: _observe_aminmax_request(
+                torch, source, request, f"{name}.{request['id']}"
+            )
+            for request in spec["requests"]
+        }
+    return _case("tensor.aminmax", "api:torch", inputs, expected, tolerance=0.0)
 
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
@@ -3072,7 +3378,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
-    complex_prod_dtype, indexed_extrema, paired_extrema, paired_extrema_gradient,
+    complex_prod_dtype, indexed_extrema, paired_extrema, paired_extrema_gradient, aminmax,
 )
 
 

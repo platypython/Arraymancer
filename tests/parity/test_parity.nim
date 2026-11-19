@@ -1513,3 +1513,98 @@ suite "Pinned PyTorch conformance foundation":
     malformed["cases"][index]["expected"]["complex_negative"]["int8"]["all"]["values"].elems[0] =
       %128
     expect ValueError: validateFixtureData(malformed, reference)
+
+  test "Joint aminmax matches tuple outputs, exact bits, and error precedence":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var aminmaxFixture = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.aminmax": aminmaxFixture = caseData
+    doAssert aminmaxFixture.kind == JObject
+    check fixtures["cases"].len == 53
+    check aminmaxFixture["area"].getStr == "api:torch"
+    check aminmaxFixture["atol"].getFloat == 0
+    check aminmaxFixture["rtol"].getFloat == 0
+    check aminmaxFixture["inputs"].len == 29
+
+    let actual = runCase(aminmaxFixture)
+    check compareObservations(aminmaxFixture["expected"], actual,
+      aminmaxFixture["atol"].getFloat, aminmaxFixture["rtol"].getFloat).len == 0
+    check actual["payload_f32"]["all_drop"]["min"]["bits"] == %*["0x7fc54321"]
+    check actual["payload_f32"]["all_drop"]["max"]["bits"] == %*["0x7fc54321"]
+    check actual["payload_f32"]["axis_0_drop"]["min"]["bits"] ==
+      %*["0x7fc54321", "0x7fc12345", "0x3f800000", "0x3f800000"]
+    check actual["payload_f64"]["all_drop"]["min"]["bits"] ==
+      %*["0x7ff876543210abcd"]
+    check actual["payload_f64"]["axis_0_drop"]["max"]["bits"] ==
+      %*["0x7ff876543210abcd", "0x7ff8123456789abc"]
+    check actual["zero_ties_f32"]["axis_0_drop"]["min"]["bits"] ==
+      %*["0x80000000", "0x00000000", "0x80000000"]
+    check actual["zero_ties_f32"]["axis_0_drop"]["max"]["bits"] ==
+      %*["0x80000000", "0x00000000", "0x80000000"]
+    check actual["zero_ties_f64"]["axis_0_drop"]["min"]["bits"] ==
+      %*["0x8000000000000000", "0x0000000000000000", "0x8000000000000000"]
+    check actual["zero_ties_f64"]["axis_0_drop"]["max"]["bits"] ==
+      %*["0x8000000000000000", "0x0000000000000000", "0x8000000000000000"]
+    check actual["scalar_payload_f32"]["all_drop"]["min"]["bits"] == %*["0x7fc12345"]
+    check actual["scalar_payload_f64"]["axis_0_keep"]["max"]["bits"] ==
+      %*["0x7ff8123456789abc"]
+    check actual["transpose"]["axis_0_keep"]["min"]["shape"] == %*[1, 2]
+    check actual["offset"]["axis_1_keep"]["max"]["shape"] == %*[4, 1]
+    check actual["broadcast"]["all_keep"]["min"]["shape"] == %*[1, 1]
+    check actual["empty_reduced"]["all_drop"] == %*{"error": "empty_reduction"}
+    check actual["empty_reduced"]["axis_1_drop"] == %*{"error": "empty_reduced_axis"}
+    check actual["empty_outer"]["axis_1_keep"]["min"]["shape"] == %*[0, 1]
+    check actual["empty_reduced"]["axis_0_drop"]["min"]["shape"] == %*[0]
+    check actual["empty_outer"]["axis_1_drop"]["min"]["shape"] == %*[0]
+    check actual["uint32_singleton"]["axis_1_drop"] == %*{"error": "axis_out_of_range"}
+    check actual["uint16_matrix"]["axis_2_drop"] == %*{"error": "axis_out_of_range"}
+    check actual["uint16_scalar"]["axis_0_drop"]["min"]["values"] == %*[65535]
+    check actual["uint16_matrix"]["axis_0_drop"] == %*{"error": "unsupported_dtype"}
+    check actual["uint64_empty"]["all_drop"] == %*{"error": "empty_reduction"}
+    check actual["uint64_empty"]["axis_0_drop"] == %*{"error": "empty_reduced_axis"}
+    check actual["uint64_empty"]["axis_1_drop"] == %*{"error": "unsupported_dtype"}
+    check actual["uint64_scalar"]["all_drop"] == %*{"error": "unsupported_dtype"}
+    check actual["uint64_scalar"]["axis_0_drop"]["min"]["word_encoding"] ==
+      %"signed_twos_complement"
+    check actual["complex64_empty"]["axis_2_drop"] == %*{"error": "unsupported_dtype"}
+    check actual["complex128_scalar"]["axis_1_drop"] == %*{"error": "unsupported_dtype"}
+
+  test "Reject malformed aminmax fixture inputs and tuple observations":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "tensor.aminmax":
+        index = candidate
+    doAssert index >= 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["zero_ties_f32"]["bits"].elems[0] = %"0x0"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["payload_f32"]["all_drop"]["min"]["bits"].elems[0] =
+      %"0xBAD"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["payload_f32"]["all_drop"]["min"]["dtype"] =
+      %"float64"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["payload_f32"]["axis_1_keep"]["max"]["shape"] =
+      %*[2, 2]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["int8"]["all_drop"].delete("max")
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["transpose"]["all_drop"]["distinct"] = %false
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["uint16_matrix"]["axis_0_drop"]["error"] =
+      %"axis_out_of_range"
+    expect ValueError: validateFixtureData(malformed, reference)

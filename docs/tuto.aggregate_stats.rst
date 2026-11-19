@@ -218,5 +218,21 @@ strided seeds and ``no_grad_mode`` follow the usual autograd contracts.
 Higher-order gradients, Metal, output-buffer and low-precision overloads remain
 unsupported.
 
+Use ``aminmax`` to compute both extrema in one pass, without an input copy:
+
+.. code-block:: nim
+
+  let (minimum, maximum) = scores.aminmax(1)
+  let whole = scores.aminmax(keepdim = true)
+
+Both outputs own independent storage and preserve the input dtype. The axis
+overload preserves the first equal signed zero and first NaN payload; whole
+floating reductions follow the native vector fold, so zero ties and the selected
+NaN payload can differ. Scalar inputs retain their bits and stay scalar.
+Bool is supported. Wider unsigned inputs support explicit scalar axes only;
+whole reductions and positive-rank inputs reject, even with valid empty outputs.
+Complex inputs reject before axis or empty-input checks. No autograd, Metal,
+output-buffer or low-precision overloads are provided.
+
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

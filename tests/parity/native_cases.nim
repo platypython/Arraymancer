@@ -1946,6 +1946,163 @@ proc pairedExtremaGradient(inputs: JsonNode): JsonNode =
 
 
 
+proc aminmaxHexWord(bits: uint64, digits: int): string =
+  const HexDigits = "0123456789abcdef"
+  result = newString(digits + 2)
+  result[0] = '0'
+  result[1] = 'x'
+  var remaining = bits
+  for index in 0 ..< digits:
+    result[digits + 1 - index] = HexDigits[int(remaining and 0xf)]
+    remaining = remaining shr 4
+
+
+proc aminmaxParseHexBits(node: JsonNode, digits: int): uint64 =
+  let value = node.getStr
+  if value.len != digits + 2 or value[0 .. 1] != "0x":
+    raise newException(ValueError, "invalid aminmax bit pattern")
+  for index in 2 ..< value.len:
+    var nibble = 0'u64
+    case value[index]
+    of '0' .. '9': nibble = uint64(ord(value[index]) - ord('0'))
+    of 'a' .. 'f': nibble = uint64(ord(value[index]) - ord('a') + 10)
+    else: raise newException(ValueError, "invalid aminmax bit pattern")
+    result = (result shl 4) or nibble
+
+
+proc aminmaxBitsTensor[T: SomeFloat](spec: JsonNode): Tensor[T] =
+  let shapeNode = spec["shape"]
+  if shapeNode.len > LASER_MAXRANK:
+    raise newException(ValueError, "aminmax input rank exceeds LASER_MAXRANK")
+  var shape = newSeq[int](shapeNode.len)
+  for index in 0 ..< shapeNode.len: shape[index] = shapeNode[index].getInt
+  result = newTensorUninit[T](toMetadata(shape))
+  let bits = spec["bits"]
+  if bits.len != result.size:
+    raise newException(ValueError, "aminmax bit pattern count mismatch")
+  var raw = result.unsafe_raw_offset
+  for index in 0 ..< bits.len:
+    when T is float32:
+      raw[index] = cast[float32](uint32(aminmaxParseHexBits(bits[index], 8)))
+    else:
+      raw[index] = cast[float64](aminmaxParseHexBits(bits[index], 16))
+
+
+proc aminmaxInputTensor[T](spec: JsonNode): Tensor[T] =
+  when T is Complex[float32] or T is Complex[float64]:
+    result = getComplexTensor[T](spec)
+  elif T is float32:
+    if spec.hasKey("bits"): result = aminmaxBitsTensor[float32](spec)
+    else: result = realDtypeFloat32Tensor(spec)
+  elif T is float64:
+    if spec.hasKey("bits"):
+      result = aminmaxBitsTensor[float64](spec)
+    else:
+      result = getTensor(spec)
+  else:
+    result = getIntegerTensor[T](spec)
+  result = realDtypeLayout(result, spec["layout"].getStr)
+
+
+proc aminmaxTensorObservation[T](tensor: Tensor[T]): JsonNode =
+  when T is float32 or T is float64:
+    result = tensorObservation(tensor)
+    var bits = newJArray()
+    let raw = tensor.unsafe_raw_offset
+    for index in 0 ..< tensor.size:
+      when T is float32:
+        bits.add %aminmaxHexWord(uint64(cast[uint32](raw[index])), 8)
+      else:
+        bits.add %aminmaxHexWord(cast[uint64](raw[index]), 16)
+    result["bits"] = bits
+  elif T is Complex[float32] or T is Complex[float64]:
+    if tensor.size != 0:
+      raise newException(ValueError, "nonempty complex aminmax output was returned")
+    result = newJObject()
+    var shape = newJArray()
+    for dimension in tensor.shape: shape.add newJInt(dimension)
+    result["shape"] = shape
+    result["numel"] = newJInt(tensor.size.int)
+    when T is Complex[float32]: result["dtype"] = %"complex64"
+    else: result["dtype"] = %"complex128"
+    result["device"] = %"cpu"
+    result["values"] = newJArray()
+  else:
+    result = tensorObservation(tensor)
+
+
+proc aminmaxExpectedNativeError(spec, request: JsonNode,
+                                shape: Metadata): string =
+  let dtype = spec["dtype"].getStr
+  if dtype in ["complex64", "complex128"]: return "unsupported_dtype"
+  let dimensions = request["dim"]
+  if dimensions.kind == JNull:
+    for dimension in shape:
+      if dimension == 0: return "empty_reduction"
+    if dtype in ["uint16", "uint32", "uint64"]: return "unsupported_dtype"
+    return ""
+  let axis = dimensions.getInt
+  let axisLimit = max(1, shape.len)
+  if axis < -axisLimit or axis >= axisLimit: return "axis_out_of_range"
+  if shape.len > 0:
+    let normalized = if axis < 0: axis + shape.len else: axis
+    if shape[normalized] == 0: return "empty_reduced_axis"
+    if dtype in ["uint16", "uint32", "uint64"]: return "unsupported_dtype"
+
+proc aminmaxOutput[T](source: Tensor[T], dim: JsonNode,
+                      keepdim: bool): tuple[min: Tensor[T], max: Tensor[T]] =
+  if dim.kind == JNull: result = source.aminmax(keepdim = keepdim)
+  else: result = source.aminmax(dim.getInt, keepdim = keepdim)
+
+proc aminmaxObservation[T](source: Tensor[T], spec, request: JsonNode): JsonNode =
+  var output: tuple[min: Tensor[T], max: Tensor[T]]
+  try:
+    output = aminmaxOutput(source, request["dim"], request["keepdim"].getBool)
+  except IndexDefect:
+    let code = aminmaxExpectedNativeError(spec, request, source.shape)
+    if code notin ["axis_out_of_range", "empty_reduced_axis"]: raise
+    return %*{"error": code}
+  except ValueError:
+    let code = aminmaxExpectedNativeError(spec, request, source.shape)
+    if code notin ["empty_reduction", "unsupported_dtype"]: raise
+    return %*{"error": code}
+  result = newJObject()
+  result["min"] = aminmaxTensorObservation(output.min)
+  result["max"] = aminmaxTensorObservation(output.max)
+  let outputsAreDistinct = if output.min.size == 0: true
+    else: cast[pointer](output.min.unsafe_raw_offset) !=
+      cast[pointer](output.max.unsafe_raw_offset)
+  result["distinct"] = %outputsAreDistinct
+
+
+
+proc aminmaxCase[T](spec: JsonNode): JsonNode =
+  let source = aminmaxInputTensor[T](spec)
+  result = newJObject()
+  for request in spec["requests"]:
+    result[request["id"].getStr] = aminmaxObservation(source, spec, request)
+
+
+proc aminmax(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = case spec["dtype"].getStr
+      of "bool": aminmaxCase[bool](spec)
+      of "int8": aminmaxCase[int8](spec)
+      of "int16": aminmaxCase[int16](spec)
+      of "int32": aminmaxCase[int32](spec)
+      of "int64": aminmaxCase[int64](spec)
+      of "uint8": aminmaxCase[uint8](spec)
+      of "uint16": aminmaxCase[uint16](spec)
+      of "uint32": aminmaxCase[uint32](spec)
+      of "uint64": aminmaxCase[uint64](spec)
+      of "float32": aminmaxCase[float32](spec)
+      of "float64": aminmaxCase[float64](spec)
+      of "complex64": aminmaxCase[Complex[float32]](spec)
+      of "complex128": aminmaxCase[Complex[float64]](spec)
+      else: raise newException(ValueError, "unsupported aminmax dtype: " & spec["dtype"].getStr)
+
+
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
@@ -1963,6 +2120,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = indexedExtrema(inputs)
   of "tensor.paired_extrema":
     result = pairedExtrema(inputs)
+  of "tensor.aminmax":
+    result = aminmax(inputs)
   of "tensor.integer_output_dtype":
     result = integerOutputDtype(inputs)
   of "tensor.mean_dtype":

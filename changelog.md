@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add fused CPU ``aminmax`` whole/single-axis reductions with independent,
+  dtype-preserving outputs and no materialized input. Preserve scalar, empty,
+  signed/broadcast-view and first-axis tie/NaN bits; whole floating folds follow
+  native vector zero/NaN order. Match bool and wider-unsigned scalar dispatch.
 - Add CPU float32/float64 seeded gradients for ``minWithIndices`` and
   ``maxWithIndices``. Scatter only the first selected index, retaining inactive
   positive zeros with nonfinite/negative-zero seeds; preserve scalar, empty,

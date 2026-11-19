@@ -25,7 +25,8 @@ import  ./data_structure,
         ./private/p_empty_tensors,
         ./private/p_accelerate,
         ./private/p_extrema,
-        ./private/p_argextrema
+        ./private/p_argextrema,
+        ./private/p_aminmax
 import std / [math, macros]
 import complex except Complex64, Complex32
 import ../laser/compiler_optim_hints
@@ -1046,6 +1047,24 @@ proc minWithIndices*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int
   ## Both outputs have independent storage. First equal values/NaNs win, preserving
   ## the selected signed-zero bits. Dtype, axis and empty-output rules match.
   reducePairedExtrema(arg, axis, keepdim, false)
+
+proc aminmax*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    keepdim = false): tuple[min, max: Tensor[T]] =
+  ## Return independent, dtype-preserving minimum and maximum tensors.
+  ## Whole reductions return scalars, or singleton input dimensions with ``keepdim``.
+  ## Signed/broadcast views are read without materializing the input. Native vector
+  ## folds determine floating zero ties and NaN payload order; scalar bits survive.
+  ## Empty whole reductions, complex and wider unsigned whole inputs reject.
+  reduceAminmax(arg, 0, true, keepdim)
+
+proc aminmax*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int;
+    keepdim = false): tuple[min, max: Tensor[T]] =
+  ## Return minimum and maximum along one axis, removing it unless ``keepdim``.
+  ## Negative axes normalize; scalars accept 0/-1 and stay scalar. First equal
+  ## values and first NaN source bits win. Outputs share neither input nor each other.
+  ## Empty reduced axes and complex inputs reject; retained empty axes are valid.
+  ## Wider unsigned inputs support explicit scalar axes only, not empty outputs.
+  reduceAminmax(arg, axis, false, keepdim)
 
 proc argmin*[T: SomeNumber or bool or Complex](arg: Tensor[T];
     keepdim = false): Tensor[int64] =
