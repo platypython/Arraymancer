@@ -2535,6 +2535,102 @@ proc logcumsumexpGradient(inputs: JsonNode): JsonNode =
 
 
 
+proc cumulativeExtremaInput[T](spec: JsonNode): Tensor[T] =
+  ## Bit payloads bypass floating conversion; ordinary profiles share view setup.
+  if not spec.hasKey("bits"):
+    return indexedExtremaInputTensor[T](spec)
+  if spec["layout"].getStr != "identity":
+    raise newException(ValueError, "cumulative extrema bit inputs require identity layout")
+  when T is SomeFloat:
+    result = aminmaxBitsTensor[T](spec)
+  elif T is Complex[float32] or T is Complex[float64]:
+    let shapeNode = spec["shape"]
+    if shapeNode.len > LASER_MAXRANK:
+      raise newException(ValueError, "cumulative extrema input rank exceeds LASER_MAXRANK")
+    var shape = newSeq[int](shapeNode.len)
+    for index in 0 ..< shape.len: shape[index] = shapeNode[index].getInt
+    result = newTensorUninit[T](toMetadata(shape))
+    let bits = spec["bits"]
+    if bits.len != 2 * result.size:
+      raise newException(ValueError, "cumulative extrema component bit count mismatch")
+    for index in 0 ..< result.size:
+      when T is Complex[float32]:
+        result.unsafe_raw_offset[index] = T(
+          re: cast[float32](uint32(aminmaxParseHexBits(bits[2 * index], 8))),
+          im: cast[float32](uint32(aminmaxParseHexBits(bits[2 * index + 1], 8))))
+      else:
+        result.unsafe_raw_offset[index] = T(
+          re: cast[float64](aminmaxParseHexBits(bits[2 * index], 16)),
+          im: cast[float64](aminmaxParseHexBits(bits[2 * index + 1], 16)))
+  else:
+    raise newException(ValueError, "cumulative extrema bit input requires floating dtype")
+
+proc cumulativeExtremaValues[T](tensor: Tensor[T]): JsonNode =
+  ## Complex scalar components need the same exact source-word evidence as reals.
+  when T is Complex[float32] or T is Complex[float64]:
+    result = complexTensorObservation(tensor)
+    var bits = newJArray()
+    for value in tensor:
+      when T is Complex[float32]:
+        bits.add %aminmaxHexWord(uint64(cast[uint32](value.re)), 8)
+        bits.add %aminmaxHexWord(uint64(cast[uint32](value.im)), 8)
+      else:
+        bits.add %aminmaxHexWord(cast[uint64](value.re), 16)
+        bits.add %aminmaxHexWord(cast[uint64](value.im), 16)
+    result["bits"] = bits
+  else:
+    result = aminmaxTensorObservation(tensor)
+
+proc cumulativeExtremaObservation[T](source: Tensor[T]; operation: string;
+    axis: int): JsonNode =
+  ## Only expected axis/dtype errors become observations; every other error escapes.
+  try:
+    let output = case operation
+      of "cummin": source.cummin(axis)
+      of "cummax": source.cummax(axis)
+      else: raise newException(ValueError, "unknown cumulative extrema operation")
+    result = %*{"values": cumulativeExtremaValues(output.values),
+      "indices": tensorObservation(output.indices)}
+  except IndexDefect as error:
+    let code = pairedExtremaErrorCode(error.msg)
+    if code != "axis_out_of_range": raise
+    result = %*{"error": code}
+  except ValueError as error:
+    let code = pairedExtremaErrorCode(error.msg)
+    if code != "unsupported_dtype": raise
+    result = %*{"error": code}
+
+proc cumulativeExtremaDtype[T](inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for profile, spec in inputs:
+    let source = cumulativeExtremaInput[T](spec)
+    var requests = newJObject()
+    for operation in ["cummin", "cummax"]:
+      for axis in spec["axes"]:
+        let dimension = axis.getInt
+        requests[operation & "_axis_" & $dimension] =
+          cumulativeExtremaObservation(source, operation, dimension)
+    result[profile] = requests
+
+proc cumulativeExtrema(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for dtype, profiles in inputs:
+    result[dtype] = case dtype
+      of "bool": cumulativeExtremaDtype[bool](profiles)
+      of "int8": cumulativeExtremaDtype[int8](profiles)
+      of "int16": cumulativeExtremaDtype[int16](profiles)
+      of "int32": cumulativeExtremaDtype[int32](profiles)
+      of "int64": cumulativeExtremaDtype[int64](profiles)
+      of "uint8": cumulativeExtremaDtype[uint8](profiles)
+      of "uint16": cumulativeExtremaDtype[uint16](profiles)
+      of "uint32": cumulativeExtremaDtype[uint32](profiles)
+      of "uint64": cumulativeExtremaDtype[uint64](profiles)
+      of "float32": cumulativeExtremaDtype[float32](profiles)
+      of "float64": cumulativeExtremaDtype[float64](profiles)
+      of "complex64": cumulativeExtremaDtype[Complex[float32]](profiles)
+      of "complex128": cumulativeExtremaDtype[Complex[float64]](profiles)
+      else: raise newException(ValueError, "unknown cumulative extrema input dtype")
+
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
@@ -2558,6 +2654,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = logsumexp(inputs)
   of "tensor.logcumsumexp":
     result = logcumsumexp(inputs)
+  of "tensor.cumulative_extrema":
+    result = cumulativeExtrema(inputs)
   of "tensor.integer_output_dtype":
     result = integerOutputDtype(inputs)
   of "tensor.mean_dtype":

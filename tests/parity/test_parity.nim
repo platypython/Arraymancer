@@ -1966,3 +1966,85 @@ suite "Pinned PyTorch conformance foundation":
     malformed["cases"][index]["expected"]["float32"]["dense"]["axis_0_seed_finite"]["gradient"]["extra"] =
       %true
     expect ValueError: validateFixtureData(malformed, reference)
+
+  test "CPU cumulative extrema preserve latest source bits and scalar/empty dispatch":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var scanCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.cumulative_extrema": scanCase = caseData
+    doAssert scanCase.kind == JObject
+    let actual = runCase(scanCase)
+    check compareObservations(scanCase["expected"], actual, 0.0, 0.0).len == 0
+    var outputs, invalidAxes, unsupported: int
+    for _, profiles in actual:
+      for _, requests in profiles:
+        for _, observation in requests:
+          if not observation.hasKey("error"): inc outputs
+          elif observation["error"].getStr == "axis_out_of_range": inc invalidAxes
+          elif observation["error"].getStr == "unsupported_dtype": inc unsupported
+    check outputs == 1108
+    check invalidAxes == 820
+    check unsupported == 344
+    for dtype in ["float32", "float64"]:
+      for operation in ["cummin", "cummax"]:
+        let zeros = actual[dtype]["zero_ties"][operation & "_axis_1"]
+        check zeros["indices"]["values"] == %*[0, 1, 2, 0, 1, 2]
+        check zeros["values"]["shape"] == %*[2, 3]
+        let nanPrefixes = actual[dtype]["nan_payloads"][operation & "_axis_0"]
+        check nanPrefixes["indices"]["values"] == %*[0, 1, 1, 3, 3]
+        let sourceBits = scanCase["inputs"][dtype]["nan_payloads"]["bits"]
+        check nanPrefixes["values"]["bits"][2] == sourceBits[1]
+        check nanPrefixes["values"]["bits"][4] == sourceBits[3]
+    for dtype in ["uint16", "uint32", "uint64", "complex64", "complex128"]:
+      check actual[dtype]["singleton"]["cummin_axis_0"] ==
+        %*{"error": "unsupported_dtype"}
+      check actual[dtype]["singleton"]["cummin_axis_1"] ==
+        %*{"error": "axis_out_of_range"}
+      check actual[dtype]["empty_reduced"]["cummax_axis_1"]["values"]["shape"] ==
+        %*[2, 0]
+      check actual[dtype]["scalar"]["cummax_axis_-1"]["indices"]["values"] == %*[0]
+    for dtype in ["complex64", "complex128"]:
+      let scalar = actual[dtype]["scalar_negative_zero"]["cummin_axis_0"]["values"]
+      check scalar["shape"] == %*[]
+      check scalar["negative_zero"] == %*{"real": [0], "imag": [0]}
+      check scalar["bits"] == scanCase["inputs"][dtype]["scalar_negative_zero"]["bits"]
+
+  test "Reject malformed cumulative-extrema payloads, prefix indices and dispatch":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "tensor.cumulative_extrema":
+        index = candidate
+    doAssert index >= 0
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["complex64"].delete("scalar_components")
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["float32"]["nan_payloads"]["bits"] =
+      %*["0x3f800000", "0x7fc54321", "0x40000000", "0x7fc12345", "0xbf800000"]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["int64"]["offset"]["layout"] = %"identity"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["ties"]["cummax_axis_1"]["indices"]["values"] =
+      %*[1, 0, 2, 0, 1, 2]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["uint64"]["singleton"]["cummin_axis_1"]["error"] =
+      %"unsupported_dtype"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex128"]["scalar_negative_zero"]["cummax_axis_0"]["values"]["negative_zero"]["real"] =
+      %*[]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["nan_payloads"]["cummax_axis_0"]["values"]["bits"] =
+      %*["0x3f800000", "0x3f800000", "0x7fc12345", "0x7fc54321", "0x7fc54321"]
+    expect ValueError: validateFixtureData(malformed, reference)

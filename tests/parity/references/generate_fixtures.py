@@ -3058,6 +3058,177 @@ def paired_extrema(torch: Any) -> dict[str, Any]:
     return _case("tensor.paired_extrema", "api:torch", inputs, expected, tolerance=0.0)
 
 
+def _cumulative_extrema_inputs(torch: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    """Describe the complete CPU cummin/cummax matrix used by the pinned probe."""
+    inputs: dict[str, dict[str, dict[str, Any]]] = {}
+    for dtype_name in _INDEXED_EXTREMA_DTYPES:
+        profiles = {
+            name: _indexed_extrema_input(dtype_name, raw)
+            for name, raw in _indexed_extrema_raw_cases(torch, dtype_name).items()
+        }
+        is_complex = dtype_name in ("complex64", "complex128")
+        is_float = dtype_name in ("float32", "float64")
+        if is_complex or is_float:
+            width = 8 if dtype_name in ("float32", "complex64") else 16
+            negative_zero = "0x80000000" if width == 8 else "0x8000000000000000"
+            nan = "0x7fc12345" if width == 8 else "0x7ff8123456789abc"
+            profiles["scalar_negative_zero"] = {
+                "shape": [],
+                "layout": "identity",
+                "bits": [negative_zero] * (2 if is_complex else 1),
+            }
+            if is_complex:
+                profiles["scalar_phase"] = {
+                    "shape": [], "layout": "identity", "values": [[2.0, 7.0]]
+                }
+                negative_infinity = (
+                    "0xff800000" if width == 8 else "0xfff0000000000000"
+                )
+                profiles["scalar_components"] = {
+                    "shape": [], "layout": "identity", "bits": [nan, negative_infinity]
+                }
+            else:
+                second_nan = (
+                    "0x7fc54321" if width == 8 else "0x7ff876543210abcd"
+                )
+                one = "0x3f800000" if width == 8 else "0x3ff0000000000000"
+                two = "0x40000000" if width == 8 else "0x4000000000000000"
+                minus_one = "0xbf800000" if width == 8 else "0xbff0000000000000"
+                profiles["nan_payloads"] = {
+                    "shape": [5],
+                    "layout": "identity",
+                    "bits": [one, nan, two, second_nan, minus_one],
+                }
+                profiles["scalar_nan_payload"] = {
+                    "shape": [], "layout": "identity", "bits": [nan]
+                }
+        elif dtype_name == "bool":
+            profiles["bool_mixed"] = {
+                "shape": [2, 3],
+                "layout": "identity",
+                "words": [1, 0, 1, 0, 1, 0],
+            }
+            profiles["scalar_false"] = {
+                "shape": [], "layout": "identity", "words": [0]
+            }
+        else:
+            bounds = torch.iinfo(getattr(torch, dtype_name))
+            profiles["scalar_upper"] = {
+                "shape": [],
+                "layout": "identity",
+                "words": [_indexed_extrema_word(int(bounds.max))],
+            }
+
+        for spec in profiles.values():
+            rank = max(len(spec["shape"]), 1)
+            spec["axes"] = list(range(-rank - 1, rank + 1))
+        inputs[dtype_name] = profiles
+    return inputs
+
+
+def _cumulative_extrema_source(torch: Any, dtype_name: str, spec: dict[str, Any]) -> Any:
+    if "bits" not in spec:
+        return _indexed_extrema_source(torch, dtype_name, spec)
+    width = 8 if dtype_name in ("float32", "complex64") else 16
+    word_dtype = torch.uint32 if width == 8 else torch.uint64
+    words = [int(word, 16) for word in spec["bits"]]
+    return torch.tensor(words, dtype=word_dtype, device="cpu").view(
+        getattr(torch, dtype_name)
+    ).reshape(spec["shape"])
+
+
+def _observe_cumulative_extrema_values(torch: Any, tensor: Any) -> dict[str, Any]:
+    if not tensor.is_complex():
+        return _observe_aminmax_tensor(torch, tensor)
+    observation = _observe_complex(tensor)
+    width = 8 if tensor.dtype == torch.complex64 else 16
+    word_dtype = torch.uint32 if width == 8 else torch.uint64
+    observation["bits"] = [
+        f"0x{int(word):0{width}x}"
+        for word in tensor.detach().reshape(-1).view(word_dtype).tolist()
+    ]
+    return observation
+
+
+def _observe_cumulative_extrema_request(
+    torch: Any,
+    source: Any,
+    dtype_name: str,
+    operation: str,
+    axis: int,
+    label: str,
+) -> dict[str, Any]:
+    axis_limit = max(source.ndim, 1)
+    expected_error = (
+        "axis_out_of_range"
+        if axis < -axis_limit or axis >= axis_limit
+        else "unsupported_dtype"
+        if source.ndim > 0
+        and source.numel() > 0
+        and dtype_name in {"uint16", "uint32", "uint64", "complex64", "complex128"}
+        else None
+    )
+    try:
+        output = getattr(torch, operation)(source, dim=axis)
+    except (IndexError, NotImplementedError, RuntimeError, TypeError) as error:
+        if isinstance(error, IndexError) and (axis < -axis_limit or axis >= axis_limit):
+            code = "axis_out_of_range"
+        else:
+            code = _indexed_extrema_error_code(error)
+        if code not in {"axis_out_of_range", "unsupported_dtype"}:
+            raise ValueError(
+                f"unexpected cumulative {operation} rejection for {label}: {error}"
+            ) from error
+        if code != expected_error:
+            raise ValueError(
+                f"unexpected cumulative {operation} rejection for {label}: "
+                f"expected {expected_error}, observed {code} ({error})"
+            ) from error
+        return {"error": code}
+
+    if expected_error is not None:
+        raise ValueError(
+            f"cumulative {operation} unexpectedly accepted {label}; "
+            f"expected {expected_error}"
+        )
+
+    if str(output.values.dtype).removeprefix("torch.") != dtype_name:
+        raise ValueError(f"cumulative {operation} changed value dtype for {label}")
+    if str(output.indices.dtype).removeprefix("torch.") != "int64":
+        raise ValueError(f"cumulative {operation} returned non-int64 indices for {label}")
+    if output.values.shape != source.shape or output.indices.shape != source.shape:
+        raise ValueError(f"cumulative {operation} changed tensor shape for {label}")
+    return {
+        "values": _observe_cumulative_extrema_values(torch, output.values),
+        "indices": _observe_integer_output(output.indices),
+    }
+
+
+def cumulative_extrema(torch: Any) -> dict[str, Any]:
+    """Observe actual CPU cummin/cummax outputs and dtype/axis rejections."""
+    inputs = _cumulative_extrema_inputs(torch)
+    expected: dict[str, dict[str, dict[str, Any]]] = {}
+    for dtype_name, profiles in inputs.items():
+        expected[dtype_name] = {}
+        for profile, spec in profiles.items():
+            source = _cumulative_extrema_source(torch, dtype_name, spec)
+            expected[dtype_name][profile] = {
+                f"{operation}_axis_{axis}": _observe_cumulative_extrema_request(
+                    torch,
+                    source,
+                    dtype_name,
+                    operation,
+                    axis,
+                    f"{dtype_name}.{profile}.{operation}_axis_{axis}",
+                )
+                for operation in ("cummin", "cummax")
+                for axis in spec["axes"]
+            }
+    return _case("tensor.cumulative_extrema", "api:torch", inputs, expected, tolerance=0.0)
+
+
+
+
 def _aminmax_request_id(dim: int | None, keepdim: bool) -> str:
     axis_name = "all" if dim is None else f"axis_{dim}"
     return f"{axis_name}_{'keep' if keepdim else 'drop'}"
@@ -4485,7 +4656,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
     complex_prod_dtype, indexed_extrema, paired_extrema, paired_extrema_gradient, aminmax,
-    logsumexp, logsumexp_gradient, logcumsumexp, logcumsumexp_gradient,
+    logsumexp, logsumexp_gradient, logcumsumexp, logcumsumexp_gradient, cumulative_extrema,
 )
 
 

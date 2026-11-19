@@ -28,7 +28,8 @@ import  ./data_structure,
         ./private/p_argextrema,
         ./private/p_aminmax,
         ./private/p_logsumexp,
-        ./private/p_logcumsumexp
+        ./private/p_logcumsumexp,
+        ./private/p_cumulative_extrema
 import std / [math, macros]
 import complex except Complex64, Complex32
 import ../laser/compiler_optim_hints
@@ -1014,6 +1015,24 @@ proc std*[T: SomeFloat](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.} 
   ## The normalization is by the (n-1), like in the formal definition
   returnEmptyIfEmpty(arg)
   sqrt(arg.variance(axis))
+
+proc cummin*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    axis: int = 0): tuple[values: Tensor[T], indices: Tensor[int64]] =
+  ## Inclusive CPU minima and their latest indices along a signed axis.
+  ## Both dense outputs have the input shape and independent storage. Equal
+  ## values select the latest source bits; each new NaN replaces an older NaN.
+  ## Values preserve dtype; indices are int64. Nonempty positive-rank inputs
+  ## support bool, uint8, signed integers and float32/64. Scalar and empty inputs
+  ## also support wider unsigned and complex dtypes. Scalars accept only 0/-1.
+  ## Signed, offset and broadcast views are read without copying their storage.
+  scanCumulativeExtrema(arg, axis, false)
+
+proc cummax*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    axis: int = 0): tuple[values: Tensor[T], indices: Tensor[int64]] =
+  ## Inclusive CPU maxima with the same shape, dtype and storage rules as cummin.
+  ## Equal values and each new NaN select their latest source value and index.
+  ## Axis validation precedes dtype rejection, including scalar/empty dispatch.
+  scanCumulativeExtrema(arg, axis, true)
 
 proc logcumsumexp*[T: SomeNumber or bool or Complex](arg: Tensor[T];
     axis = 0): Tensor[T] =

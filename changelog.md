@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add CPU ``cummin`` and ``cummax`` with independent dtype-preserving values
+  and int64 prefix indices. Select latest ties and NaN payloads, preserve
+  signed/broadcast views, and support pinned scalar/empty complex and wider
+  unsigned exceptions without intermediate tensors.
 - Add CPU float32/64 and complex64/128 seeded ``logcumsumexp`` gradients with
   rounded forward normalizers and fused reverse logarithmic scans. Preserve
   float32 exponential-channel cancellation, complex phases, component zero

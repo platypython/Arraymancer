@@ -315,3 +315,26 @@ Retained graphs and no-grad mode follow the usual contracts. Higher-order
 gradients, integer/bool differentiation, Metal, output-buffer and low-precision
 overloads remain unsupported.
 
+``cummin(axis = 0)`` and ``cummax(axis = 0)`` return inclusive extrema and
+their indices on CPU:
+
+.. code-block:: nim
+
+  let prefixes = [3, 1, 1, 2].toTensor.cummin()
+  echo prefixes.values   # [3, 1, 1, 1], with the input dtype.
+  echo prefixes.indices  # [0, 1, 2, 2], always int64.
+
+Both outputs have the input shape and own independent dense storage. Unlike
+ordinary indexed extrema, equal values select the latest index and its exact
+source bits. A new NaN replaces any earlier NaN; later finite values leave
+the carried NaN unchanged. Signed zeros and NaN payloads are preserved.
+
+Nonempty positive-rank inputs support bool, uint8, signed integers and
+float32/64. Scalars and empty tensors additionally support uint16/32/64
+and complex64/128. Scalars accept axes 0 and -1; empty scanned dimensions
+remain empty rather than raising an empty-reduction error. Invalid axes
+reject before unsupported dtypes. Signed, offset, transposed, permuted and
+broadcast views are read directly, without an input copy. Autograd,
+output-buffer, named-axis, half/bfloat16 and Metal overloads are not yet
+supported.
+

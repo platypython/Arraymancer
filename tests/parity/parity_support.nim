@@ -64,7 +64,7 @@ const
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
     "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema", "tensor.indexed_extrema",
     "tensor.paired_extrema", "autograd.paired_extrema", "tensor.aminmax", "tensor.logsumexp",
-    "autograd.logsumexp", "tensor.logcumsumexp", "autograd.logcumsumexp"]
+    "autograd.logsumexp", "tensor.logcumsumexp", "autograd.logcumsumexp", "tensor.cumulative_extrema"]
   RequiredCaseAreas: array[RequiredCaseIds.len, string] = [
     "api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
@@ -76,7 +76,7 @@ const
     "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch", "api:torch",
-    "api:autograd", "api:torch", "api:torch", "api:autograd", "api:torch", "api:autograd"]
+    "api:autograd", "api:torch", "api:torch", "api:autograd", "api:torch", "api:autograd", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -3501,6 +3501,320 @@ proc expectLogcumsumexpExpected(expected, inputs: JsonNode) =
         else:
           expectExtremaGradientTensor(observed, shape, dtype, label, true)
 
+
+proc cumulativeExtremaProfileNames(dtype: string): seq[string] =
+  result = indexedExtremaCaseNames(dtype)
+  if dtype in ["float32", "float64"]:
+    result.add "scalar_negative_zero"
+    result.add "nan_payloads"
+    result.add "scalar_nan_payload"
+  elif dtype in ["complex64", "complex128"]:
+    result.add "scalar_negative_zero"
+    result.add "scalar_phase"
+    result.add "scalar_components"
+  elif dtype == "bool":
+    result.add "bool_mixed"
+    result.add "scalar_false"
+  else:
+    result.add "scalar_upper"
+
+
+proc cumulativeExtremaInputShape(dtype, profile: string): seq[int] =
+  if profile in indexedExtremaCaseNames(dtype):
+    return indexedExtremaInputShape(profile)
+  case profile
+  of "bool_mixed": @[2, 3]
+  of "nan_payloads": @[5]
+  of "scalar_negative_zero", "scalar_nan_payload", "scalar_phase",
+      "scalar_components", "scalar_false", "scalar_upper": @[]
+  else: invalid("unknown cumulative extrema input profile " & dtype & "." & profile)
+
+
+proc cumulativeExtremaInputLayout(dtype, profile: string): string =
+  if profile in indexedExtremaCaseNames(dtype):
+    return indexedExtremaInputLayout(profile)
+  "identity"
+
+
+proc cumulativeExtremaIntegerWords(dtype, profile: string): seq[int64] =
+  case profile
+  of "bool_mixed": @[1'i64, 0, 1, 0, 1, 0]
+  of "scalar_false": @[0'i64]
+  of "scalar_upper":
+    case dtype
+    of "int8": @[high(int8).int64]
+    of "int16": @[high(int16).int64]
+    of "int32": @[high(int32).int64]
+    of "int64": @[high(int64)]
+    of "uint8": @[high(uint8).int64]
+    of "uint16": @[high(uint16).int64]
+    of "uint32": @[high(uint32).int64]
+    of "uint64": @[-1'i64]
+    else: invalid("invalid cumulative extrema scalar integer dtype " & dtype)
+  else:
+    indexedExtremaInputWords(profile, dtype)
+
+
+proc cumulativeExtremaPayloadKey(dtype, profile: string): string =
+  if profile in ["scalar_negative_zero", "nan_payloads", "scalar_nan_payload",
+      "scalar_components"]:
+    return "bits"
+  if profile == "scalar_phase": return "values"
+  if dtype in ["bool", "int8", "int16", "int32", "int64", "uint8",
+      "uint16", "uint32", "uint64"]:
+    return "words"
+  "values"
+
+
+proc cumulativeExtremaInputBits(dtype, profile: string): JsonNode =
+  let narrow = dtype in ["float32", "complex64"]
+  let negativeZero = if narrow: "0x80000000" else: "0x8000000000000000"
+  let nan = if narrow: "0x7fc12345" else: "0x7ff8123456789abc"
+  let secondNan = if narrow: "0x7fc54321" else: "0x7ff876543210abcd"
+  let negativeInfinity = if narrow: "0xff800000" else: "0xfff0000000000000"
+  result = newJArray()
+  case profile
+  of "scalar_negative_zero":
+    result.add %negativeZero
+    if dtype in ["complex64", "complex128"]: result.add %negativeZero
+  of "scalar_nan_payload": result.add %nan
+  of "scalar_components":
+    result.add %nan
+    result.add %negativeInfinity
+  of "nan_payloads":
+    let one = if narrow: "0x3f800000" else: "0x3ff0000000000000"
+    let two = if narrow: "0x40000000" else: "0x4000000000000000"
+    let minusOne = if narrow: "0xbf800000" else: "0xbff0000000000000"
+    result.add %one
+    result.add %nan
+    result.add %two
+    result.add %secondNan
+    result.add %minusOne
+  else:
+    invalid("unknown cumulative extrema bit profile " & profile)
+
+
+proc cumulativeExtremaInputSpec(dtype, profile: string): JsonNode =
+  let shape = cumulativeExtremaInputShape(dtype, profile)
+  let payloadKey = cumulativeExtremaPayloadKey(dtype, profile)
+  result = newJObject()
+  result["shape"] = jsonShape(shape)
+  result["layout"] = %cumulativeExtremaInputLayout(dtype, profile)
+  case payloadKey
+  of "bits":
+    result[payloadKey] = cumulativeExtremaInputBits(dtype, profile)
+  of "words":
+    result[payloadKey] = newJArray()
+    for word in cumulativeExtremaIntegerWords(dtype, profile):
+      result[payloadKey].add newJInt(word)
+  of "values":
+    if profile == "scalar_phase":
+      result[payloadKey] = %*[[2.0, 7.0]]
+    elif dtype in ["complex64", "complex128"]:
+      result[payloadKey] = indexedExtremaComplexValues(profile)
+    else:
+      result[payloadKey] = indexedExtremaRealValues(profile)
+  else:
+    invalid("unknown cumulative extrema payload key " & payloadKey)
+  let axisLimit = max(shape.len, 1)
+  result["axes"] = newJArray()
+  for axis in (-axisLimit - 1) .. axisLimit:
+    result["axes"].add newJInt(axis)
+
+
+proc expectCumulativeExtremaInputs(inputs: JsonNode) =
+  expectExtremaFields(inputs, IndexedExtremaDtypeNames,
+    "cumulative extrema dtype groups")
+  var profileCount = 0
+  for dtype in IndexedExtremaDtypeNames:
+    let profiles = field(inputs, dtype)
+    let profileNames = cumulativeExtremaProfileNames(dtype)
+    profileCount += profileNames.len
+    expectExtremaFields(profiles, profileNames,
+      "cumulative extrema profiles for " & dtype)
+    for profile in profileNames:
+      let spec = field(profiles, profile)
+      let payloadKey = cumulativeExtremaPayloadKey(dtype, profile)
+      expectExtremaFields(spec, ["shape", "layout", payloadKey, "axes"],
+        "cumulative extrema input " & dtype & "." & profile)
+      require(spec == cumulativeExtremaInputSpec(dtype, profile),
+        "cumulative extrema input does not match the pinned probe: " &
+        dtype & "." & profile)
+  require(profileCount == 205, "cumulative extrema must include exactly 205 profiles")
+
+
+proc cumulativeExtremaBitWord(bits: JsonNode, width: int, label: string): uint64 =
+  let encoded = text(bits, label & " bit word")
+  require(encoded.len == width + 2 and encoded.startsWith("0x"),
+    label & " bit word must use lowercase fixed-width hexadecimal")
+  for index in 2 ..< encoded.len:
+    let character = encoded[index]
+    var digit: uint64
+    if character >= '0' and character <= '9':
+      digit = uint64(ord(character) - ord('0'))
+    elif character >= 'a' and character <= 'f':
+      digit = uint64(ord(character) - ord('a') + 10)
+    else:
+      invalid(label & " bit word must use lowercase fixed-width hexadecimal")
+    result = (result shl 4) or digit
+
+
+proc cumulativeExtremaAssertBitsValue(
+    value: JsonNode, bits: JsonNode, width: int, label: string
+) =
+  let word = cumulativeExtremaBitWord(bits, width, label)
+  let decoded = if width == 8:
+      float64(cast[float32](uint32(word)))
+    else:
+      cast[float64](word)
+  if value.kind == JString:
+    let kind = value.getStr
+    case kind
+    of "nan": require(classify(decoded) == fcNan, label & " NaN bits are not NaN")
+    of "+inf": require(classify(decoded) == fcInf, label & " positive infinity bits mismatch")
+    of "-inf": require(classify(decoded) == fcNegInf, label & " negative infinity bits mismatch")
+    else: invalid(label & " has an unknown nonfinite value")
+  else:
+    require(value.kind in {JInt, JFloat} and
+      classify(decoded) notin {fcNan, fcInf, fcNegInf} and decoded == value.getFloat,
+      label & " bit word does not encode its observed value")
+    if value.getFloat == 0.0:
+      let negativeZero = if width == 8: 0x80000000'u64 else: 0x8000000000000000'u64
+      require(isNegativeZeroValue(value) == (word == negativeZero),
+        label & " signed-zero bits mismatch")
+
+
+proc expectCumulativeBitWords(bits: JsonNode, count, width: int, label: string) =
+  require(bits.kind == JArray and bits.len == count,
+    label & " bit words do not match value count")
+  for word in bits:
+    discard cumulativeExtremaBitWord(word, width, label)
+
+
+proc expectCumulativeExtremaRealTensor(
+    node: JsonNode, shape: seq[int], dtype, label: string
+) =
+  expectExtremaFields(node,
+    ["shape", "numel", "dtype", "device", "values", "bits"], label)
+  let values = field(node, "values")
+  let bits = field(node, "bits")
+  let width = if dtype == "float32": 8 else: 16
+  expectCumulativeBitWords(bits, extremaNumel(shape), width, label)
+  var numericObservation = newJObject()
+  for key in ["shape", "numel", "dtype", "device", "values"]:
+    numericObservation[key] = node[key]
+  expectExtremaGradientTensor(numericObservation, shape, dtype, label, false)
+  for index in 0 ..< values.len:
+    cumulativeExtremaAssertBitsValue(values[index], bits[index], width,
+      label & " value " & $index)
+
+
+proc expectCumulativeExtremaComplexTensor(
+    node: JsonNode, shape: seq[int], dtype, label: string
+) =
+  expectExtremaFields(node,
+    ["shape", "numel", "dtype", "device", "values", "negative_zero", "bits"], label)
+  let bits = field(node, "bits")
+  let values = field(node, "values")
+  let width = if dtype == "complex64": 8 else: 16
+  expectCumulativeBitWords(bits, extremaNumel(shape) * 2, width, label)
+  var numericObservation = newJObject()
+  for key in ["shape", "numel", "dtype", "device", "values", "negative_zero"]:
+    numericObservation[key] = node[key]
+  expectComplexObservation(numericObservation, shape, dtype, label)
+  for index in 0 ..< values.len:
+    let value = values[index]
+    cumulativeExtremaAssertBitsValue(value["real"], bits[index * 2], width,
+      label & " real component " & $index)
+    cumulativeExtremaAssertBitsValue(value["imag"], bits[index * 2 + 1], width,
+      label & " imaginary component " & $index)
+
+
+proc cumulativeExtremaExpectedError(dtype: string, shape: seq[int], axis: int): string =
+  let axisLimit = max(shape.len, 1)
+  if axis < -axisLimit or axis >= axisLimit:
+    return "axis_out_of_range"
+  if shape.len > 0 and extremaNumel(shape) > 0 and
+      dtype in ["uint16", "uint32", "uint64", "complex64", "complex128"]:
+    return "unsupported_dtype"
+
+
+proc cumulativeExtremaPrefixPosition(shape: seq[int], axis, flatIndex: int): int =
+  if shape.len == 0: return 0
+  let normalizedAxis = if axis < 0: axis + shape.len else: axis
+  var strideAfterAxis = 1
+  for dimension in normalizedAxis + 1 ..< shape.len:
+    strideAfterAxis *= shape[dimension]
+  let axisSize = shape[normalizedAxis]
+  (flatIndex div strideAfterAxis) mod axisSize
+
+
+proc expectCumulativeExtremaExpected(expected, inputs: JsonNode) =
+  expectExtremaFields(expected, IndexedExtremaDtypeNames,
+    "cumulative extrema expected dtype groups")
+  var successfulPairs = 0
+  var axisRejections = 0
+  var dtypeRejections = 0
+  for dtype in IndexedExtremaDtypeNames:
+    let inputProfiles = field(inputs, dtype)
+    let profileNames = cumulativeExtremaProfileNames(dtype)
+    let expectedProfiles = field(expected, dtype)
+    expectExtremaFields(expectedProfiles, profileNames,
+      "cumulative extrema expected profiles for " & dtype)
+    for profile in profileNames:
+      let spec = field(inputProfiles, profile)
+      let shape = indexedExtremaLogicalShape(
+        cumulativeExtremaInputShape(dtype, profile),
+        cumulativeExtremaInputLayout(dtype, profile))
+      let axes = field(spec, "axes")
+      let byAxis = field(expectedProfiles, profile)
+      var requestNames: seq[string]
+      for axis in axes:
+        require(axis.kind == JInt, "cumulative extrema axis must be an integer")
+        for operation in ["cummin", "cummax"]:
+          requestNames.add operation & "_axis_" & $axis.getInt
+      expectExtremaFields(byAxis, requestNames,
+        "cumulative extrema requests for " & dtype & "." & profile)
+      for axisNode in axes:
+        let axis = axisNode.getInt
+        for operation in ["cummin", "cummax"]:
+          let requestId = operation & "_axis_" & $axis
+          let label = "cumulative extrema " & dtype & "." & profile & "." & requestId
+          let observed = field(byAxis, requestId)
+          let expectedError = cumulativeExtremaExpectedError(dtype, shape, axis)
+          if expectedError.len > 0:
+            expectExtremaFields(observed, ["error"], label)
+            if expectedError == "axis_out_of_range":
+              axisRejections += 1
+            else:
+              dtypeRejections += 1
+            require(text(field(observed, "error"), label & " error") == expectedError,
+              label & " error precedence mismatch")
+          else:
+            expectExtremaFields(observed, ["values", "indices"], label)
+            if dtype in ["complex64", "complex128"]:
+              expectCumulativeExtremaComplexTensor(field(observed, "values"),
+                shape, dtype, label & " values")
+            elif dtype in ["float32", "float64"]:
+              expectCumulativeExtremaRealTensor(field(observed, "values"),
+                shape, dtype, label & " values")
+            else:
+              expectIntegerOutputTensor(field(observed, "values"), shape, dtype)
+            let indices = field(observed, "indices")
+            expectIntegerOutputTensor(indices, shape, "int64")
+            let values = field(indices, "values")
+            let axisSize = if shape.len == 0: 1
+              else: shape[if axis < 0: axis + shape.len else: axis]
+            for flatIndex in 0 ..< values.len:
+              let index = values[flatIndex]
+              let scanPosition = cumulativeExtremaPrefixPosition(shape, axis, flatIndex)
+              require(index.getBiggestInt >= 0 and index.getBiggestInt < axisSize.int64 and
+                index.getBiggestInt <= scanPosition.int64,
+                label & " index is outside its cumulative prefix")
+            successfulPairs += 1
+  require(successfulPairs == 1108 and axisRejections == 820 and dtypeRejections == 344,
+    "cumulative extrema pair/rejection totals do not match the pinned probe")
+
 const PairedExtremaGradientInputNames = [
   "ties", "transpose", "reverse", "broadcast", "nan_first", "zero_ties",
   "scalar", "empty", "cube", "offset", "infinities"]
@@ -4337,6 +4651,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "logcumsumexp fixtures require 1e-6 tolerances")
       expectLogcumsumexpInputs(inputs)
+    of "tensor.cumulative_extrema":
+      require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
+        "cumulative extrema fixtures require exact-value tolerances")
+      expectCumulativeExtremaInputs(inputs)
     of "autograd.logsumexp":
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "logsumexp gradient fixtures require 1e-6 tolerances")
@@ -4507,6 +4825,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectLogsumexpExpected(expected, inputs)
     of "tensor.logcumsumexp":
       expectLogcumsumexpExpected(expected, inputs)
+    of "tensor.cumulative_extrema":
+      expectCumulativeExtremaExpected(expected, inputs)
     of "autograd.logsumexp":
       expectLogsumexpGradientExpected(expected, inputs)
     of "autograd.logcumsumexp":
