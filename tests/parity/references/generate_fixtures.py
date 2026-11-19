@@ -2134,6 +2134,313 @@ def complex_prod_dtype(torch: Any) -> dict[str, Any]:
     return _case("tensor.complex_prod_dtype", "api:torch", specs, expected, tolerance=1e-6)
 
 
+def _extrema_requests_2d(*, include_validation_errors: bool) -> list[dict[str, Any]]:
+    variants: tuple[tuple[str, int | list[int] | None, bool], ...] = (
+        ("all_drop", None, False),
+        ("all_keep", None, True),
+        ("axes_empty_drop", [], False),
+        ("axes_empty_keep", [], True),
+        ("axis_0_drop", 0, False),
+        ("axis_0_keep", 0, True),
+        ("axis_neg1_drop", -1, False),
+        ("axes_0_1_drop", [0, 1], False),
+        ("axes_1_0_keep", [1, 0], True),
+    )
+    requests = [
+        {
+            "id": f"{operation}_{name}",
+            "operation": operation,
+            "dimensions": dimensions,
+            "keepdim": keepdim,
+        }
+        for operation in ("amin", "amax")
+        for name, dimensions, keepdim in variants
+    ]
+    if include_validation_errors:
+        requests.extend(
+            [
+                {
+                    "id": "amin_bad_axis_drop",
+                    "operation": "amin",
+                    "dimensions": 2,
+                    "keepdim": False,
+                },
+                {
+                    "id": "amax_duplicate_axis_drop",
+                    "operation": "amax",
+                    "dimensions": [0, -2],
+                    "keepdim": False,
+                },
+            ]
+        )
+    return requests
+
+
+def _extrema_requests_1d() -> list[dict[str, Any]]:
+    return [
+        {"id": "amin_all_drop", "operation": "amin", "dimensions": None, "keepdim": False},
+        {"id": "amax_all_drop", "operation": "amax", "dimensions": None, "keepdim": False},
+        {"id": "amin_all_keep", "operation": "amin", "dimensions": None, "keepdim": True},
+        {"id": "amax_all_keep", "operation": "amax", "dimensions": None, "keepdim": True},
+        {"id": "amin_axes_empty_drop", "operation": "amin", "dimensions": [], "keepdim": False},
+        {"id": "amax_axes_empty_keep", "operation": "amax", "dimensions": [], "keepdim": True},
+        {"id": "amin_axis_0_drop", "operation": "amin", "dimensions": 0, "keepdim": False},
+        {"id": "amax_axis_neg1_keep", "operation": "amax", "dimensions": -1, "keepdim": True},
+        {"id": "amin_bad_axis_drop", "operation": "amin", "dimensions": 1, "keepdim": False},
+        {"id": "amax_duplicate_axis_drop", "operation": "amax", "dimensions": [0, -1], "keepdim": False},
+    ]
+
+
+def _extrema_requests_scalar() -> list[dict[str, Any]]:
+    return [
+        {"id": "amin_all_drop", "operation": "amin", "dimensions": None, "keepdim": False},
+        {"id": "amax_all_keep", "operation": "amax", "dimensions": None, "keepdim": True},
+        {"id": "amin_axes_empty_drop", "operation": "amin", "dimensions": [], "keepdim": False},
+        {"id": "amax_axes_empty_keep", "operation": "amax", "dimensions": [], "keepdim": True},
+        {"id": "amin_axis_0_drop", "operation": "amin", "dimensions": 0, "keepdim": False},
+        {"id": "amax_axis_neg1_keep", "operation": "amax", "dimensions": -1, "keepdim": True},
+        {"id": "amin_bad_axis_drop", "operation": "amin", "dimensions": 1, "keepdim": False},
+        {"id": "amax_duplicate_axis_drop", "operation": "amax", "dimensions": [0, -1], "keepdim": False},
+    ]
+
+
+def _extrema_requests_empty() -> list[dict[str, Any]]:
+    return [
+        {"id": "amin_all_drop", "operation": "amin", "dimensions": None, "keepdim": False},
+        {"id": "amax_axes_empty_keep", "operation": "amax", "dimensions": [], "keepdim": True},
+        {"id": "amin_zero_axis_drop", "operation": "amin", "dimensions": 1, "keepdim": False},
+        {"id": "amax_axis_0_drop", "operation": "amax", "dimensions": 0, "keepdim": False},
+        {"id": "amin_axes_0_2_drop", "operation": "amin", "dimensions": [0, 2], "keepdim": False},
+        {"id": "amax_axes_2_0_keep", "operation": "amax", "dimensions": [2, 0], "keepdim": True},
+        {"id": "amin_duplicate_axis_drop", "operation": "amin", "dimensions": [0, -3], "keepdim": False},
+        {"id": "amax_zero_axis_duplicate_drop", "operation": "amax", "dimensions": [1, 1], "keepdim": False},
+        {"id": "amin_bad_axis_drop", "operation": "amin", "dimensions": 3, "keepdim": False},
+    ]
+
+
+def _extrema_requests_empty_outer() -> list[dict[str, Any]]:
+    return [
+        {"id": "amin_all_drop", "operation": "amin", "dimensions": None, "keepdim": False},
+        {"id": "amax_axes_empty_drop", "operation": "amax", "dimensions": [], "keepdim": False},
+        {"id": "amax_axis_1_drop", "operation": "amax", "dimensions": 1, "keepdim": False},
+        {"id": "amax_axis_1_keep", "operation": "amax", "dimensions": 1, "keepdim": True},
+        {"id": "amin_bad_axis_drop", "operation": "amin", "dimensions": 2, "keepdim": False},
+        {"id": "amax_duplicate_zero_axis_drop", "operation": "amax", "dimensions": [0, 0], "keepdim": False},
+    ]
+
+
+def _extrema_requests_multi_axis() -> list[dict[str, Any]]:
+    return [
+        {"id": "amin_axes_0_2_drop", "operation": "amin", "dimensions": [0, 2], "keepdim": False},
+        {"id": "amax_axes_2_0_keep", "operation": "amax", "dimensions": [2, 0], "keepdim": True},
+        {"id": "amin_axes_0_neg1_drop", "operation": "amin", "dimensions": [0, -1], "keepdim": False},
+        {"id": "amax_axes_neg1_0_keep", "operation": "amax", "dimensions": [-1, 0], "keepdim": True},
+        {"id": "amin_axes_empty_drop", "operation": "amin", "dimensions": [], "keepdim": False},
+        {"id": "amax_axes_empty_keep", "operation": "amax", "dimensions": [], "keepdim": True},
+        {"id": "amin_bad_axis_drop", "operation": "amin", "dimensions": 3, "keepdim": False},
+        {"id": "amax_duplicate_axis_drop", "operation": "amax", "dimensions": [0, -3], "keepdim": False},
+    ]
+
+
+def _extrema_source(torch: Any, spec: dict[str, Any]) -> Any:
+    dtype_name = spec["dtype"]
+    dtype = getattr(torch, dtype_name)
+    if "words" in spec:
+        source = torch.tensor(spec["words"], dtype=torch.int64, device="cpu").to(dtype=dtype)
+    elif dtype_name.startswith("complex"):
+        values = [complex(real, imaginary) for real, imaginary in spec["values"]]
+        source = torch.tensor(values, dtype=dtype, device="cpu")
+    else:
+        source = torch.tensor(spec["values"], dtype=dtype, device="cpu")
+    source = source.reshape(spec["shape"])
+    for special in spec["specials"]:
+        value = {"nan": float("nan"), "+inf": float("inf"), "-inf": float("-inf")}[
+            special["value"]
+        ]
+        source.reshape(-1)[special["index"]] = value
+    if spec["layout"] == "permute_210":
+        return source.permute(2, 1, 0)
+    return _real_dtype_layout(source, spec["layout"])
+
+
+def _extrema_error_code(error: Exception) -> str | None:
+    message = str(error).lower().replace("non-zero", "nonzero")
+    if "dimension out of range" in message:
+        return "axis_out_of_range"
+    if "have nonzero size" in message:
+        return "empty_reduced_axis"
+    if "expected reduction dim to be specified" in message:
+        return "empty_reduction"
+    if "appears multiple times" in message:
+        return "duplicate_axes"
+    if "not implemented" in message:
+        return "unsupported_dtype"
+    return None
+
+
+def _observe_extrema_request(torch: Any, source: Any, request: dict[str, Any]) -> dict[str, Any]:
+    operation = getattr(torch, request["operation"])
+    dimensions = request["dimensions"]
+    try:
+        if dimensions is None:
+            output = operation(source, keepdim=request["keepdim"])
+        else:
+            if isinstance(dimensions, list):
+                dimensions = tuple(dimensions)
+            output = operation(source, dim=dimensions, keepdim=request["keepdim"])
+    except (IndexError, NotImplementedError, RuntimeError) as error:
+        code = _extrema_error_code(error)
+        if code is None:
+            raise ValueError(f"unexpected {request['operation']} rejection: {error}") from error
+        return {"error": code}
+    if not output.is_floating_point() and not output.is_complex():
+        return _observe_integer_output(output)
+    return _observe(output)
+
+
+def extrema(torch: Any) -> dict[str, Any]:
+    """Observe PyTorch CPU amin/amax values, shapes, layouts and rejection precedence."""
+    inputs: dict[str, dict[str, Any]] = {}
+
+    def add(
+        name: str,
+        dtype: str,
+        shape: list[int],
+        payload_key: str,
+        payload: list[Any],
+        requests: list[dict[str, Any]],
+        *,
+        layout: str = "identity",
+        specials: list[dict[str, Any]] | None = None,
+    ) -> None:
+        spec: dict[str, Any] = {
+            "dtype": dtype,
+            "shape": shape,
+            "layout": layout,
+            payload_key: payload,
+            "specials": [] if specials is None else specials,
+            "requests": requests,
+        }
+        inputs[name] = spec
+
+    requests_2d = _extrema_requests_2d(include_validation_errors=True)
+    requests_1d = _extrema_requests_1d()
+    requests_scalar = _extrema_requests_scalar()
+    for name, dtype, words in (
+        ("bool", "bool", [0, 1, 1, 0, 0, 1]),
+        ("int8", "int8", [-128, 127, -1, 1, 2, 3]),
+        ("int16", "int16", [-32768, 32767, -1, 1, 2, 3]),
+        ("int32", "int32", [-2147483648, 2147483647, -1, 1, 2, 3]),
+        ("int64", "int64", [-(1 << 63), 8, -2, (1 << 63) - 1, 4, -9]),
+        ("uint8", "uint8", [0, 255, 1, 2, 128, 3]),
+        ("native_int", "int64", [-(1 << 63), 8, -2, (1 << 63) - 1, 4, -9]),
+    ):
+        add(name, dtype, [2, 3], "words", words, requests_2d)
+
+    for name, dtype, values in (
+        ("float32", "float32", [-4.5, 7.25, 1.5, 0.25, -9.0, 3.0]),
+        ("float64", "float64", [-4.5, 7.25, 1.5, 0.25, -9.0, 3.0]),
+        ("native_float", "float64", [-4.5, 7.25, 1.5, 0.25, -9.0, 3.0]),
+    ):
+        add(name, dtype, [2, 3], "values", values, requests_2d)
+
+    for name, dtype in (
+        ("reject_uint16_scalar", "uint16"),
+        ("reject_uint32_scalar", "uint32"),
+        ("reject_uint64_scalar", "uint64"),
+    ):
+        add(name, dtype, [], "words", [1], requests_scalar)
+    for name, dtype in (
+        ("reject_complex64_scalar", "complex64"),
+        ("reject_complex128_scalar", "complex128"),
+    ):
+        add(name, dtype, [], "values", [[1.0, -2.0]], requests_scalar)
+    add("reject_uint16_matrix", "uint16", [2, 3], "words", [1, 2, 3, 4, 5, 6], requests_2d)
+
+    add("transpose", "float64", [2, 3], "values", [2.0, -3.0, 5.0, 7.0, 0.0, -1.0],
+        requests_2d, layout="transpose")
+    add("offset", "int32", [3, 4], "words", list(range(12)), requests_2d, layout="offset")
+    add("reverse", "float32", [5], "values", [1.0, -5.0, 2.0, 0.0, 4.0],
+        requests_1d, layout="reverse")
+    add("broadcast", "uint8", [1, 3], "words", [2, 3, 0], requests_2d, layout="broadcast")
+
+    add("scalar", "int64", [], "words", [-(1 << 63)], requests_scalar)
+    add(
+        "multi_axes", "float32", [2, 3, 2], "values",
+        [-5.0, 9.0, 8.0, 4.0, 3.0, 2.0, 7.0, 6.0, 1.0, 0.0, 11.0, -2.0],
+        _extrema_requests_multi_axis(),
+    )
+    coalesced_requests = [
+        {"id": "amin_axes_0_1_drop", "operation": "amin", "dimensions": [0, 1], "keepdim": False},
+        {"id": "amax_axes_0_1_drop", "operation": "amax", "dimensions": [0, 1], "keepdim": False},
+    ]
+    coalesced_values = [0.0] * 96
+    coalesced_values[4] = -0.0
+    for name, dtype in (
+        ("coalesced_axes_f32", "float32"),
+        ("coalesced_axes_f64", "float64"),
+    ):
+        add(name, dtype, [4, 8, 3], "values", coalesced_values, coalesced_requests,
+            layout="permute_210")
+
+    add("empty", "int8", [2, 0, 3], "words", [], _extrema_requests_empty())
+    for name, dtype, payload_key in (
+        ("empty_uint16", "uint16", "words"),
+        ("empty_uint32", "uint32", "words"),
+        ("empty_uint64", "uint64", "words"),
+        ("empty_complex64", "complex64", "values"),
+        ("empty_complex128", "complex128", "values"),
+    ):
+        add(name, dtype, [0, 3], payload_key, [], _extrema_requests_empty_outer())
+
+    add("nan", "float32", [3], "values", [1.0, 2.0, 3.0], requests_1d,
+        specials=[{"index": 1, "value": "nan"}])
+    add("infinities", "float64", [3], "values", [1.0, 2.0, 3.0], requests_1d,
+        specials=[{"index": 0, "value": "+inf"}, {"index": 2, "value": "-inf"}])
+    tie_requests = [
+        {"id": "amin_all_drop", "operation": "amin", "dimensions": None, "keepdim": False},
+        {"id": "amax_all_drop", "operation": "amax", "dimensions": None, "keepdim": False},
+    ]
+    add("tie_zeros", "float64", [2], "values", [0.0, -0.0], tie_requests)
+    add("tie_zeros_reversed", "float64", [2], "values", [0.0, -0.0], tie_requests,
+        layout="reverse")
+
+
+    for name, dtype, size, index in (
+        ("vector_zero_lane_f32", "float32", 16, 0),
+        ("vector_zero_tail_f32", "float32", 17, 16),
+        ("vector_zero_lane_f64", "float64", 8, 0),
+        ("vector_zero_tail_f64", "float64", 9, 8),
+    ):
+        values = [0.0] * size
+        values[index] = -0.0
+        add(name, dtype, [size], "values", values, requests_1d)
+
+    column_requests = [
+        {"id": f"{operation}_axis_0_drop", "operation": operation, "dimensions": 0, "keepdim": False}
+        for operation in ("amin", "amax")
+    ] + [
+        {"id": f"{operation}_axis_0_keep", "operation": operation, "dimensions": 0, "keepdim": True}
+        for operation in ("amin", "amax")
+    ]
+    for name, dtype, columns in (
+        ("packed_columns_f32", "float32", 17),
+        ("packed_columns_f64", "float64", 9),
+    ):
+        add(name, dtype, [2, columns], "values", [0.0] * columns + [-0.0] * columns,
+            column_requests)
+
+    expected: dict[str, Any] = {}
+    for name, spec in inputs.items():
+        source = _extrema_source(torch, spec)
+        expected[name] = {
+            request["id"]: _observe_extrema_request(torch, source, request)
+            for request in spec["requests"]
+        }
+    return _case("tensor.extrema", "api:torch", inputs, expected, tolerance=0.0)
+
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -2143,7 +2450,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     mse_broadcast_mean, mse_broadcast_sum, mse_broadcast_none, matmul_ranks, singleton_views,
     unary_math, activation_math, reduction_edges, float64_reductions, product_gradient,
     cumsum_gradient, cumprod_gradient,
-    integer_scans, integer_reductions, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
+    integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
     complex_prod_dtype,
 )

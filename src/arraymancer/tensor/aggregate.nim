@@ -23,7 +23,8 @@ import  ./data_structure,
         ./accessors_macros_syntax,
         ./algorithms,
         ./private/p_empty_tensors,
-        ./private/p_accelerate
+        ./private/p_accelerate,
+        ./private/p_extrema
 import std / [math, macros]
 import complex except Complex64, Complex32
 import ../laser/compiler_optim_hints
@@ -901,6 +902,46 @@ proc product*[T: SomeNumber or bool or Complex, U: SomeInteger or bool](arg: Ten
   let axis = reductionAxis(arg.rank, axis)
   warnComplexToRealCast(T, U, arg.size)
   reduceIntegerAxis(arg, axis, true, U)
+
+proc amin*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+                                            keepdim: bool = false): Tensor[T] =
+  ## Reduce all dimensions to an independent tensor with the input dtype.
+  ## ``keepdim`` retains singleton dimensions; scalars stay rank zero.
+  ## Empty inputs have no minimum identity and raise ``ValueError``.
+  ## Nonempty complex and wider unsigned inputs are unsupported.
+  reduceExtrema(arg, [], keepdim, false)
+
+proc amin*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int;
+                                            keepdim: bool = false): Tensor[T] =
+  ## Reduce one axis, accepting negative axes and scalar axes 0/-1.
+  ## A zero-length reduced axis raises ``IndexDefect``; empty outputs are valid.
+  ## Reads strided views without copying and allocates independent output storage.
+  reduceExtrema(arg, [axis], keepdim, false)
+
+proc amin*[T: SomeNumber or bool or Complex](arg: Tensor[T], axes: openArray[int];
+                                            keepdim: bool = false): Tensor[T] =
+  ## Reduce distinct axes without intermediate tensors or dtype promotion.
+  ## Negative axes normalize before duplicate checks; an empty list reduces all.
+  ## NaNs propagate. Native vector and scalar ties can retain different zero signs.
+  ## Invalid axes, empty reductions and duplicates reject before unsupported dtypes.
+  reduceExtrema(arg, axes, keepdim, false)
+
+proc amax*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+                                            keepdim: bool = false): Tensor[T] =
+  ## Maximum counterpart of ``amin``; dtype, shape and allocation rules match.
+  reduceExtrema(arg, [], keepdim, true)
+
+proc amax*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int;
+                                            keepdim: bool = false): Tensor[T] =
+  ## Reduce one axis to independent maxima, optionally retaining that dimension.
+  ## Negative/scalar axes, NaNs and empty-output rules match ``amin``.
+  reduceExtrema(arg, [axis], keepdim, true)
+
+proc amax*[T: SomeNumber or bool or Complex](arg: Tensor[T], axes: openArray[int];
+                                            keepdim: bool = false): Tensor[T] =
+  ## Reduce distinct axes to independent maxima, preserving the input dtype.
+  ## An empty list reduces all dimensions; validation and view rules match ``amin``.
+  reduceExtrema(arg, axes, keepdim, true)
 
 proc min*[T](arg: Tensor[T]): T =
   ## Compute the min of all elements

@@ -40,12 +40,14 @@ proc tensorObservation[T](t: Tensor[T], includeValues = true): JsonNode =
   result["shape"] = shape
   result["numel"] = newJInt(t.size.int)
   when T is float64: result["dtype"] = %"float64"
+  elif T is float: result["dtype"] = %"float64"
   elif T is float32: result["dtype"] = %"float32"
   elif T is bool: result["dtype"] = %"bool"
   elif T is int8: result["dtype"] = %"int8"
   elif T is int16: result["dtype"] = %"int16"
   elif T is int32: result["dtype"] = %"int32"
   elif T is int64: result["dtype"] = %"int64"
+  elif T is int: result["dtype"] = %"int64"
   elif T is uint8: result["dtype"] = %"uint8"
   elif T is uint16: result["dtype"] = %"uint16"
   elif T is uint32: result["dtype"] = %"uint32"
@@ -1353,6 +1355,153 @@ proc complexProductDtype(inputs: JsonNode): JsonNode =
     result[name] = complexProductDtypeBySource(spec)
 
 
+proc extremaSpecials[T](source: var Tensor[T], specials: JsonNode) =
+  for special in specials:
+    when T is SomeFloat:
+      let value = case special["value"].getStr
+        of "nan": NaN
+        of "+inf": Inf
+        of "-inf": -Inf
+        else: raise newException(ValueError, "unknown extrema nonfinite value")
+      var raw = source.unsafe_raw_offset
+      raw[special["index"].getInt] = T(value)
+    else:
+      raise newException(ValueError, "nonfinite extrema input must be floating point")
+
+
+proc extremaInputTensor[T](spec: JsonNode): Tensor[T] =
+  when T is Complex[float32] or T is Complex[float64]:
+    result = getComplexTensor[T](spec)
+  elif T is SomeFloat:
+    when T is float32:
+      result = realDtypeFloat32Tensor(spec)
+    else:
+      result = getTensor(spec)
+  else:
+    result = getIntegerTensor[T](spec)
+  if spec["specials"].len > 0:
+    extremaSpecials(result, spec["specials"])
+  if spec["layout"].getStr == "permute_210":
+    result = result.permute(2, 1, 0)
+  else:
+    result = realDtypeLayout(result, spec["layout"].getStr)
+
+
+proc extremaOutput[T](source: Tensor[T], request: JsonNode): Tensor[T] =
+  let operation = request["operation"].getStr
+  let dimensions = request["dimensions"]
+  let keepdim = request["keepdim"].getBool
+  if dimensions.kind == JNull:
+    case operation
+    of "amin": result = source.amin(keepdim = keepdim)
+    of "amax": result = source.amax(keepdim = keepdim)
+    else: raise newException(ValueError, "unknown extrema operation")
+  elif dimensions.kind == JInt:
+    let axis = dimensions.getInt
+    case operation
+    of "amin": result = source.amin(axis, keepdim = keepdim)
+    of "amax": result = source.amax(axis, keepdim = keepdim)
+    else: raise newException(ValueError, "unknown extrema operation")
+  elif dimensions.kind == JArray:
+    var axes = newSeq[int](dimensions.len)
+    for index in 0 ..< dimensions.len:
+      axes[index] = dimensions[index].getInt
+    case operation
+    of "amin": result = source.amin(axes, keepdim = keepdim)
+    of "amax": result = source.amax(axes, keepdim = keepdim)
+    else: raise newException(ValueError, "unknown extrema operation")
+  else:
+    raise newException(ValueError, "invalid extrema dimensions")
+
+
+proc extremaTensorObservation[T](t: Tensor[T]): JsonNode =
+  when T is Complex[float32]:
+    if t.size != 0:
+      raise newException(ValueError, "nonempty complex extrema output was returned")
+    result = newJObject()
+    var shape = newJArray()
+    for dimension in t.shape: shape.add newJInt(dimension)
+    result["shape"] = shape
+    result["numel"] = newJInt(t.size.int)
+    result["dtype"] = %"complex64"
+    result["device"] = %"cpu"
+    result["values"] = newJArray()
+  elif T is Complex[float64]:
+    if t.size != 0:
+      raise newException(ValueError, "nonempty complex extrema output was returned")
+    result = newJObject()
+    var shape = newJArray()
+    for dimension in t.shape: shape.add newJInt(dimension)
+    result["shape"] = shape
+    result["numel"] = newJInt(t.size.int)
+    result["dtype"] = %"complex128"
+    result["device"] = %"cpu"
+    result["values"] = newJArray()
+  else:
+    result = tensorObservation(t)
+
+
+proc extremaErrorCode(message: string): string =
+  let normalized = message.toLowerAscii
+  if normalized.contains("extrema axis out of range"):
+    return "axis_out_of_range"
+  if normalized.contains("extrema empty reduced axis"):
+    return "empty_reduced_axis"
+  if normalized.contains("extrema empty reduction requires dimensions"):
+    return "empty_reduction"
+  if normalized.contains("extrema duplicate reduction axis"):
+    return "duplicate_axes"
+  if normalized.contains("extrema unsupported cpu dtype"):
+    return "unsupported_dtype"
+
+
+proc extremaObservation[T](source: Tensor[T], request: JsonNode): JsonNode =
+  try:
+    result = extremaTensorObservation(extremaOutput(source, request))
+  except IndexDefect as error:
+    let code = extremaErrorCode(error.msg)
+    if code notin ["axis_out_of_range", "empty_reduced_axis"]:
+      raise
+    result = %*{"error": code}
+  except ValueError as error:
+    let code = extremaErrorCode(error.msg)
+    if code notin ["empty_reduction", "duplicate_axes", "unsupported_dtype"]:
+      raise
+    result = %*{"error": code}
+
+
+proc extremaCase[T](spec: JsonNode): JsonNode =
+  let source = extremaInputTensor[T](spec)
+  result = newJObject()
+  for request in spec["requests"]:
+    result[request["id"].getStr] = extremaObservation(source, request)
+
+
+proc extrema(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    if name == "native_int":
+      result[name] = extremaCase[int](spec)
+    elif name == "native_float":
+      result[name] = extremaCase[float](spec)
+    else:
+      result[name] = case spec["dtype"].getStr
+        of "bool": extremaCase[bool](spec)
+        of "int8": extremaCase[int8](spec)
+        of "int16": extremaCase[int16](spec)
+        of "int32": extremaCase[int32](spec)
+        of "int64": extremaCase[int64](spec)
+        of "uint8": extremaCase[uint8](spec)
+        of "uint16": extremaCase[uint16](spec)
+        of "uint32": extremaCase[uint32](spec)
+        of "uint64": extremaCase[uint64](spec)
+        of "float32": extremaCase[float32](spec)
+        of "float64": extremaCase[float64](spec)
+        of "complex64": extremaCase[Complex[float32]](spec)
+        of "complex128": extremaCase[Complex[float64]](spec)
+        else: raise newException(ValueError, "unsupported extrema input dtype")
+
+
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
@@ -1364,6 +1513,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = integerScans(inputs)
   of "tensor.integer_reductions":
     result = integerReductions(inputs)
+  of "tensor.extrema":
+    result = extrema(inputs)
   of "tensor.integer_output_dtype":
     result = integerOutputDtype(inputs)
   of "tensor.mean_dtype":

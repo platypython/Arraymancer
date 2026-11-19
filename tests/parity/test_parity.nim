@@ -490,6 +490,116 @@ suite "Pinned PyTorch conformance foundation":
     expect ValueError: validateFixtureData(malformed, reference)
 
 
+  test "CPU extrema preserve PyTorch shapes, errors, and signed-zero behavior":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var extremaCaseIndex = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "tensor.extrema":
+        extremaCaseIndex = index
+    doAssert extremaCaseIndex >= 0
+    let extremaCase = fixtures["cases"][extremaCaseIndex]
+    check extremaCase["atol"].getFloat == 0
+    check extremaCase["rtol"].getFloat == 0
+    let expected = extremaCase["expected"]
+    let actual = runCase(extremaCase)
+    check compareObservations(expected, actual, 0, 0).len == 0
+
+    for inputName in ["vector_zero_lane_f32", "vector_zero_lane_f64"]:
+      let expectedMinimum = expected[inputName]["amin_all_drop"]["values"]
+      let actualMinimum = actual[inputName]["amin_all_drop"]["values"]
+      let expectedMaximum = expected[inputName]["amax_all_drop"]["values"]
+      let actualMaximum = actual[inputName]["amax_all_drop"]["values"]
+      check expectedMinimum.len == 1
+      check actualMinimum.len == 1
+      check isNegativeZero(expectedMinimum[0])
+      check isNegativeZero(actualMinimum[0])
+      check not isNegativeZero(expectedMaximum[0])
+      check not isNegativeZero(actualMaximum[0])
+    for inputName in ["vector_zero_tail_f32", "vector_zero_tail_f64"]:
+      check not isNegativeZero(expected[inputName]["amin_all_drop"]["values"][0])
+      check not isNegativeZero(actual[inputName]["amin_all_drop"]["values"][0])
+      check not isNegativeZero(expected[inputName]["amax_all_drop"]["values"][0])
+      check not isNegativeZero(actual[inputName]["amax_all_drop"]["values"][0])
+
+    for (inputName, vectorWidth) in [("packed_columns_f32", 16), ("packed_columns_f64", 8)]:
+      let expectedMinimum = expected[inputName]["amin_axis_0_drop"]["values"]
+      let actualMinimum = actual[inputName]["amin_axis_0_drop"]["values"]
+      let expectedMaximum = expected[inputName]["amax_axis_0_drop"]["values"]
+      let actualMaximum = actual[inputName]["amax_axis_0_drop"]["values"]
+      check expectedMinimum.len == vectorWidth + 1
+      check actualMinimum.len == vectorWidth + 1
+      check expectedMaximum.len == vectorWidth + 1
+      check actualMaximum.len == vectorWidth + 1
+      for index in 0 ..< vectorWidth:
+        check isNegativeZero(expectedMinimum[index])
+        check isNegativeZero(actualMinimum[index])
+      check not isNegativeZero(expectedMinimum[vectorWidth])
+      check not isNegativeZero(actualMinimum[vectorWidth])
+      for index in 0 ..< expectedMaximum.len:
+        check not isNegativeZero(expectedMaximum[index])
+        check not isNegativeZero(actualMaximum[index])
+
+    for inputName in ["coalesced_axes_f32", "coalesced_axes_f64"]:
+      let expectedMinimum = expected[inputName]["amin_axes_0_1_drop"]
+      let actualMinimum = actual[inputName]["amin_axes_0_1_drop"]
+      let expectedMaximum = expected[inputName]["amax_axes_0_1_drop"]
+      let actualMaximum = actual[inputName]["amax_axes_0_1_drop"]
+      check expectedMinimum["shape"] == %*[4]
+      check actualMinimum["shape"] == %*[4]
+      check expectedMaximum["shape"] == %*[4]
+      check actualMaximum["shape"] == %*[4]
+      check isNegativeZero(expectedMinimum["values"][0])
+      check isNegativeZero(actualMinimum["values"][0])
+      for index in 1 ..< 4:
+        check not isNegativeZero(expectedMinimum["values"][index])
+        check not isNegativeZero(actualMinimum["values"][index])
+      for index in 0 ..< 4:
+        check not isNegativeZero(expectedMaximum["values"][index])
+        check not isNegativeZero(actualMaximum["values"][index])
+
+    for inputName in ["tie_zeros", "tie_zeros_reversed"]:
+      for operation in ["amin_all_drop", "amax_all_drop"]:
+        let expectedValue = expected[inputName][operation]["values"][0]
+        let actualValue = actual[inputName][operation]["values"][0]
+        let negative = inputName == "tie_zeros_reversed"
+        check isNegativeZero(expectedValue) == negative
+        check isNegativeZero(actualValue) == negative
+    check expected["nan"]["amin_all_drop"]["values"][0].getStr == "nan"
+    check expected["nan"]["amax_all_drop"]["values"][0].getStr == "nan"
+    check expected["infinities"]["amin_all_drop"]["values"][0].getStr == "-inf"
+    check expected["infinities"]["amax_all_drop"]["values"][0].getStr == "+inf"
+    check actual["nan"]["amin_all_drop"]["values"][0].getStr == "nan"
+    check actual["nan"]["amax_all_drop"]["values"][0].getStr == "nan"
+    check actual["infinities"]["amin_all_drop"]["values"][0].getStr == "-inf"
+    check actual["infinities"]["amax_all_drop"]["values"][0].getStr == "+inf"
+
+    check expected["reject_uint16_matrix"]["amin_bad_axis_drop"]["error"].getStr ==
+      "axis_out_of_range"
+    check expected["reject_uint16_matrix"]["amax_duplicate_axis_drop"]["error"].getStr ==
+      "duplicate_axes"
+    check expected["reject_uint16_scalar"]["amin_all_drop"]["error"].getStr == "unsupported_dtype"
+    check expected["empty_uint16"]["amin_all_drop"]["error"].getStr == "empty_reduction"
+    check expected["empty_uint16"]["amin_bad_axis_drop"]["error"].getStr == "axis_out_of_range"
+    check expected["empty_uint16"]["amax_duplicate_zero_axis_drop"]["error"].getStr ==
+      "empty_reduced_axis"
+    check expected["empty_uint16"]["amax_axis_1_drop"]["shape"] == %*[0]
+    check actual["empty_uint16"]["amax_axis_1_drop"]["shape"] == %*[0]
+    check actual["empty_uint16"]["amax_axis_1_drop"]["values"].len == 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][extremaCaseIndex]["inputs"]["int8"]["requests"][0]["keepdim"] = %true
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][extremaCaseIndex]["expected"]["reject_uint16_matrix"][
+      "amin_bad_axis_drop"]["error"] = %"unexpected_error"
+    expect ValueError: validateFixtureData(malformed, reference)
+    malformed = duplicate(fixtures)
+    malformed["cases"][extremaCaseIndex]["inputs"]["int8"]["unexpected"] = %1
+    expect ValueError: validateFixtureData(malformed, reference)
+
+
+
   test "Shape differs even when flattened values match":
     let expected = %*{"result": {"shape": [2, 2], "values": [1.0, 2.0, 3.0, 4.0]}}
     let actual = %*{"result": {"shape": [4], "values": [1.0, 2.0, 3.0, 4.0]}}

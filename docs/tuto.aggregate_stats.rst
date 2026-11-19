@@ -128,5 +128,26 @@ Boolean products AND the truth of both components without warning.
 Wider unsigned products accept only empty inputs. Numeric casts warn before
 nonempty kernel rejection; invalid axes reject first, and empty inputs stay quiet.
 
+``amin`` and ``amax`` return independent tensors without changing the input
+dtype. Unlike the older ``min``/``max`` axis helpers, they remove reduced axes
+by default. Pass ``keepdim = true`` to retain those dimensions as singletons:
+
+.. code-block:: nim
+
+  let values = [[3.0, 1.0, 2.0], [6.0, 4.0, 5.0]].toTensor
+  echo values.amin(0)                 # [3.0, 1.0, 2.0], shape [3]
+  echo values.amax(1, keepdim = true)  # [[3.0], [6.0]], shape [2, 1]
+  echo values.amin([0, -1])           # scalar tensor containing 1.0
+
+Omitting axes, or passing an empty axis list, reduces every dimension.
+Negative axes are accepted; duplicate normalized axes reject. Scalars retain
+rank zero even with ``keepdim``. NaNs propagate, while signed-zero ties follow
+the backend's vector and scalar reduction grouping.
+
+There is no identity for an empty minimum or maximum: a zero-length reduced
+axis rejects, but a zero-length output caused by an unreduced axis is valid.
+Nonempty complex and wider unsigned CPU inputs reject; those dtypes can still
+produce empty outputs when all reduced axes have nonzero lengths.
+
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

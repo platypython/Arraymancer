@@ -62,16 +62,16 @@ const
     "tensor.mean_dtype", "tensor.sum_dtype", "tensor.cumsum_dtype", "tensor.cumprod_dtype",
     "tensor.prod_dtype", "tensor.integer_output_dtype", "tensor.complex_scans",
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
-    "tensor.complex_prod_dtype"]
+    "tensor.complex_prod_dtype", "tensor.extrema"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
-    "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
+    "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
-    "api:autograd", "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional",
-    "api:autograd", "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
-    "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch", "api:autograd",
-    "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
-    "api:torch", "api:torch", "api:torch", "api:torch"]
+    "api:autograd", "api:nn.functional", "api:nn.functional", "api:nn.functional", "api:autograd",
+    "api:autograd", "api:torch", "api:autograd", "api:autograd", "api:torch",
+    "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch",
+    "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
+    "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -1601,6 +1601,392 @@ proc expectComplexSumDtypeExpected(expected, inputs: JsonNode) =
 proc expectComplexProdDtypeExpected(expected, inputs: JsonNode) =
   expectComplexReductionDtypeExpected(expected, inputs, "product")
 
+proc extremaRequestIds(inputName: string): seq[string] =
+  case inputName
+  of "bool", "int8", "int16", "int32", "int64", "uint8", "native_int", "float32",
+      "float64", "native_float", "reject_uint16_matrix", "transpose", "offset", "broadcast":
+    @[
+      "amin_all_drop", "amin_all_keep", "amin_axes_empty_drop", "amin_axes_empty_keep",
+      "amin_axis_0_drop", "amin_axis_0_keep", "amin_axis_neg1_drop", "amin_axes_0_1_drop",
+      "amin_axes_1_0_keep", "amax_all_drop", "amax_all_keep", "amax_axes_empty_drop",
+      "amax_axes_empty_keep", "amax_axis_0_drop", "amax_axis_0_keep", "amax_axis_neg1_drop",
+      "amax_axes_0_1_drop", "amax_axes_1_0_keep", "amin_bad_axis_drop", "amax_duplicate_axis_drop"]
+  of "reverse", "nan", "infinities", "vector_zero_lane_f32", "vector_zero_tail_f32",
+      "vector_zero_lane_f64", "vector_zero_tail_f64":
+    @[
+      "amin_all_drop", "amax_all_drop", "amin_all_keep", "amax_all_keep",
+      "amin_axes_empty_drop", "amax_axes_empty_keep", "amin_axis_0_drop",
+      "amax_axis_neg1_keep", "amin_bad_axis_drop", "amax_duplicate_axis_drop"]
+  of "scalar", "reject_uint16_scalar", "reject_uint32_scalar", "reject_uint64_scalar",
+      "reject_complex64_scalar", "reject_complex128_scalar":
+    @[
+      "amin_all_drop", "amax_all_keep", "amin_axes_empty_drop", "amax_axes_empty_keep",
+      "amin_axis_0_drop", "amax_axis_neg1_keep", "amin_bad_axis_drop", "amax_duplicate_axis_drop"]
+  of "multi_axes":
+    @[
+      "amin_axes_0_2_drop", "amax_axes_2_0_keep", "amin_axes_0_neg1_drop",
+      "amax_axes_neg1_0_keep", "amin_axes_empty_drop", "amax_axes_empty_keep",
+      "amin_bad_axis_drop", "amax_duplicate_axis_drop"]
+  of "empty":
+    @[
+      "amin_all_drop", "amax_axes_empty_keep", "amin_zero_axis_drop", "amax_axis_0_drop",
+      "amin_axes_0_2_drop", "amax_axes_2_0_keep", "amin_duplicate_axis_drop",
+      "amax_zero_axis_duplicate_drop", "amin_bad_axis_drop"]
+  of "empty_uint16", "empty_uint32", "empty_uint64", "empty_complex64", "empty_complex128":
+    @[
+      "amin_all_drop", "amax_axes_empty_drop", "amax_axis_1_drop", "amax_axis_1_keep",
+      "amin_bad_axis_drop", "amax_duplicate_zero_axis_drop"]
+  of "coalesced_axes_f32", "coalesced_axes_f64":
+    @["amin_axes_0_1_drop", "amax_axes_0_1_drop"]
+  of "packed_columns_f32", "packed_columns_f64":
+    @["amin_axis_0_drop", "amax_axis_0_drop", "amin_axis_0_keep", "amax_axis_0_keep"]
+  of "tie_zeros", "tie_zeros_reversed":
+    @["amin_all_drop", "amax_all_drop"]
+  else:
+    raise newException(ValueError, "unknown extrema fixture input " & inputName)
+
+
+proc extremaRequestDimensions(requestId: string, rank: int): JsonNode =
+  case requestId
+  of "amin_all_drop", "amax_all_drop", "amin_all_keep", "amax_all_keep":
+    result = newJNull()
+  of "amin_axes_empty_drop", "amax_axes_empty_drop", "amin_axes_empty_keep", "amax_axes_empty_keep":
+    result = newJArray()
+  of "amin_axis_0_drop", "amax_axis_0_drop", "amin_axis_0_keep", "amax_axis_0_keep":
+    result = newJInt(0)
+  of "amin_axis_neg1_drop", "amax_axis_neg1_drop", "amin_axis_neg1_keep", "amax_axis_neg1_keep":
+    result = newJInt(-1)
+  of "amin_axes_0_1_drop", "amax_axes_0_1_drop":
+    result = %*[0, 1]
+  of "amin_axes_1_0_keep", "amax_axes_1_0_keep":
+    result = %*[1, 0]
+  of "amin_axes_0_2_drop":
+    result = %*[0, 2]
+  of "amax_axes_2_0_keep":
+    result = %*[2, 0]
+  of "amin_axes_0_neg1_drop":
+    result = %*[0, -1]
+  of "amax_axes_neg1_0_keep":
+    result = %*[-1, 0]
+  of "amin_bad_axis_drop":
+    result = newJInt(if rank == 0: 1 else: rank)
+  of "amax_duplicate_axis_drop":
+    result = newJArray()
+    result.add newJInt(0)
+    result.add newJInt(-max(1, rank))
+  of "amin_zero_axis_drop", "amax_axis_1_drop", "amax_axis_1_keep":
+    result = newJInt(1)
+  of "amin_duplicate_axis_drop":
+    result = %*[0, -3]
+  of "amax_zero_axis_duplicate_drop":
+    result = %*[1, 1]
+  of "amax_duplicate_zero_axis_drop":
+    result = %*[0, 0]
+  else:
+    raise newException(ValueError, "unknown extrema request " & requestId)
+
+
+proc extremaInputDtype(inputName: string): string =
+  case inputName
+  of "bool": "bool"
+  of "int8": "int8"
+  of "int16": "int16"
+  of "int32": "int32"
+  of "int64", "native_int": "int64"
+  of "uint8": "uint8"
+  of "float32", "nan", "vector_zero_lane_f32", "vector_zero_tail_f32",
+      "packed_columns_f32", "coalesced_axes_f32": "float32"
+  of "float64", "native_float", "transpose", "infinities", "vector_zero_lane_f64",
+      "vector_zero_tail_f64", "packed_columns_f64", "coalesced_axes_f64", "tie_zeros",
+      "tie_zeros_reversed":
+    "float64"
+  of "reject_uint16_scalar", "reject_uint16_matrix", "empty_uint16": "uint16"
+  of "reject_uint32_scalar", "empty_uint32": "uint32"
+  of "reject_uint64_scalar", "empty_uint64": "uint64"
+  of "reject_complex64_scalar", "empty_complex64": "complex64"
+  of "reject_complex128_scalar", "empty_complex128": "complex128"
+  of "offset": "int32"
+  of "reverse": "float32"
+  of "broadcast": "uint8"
+  of "scalar": "int64"
+  of "multi_axes": "float32"
+  of "empty": "int8"
+  else: raise newException(ValueError, "unknown extrema fixture input " & inputName)
+
+
+proc extremaInputShape(inputName: string): seq[int] =
+  case inputName
+  of "bool", "int8", "int16", "int32", "int64", "uint8", "native_int", "float32",
+      "float64", "native_float", "reject_uint16_matrix", "transpose":
+    @[2, 3]
+  of "offset": @[3, 4]
+  of "broadcast": @[1, 3]
+  of "reverse": @[5]
+  of "scalar", "reject_uint16_scalar", "reject_uint32_scalar", "reject_uint64_scalar",
+      "reject_complex64_scalar", "reject_complex128_scalar":
+    @[]
+  of "multi_axes": @[2, 3, 2]
+  of "empty": @[2, 0, 3]
+  of "empty_uint16", "empty_uint32", "empty_uint64", "empty_complex64", "empty_complex128":
+    @[0, 3]
+  of "nan", "infinities": @[3]
+  of "vector_zero_lane_f32": @[16]
+  of "vector_zero_tail_f32": @[17]
+  of "vector_zero_lane_f64": @[8]
+  of "vector_zero_tail_f64": @[9]
+  of "coalesced_axes_f32", "coalesced_axes_f64": @[4, 8, 3]
+  of "packed_columns_f32": @[2, 17]
+  of "packed_columns_f64": @[2, 9]
+  of "tie_zeros", "tie_zeros_reversed": @[2]
+  else: raise newException(ValueError, "unknown extrema fixture input " & inputName)
+
+
+proc extremaInputLayout(inputName: string): string =
+  case inputName
+  of "transpose", "offset", "reverse", "broadcast": inputName
+  of "tie_zeros_reversed": "reverse"
+  of "coalesced_axes_f32", "coalesced_axes_f64": "permute_210"
+  else: "identity"
+
+
+proc extremaLogicalShape(inputName: string): seq[int] =
+  result = extremaInputShape(inputName)
+  case extremaInputLayout(inputName)
+  of "transpose":
+    swap(result[0], result[1])
+  of "offset":
+    result = @[result[1], result[0] - 1]
+  of "broadcast":
+    result = @[4, 3]
+  of "permute_210":
+    result = @[result[2], result[1], result[0]]
+  else: discard
+
+
+proc extremaNumel(shape: seq[int]): int =
+  result = 1
+  for dimension in shape:
+    if dimension == 0:
+      return 0
+    require(result <= high(int) div dimension, "extrema input shape overflows")
+    result *= dimension
+
+
+proc expectExtremaFields(node: JsonNode, keys: openArray[string], label: string) =
+  require(node.kind == JObject and node.len == keys.len, label & " fields mismatch")
+  for key in keys:
+    require(node.hasKey(key), label & " missing field " & key)
+
+
+proc expectExtremaRequests(spec: JsonNode, inputName: string) =
+  let requests = field(spec, "requests")
+  let required = extremaRequestIds(inputName)
+  require(requests.kind == JArray and requests.len == required.len,
+    "extrema requests do not match required coverage for " & inputName)
+  var seen = initHashSet[string]()
+  let rank = extremaInputShape(inputName).len
+  for request in requests:
+    let label = "extrema request " & inputName
+    expectExtremaFields(request, ["id", "operation", "dimensions", "keepdim"], label)
+    let id = text(field(request, "id"), label & " id")
+    require(id in required and id notin seen, "unknown or duplicate extrema request " & id)
+    seen.incl(id)
+    let operation = if id.startsWith("amin_"): "amin" else: "amax"
+    require(text(field(request, "operation"), label & " operation") == operation,
+      "extrema request operation mismatch for " & id)
+    require(field(request, "dimensions") == extremaRequestDimensions(id, rank),
+      "extrema request dimensions mismatch for " & id)
+    let keepdim = id.endsWith("_keep")
+    require(field(request, "keepdim").kind == JBool and field(request, "keepdim").getBool == keepdim,
+      "extrema request keepdim mismatch for " & id)
+
+
+proc extremaFiniteNumber(node: JsonNode): bool =
+  node.kind in {JInt, JFloat} and
+    classify(node.getFloat) notin {fcNan, fcInf, fcNegInf}
+
+
+proc expectExtremaInputs(inputs: JsonNode) =
+  const Names = [
+    "bool", "int8", "int16", "int32", "int64", "uint8", "native_int", "float32", "float64",
+    "native_float", "reject_uint16_scalar", "reject_uint32_scalar", "reject_uint64_scalar",
+    "reject_complex64_scalar", "reject_complex128_scalar", "reject_uint16_matrix", "transpose",
+    "offset", "reverse", "broadcast", "scalar", "multi_axes", "empty", "empty_uint16",
+    "empty_uint32", "empty_uint64", "empty_complex64", "empty_complex128", "nan", "infinities",
+    "vector_zero_lane_f32", "vector_zero_tail_f32", "vector_zero_lane_f64",
+    "vector_zero_tail_f64", "packed_columns_f32", "packed_columns_f64",
+    "coalesced_axes_f32", "coalesced_axes_f64", "tie_zeros", "tie_zeros_reversed"]
+  require(inputs.kind == JObject and inputs.len == Names.len,
+    "extrema inputs do not match required cases")
+  for name in Names:
+    require(inputs.hasKey(name), "missing extrema input " & name)
+    let spec = inputs[name]
+    let dtype = extremaInputDtype(name)
+    let payloadKey = if dtype in ["bool", "int8", "int16", "int32", "int64", "uint8",
+        "uint16", "uint32", "uint64"]: "words" else: "values"
+    expectExtremaFields(spec, ["dtype", "shape", "layout", payloadKey, "specials", "requests"],
+      "extrema input " & name)
+    require(text(field(spec, "dtype"), "extrema dtype") == dtype,
+      "extrema dtype mismatch for " & name)
+    let shape = extremaInputShape(name)
+    require(field(spec, "shape") == jsonShape(shape), "extrema input shape mismatch for " & name)
+    require(text(field(spec, "layout"), "extrema layout") == extremaInputLayout(name),
+      "extrema layout mismatch for " & name)
+    let count = extremaNumel(shape)
+    let payload = field(spec, payloadKey)
+    require(payload.kind == JArray and payload.len == count, "extrema payload length mismatch for " & name)
+    if payloadKey == "words":
+      for wordNode in payload:
+        require(wordNode.kind == JInt, "extrema integer payload must use exact integer words")
+        let word = wordNode.getInt
+        case dtype
+        of "bool": require(word in [0, 1], "extrema bool input words must be zero or one")
+        of "int8": require(word >= low(int8).int and word <= high(int8).int, "extrema int8 word out of range")
+        of "int16": require(word >= low(int16).int and word <= high(int16).int, "extrema int16 word out of range")
+        of "int32": require(word >= low(int32).int and word <= high(int32).int, "extrema int32 word out of range")
+        of "uint8": require(word >= 0 and word <= high(uint8).int, "extrema uint8 word out of range")
+        of "uint16": require(word >= 0 and word <= high(uint16).int, "extrema uint16 word out of range")
+        of "uint32": require(word >= 0 and word <= high(uint32).int, "extrema uint32 word out of range")
+        else: discard
+    elif dtype in ["float32", "float64"]:
+      for value in payload:
+        require(extremaFiniteNumber(value), "extrema float input values must be finite numbers")
+    else:
+      for pair in payload:
+        require(pair.kind == JArray and pair.len == 2 and
+          extremaFiniteNumber(pair[0]) and extremaFiniteNumber(pair[1]),
+          "extrema complex input values must be real/imaginary pairs")
+    let specials = field(spec, "specials")
+    require(specials.kind == JArray, "extrema nonfinite values must be an array")
+    var seenSpecials = initHashSet[int]()
+    for special in specials:
+      expectExtremaFields(special, ["index", "value"], "extrema nonfinite value")
+      let indexNode = field(special, "index")
+      require(indexNode.kind == JInt and indexNode.getInt >= 0 and indexNode.getInt < count,
+        "extrema nonfinite value index out of bounds")
+      let index = indexNode.getInt
+      require(index notin seenSpecials, "duplicate extrema nonfinite value index")
+      seenSpecials.incl(index)
+      require(dtype in ["float32", "float64"] and
+        text(field(special, "value"), "extrema nonfinite value") in ["nan", "+inf", "-inf"],
+        "invalid extrema nonfinite value")
+    if name == "nan":
+      require(specials == %*[{"index": 1, "value": "nan"}], "nan extrema input must carry its pinned NaN")
+    elif name == "infinities":
+      require(specials == %*[{"index": 0, "value": "+inf"}, {"index": 2, "value": "-inf"}],
+        "infinity extrema input must carry pinned infinities")
+    else:
+      require(specials.len == 0, "unexpected extrema nonfinite values for " & name)
+    expectExtremaRequests(spec, name)
+
+
+proc extremaExpectedError(inputName: string, spec, request: JsonNode): string =
+  let shape = extremaLogicalShape(inputName)
+  let dimensions = field(request, "dimensions")
+  var axes: seq[int]
+  let allAxes = dimensions.kind == JNull or (dimensions.kind == JArray and dimensions.len == 0)
+  if dimensions.kind == JInt:
+    axes.add dimensions.getInt
+  elif dimensions.kind == JArray:
+    for axis in dimensions: axes.add axis.getInt
+  elif dimensions.kind != JNull:
+    raise newException(ValueError, "invalid extrema expected dimensions")
+
+  var empty = false
+  for dimension in shape:
+    if dimension == 0: empty = true
+  if empty:
+    if allAxes: return "empty_reduction"
+  let axisLimit = max(1, shape.len)
+  for axis in axes:
+    if axis < -axisLimit or axis >= axisLimit:
+      return "axis_out_of_range"
+    if empty and shape.len > 0:
+      let normalized = if axis < 0: axis + axisLimit else: axis
+      if shape[normalized] == 0:
+        return "empty_reduced_axis"
+  var seen = initHashSet[int]()
+  for axis in axes:
+    let normalized = if axis < 0: axis + axisLimit else: axis
+    if normalized in seen:
+      return "duplicate_axes"
+    seen.incl(normalized)
+  let dtype = spec["dtype"].getStr
+  if not empty and dtype in ["complex64", "complex128", "uint16", "uint32", "uint64"]:
+    return "unsupported_dtype"
+
+
+proc extremaOutputShape(shape: seq[int], dimensions: JsonNode, keepdim: bool): seq[int] =
+  var reduced = newSeq[bool](shape.len)
+  if dimensions.kind == JNull or (dimensions.kind == JArray and dimensions.len == 0):
+    for axis in 0 ..< shape.len: reduced[axis] = true
+  elif dimensions.kind == JInt:
+    if shape.len > 0:
+      let axis = if dimensions.getInt < 0: dimensions.getInt + shape.len else: dimensions.getInt
+      reduced[axis] = true
+  else:
+    for dimension in dimensions:
+      if shape.len > 0:
+        let axis = if dimension.getInt < 0: dimension.getInt + shape.len else: dimension.getInt
+        reduced[axis] = true
+  for axis, dimension in shape:
+    if reduced[axis]:
+      if keepdim: result.add 1
+    else:
+      result.add dimension
+
+
+proc expectExtremaTensor(node: JsonNode, shape: seq[int], dtype, label: string) =
+  let fieldNames = if dtype == "uint64":
+    @["shape", "numel", "dtype", "device", "values", "word_encoding"]
+  else:
+    @["shape", "numel", "dtype", "device", "values"]
+  expectExtremaFields(node, fieldNames, label)
+  require(field(node, "shape") == jsonShape(shape), label & " shape mismatch")
+  require(field(node, "numel").kind == JInt and field(node, "numel").getInt == extremaNumel(shape),
+    label & " numel mismatch")
+  require(text(field(node, "dtype"), label & " dtype") == dtype and
+    text(field(node, "device"), label & " device") == "cpu", label & " dtype/device mismatch")
+  if dtype == "uint64":
+    require(text(field(node, "word_encoding"), label & " word encoding") == "signed_twos_complement",
+      label & " uint64 word encoding mismatch")
+  let values = field(node, "values")
+  require(values.kind == JArray and values.len == extremaNumel(shape), label & " values length mismatch")
+  for value in values:
+    if dtype == "bool":
+      require(value.kind == JBool, label & " bool values must be JSON booleans")
+    elif dtype in ["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]:
+      require(value.kind == JInt, label & " integer values must be exact JSON integers")
+    elif dtype in ["complex64", "complex128"]:
+      require(false, label & " nonempty complex output is unsupported")
+    else:
+      require(extremaFiniteNumber(value) or
+        (value.kind == JString and value.getStr in ["nan", "+inf", "-inf"]),
+        label & " invalid floating-point output value")
+
+
+proc expectExtremaExpected(expected, inputs: JsonNode) =
+  require(expected.kind == JObject and expected.len == inputs.len,
+    "extrema expected inputs do not match sources")
+  for inputName, spec in inputs:
+    let byRequest = field(expected, inputName)
+    require(byRequest.kind == JObject and byRequest.len == spec["requests"].len,
+      "extrema expected requests are incomplete for " & inputName)
+    let shape = extremaLogicalShape(inputName)
+    for request in spec["requests"]:
+      let requestId = request["id"].getStr
+      let observed = field(byRequest, requestId)
+      let label = "extrema " & inputName & "." & requestId
+      let expectedError = extremaExpectedError(inputName, spec, request)
+      if expectedError.len > 0:
+        expectExtremaFields(observed, ["error"], label)
+        require(text(field(observed, "error"), label & " error") == expectedError,
+          label & " error classification mismatch")
+      else:
+        let outputShape = extremaOutputShape(shape, request["dimensions"], request["keepdim"].getBool)
+        expectExtremaTensor(observed, outputShape, spec["dtype"].getStr, label)
+
+
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
   requireSameReference(data, reference, "fixtures")
@@ -1677,6 +2063,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "complex product dtype fixtures require 1e-6 tolerances")
       expectComplexProdDtypeInputs(inputs)
+    of "tensor.extrema":
+      require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
+        "extrema fixtures require exact-value tolerances")
+      expectExtremaInputs(inputs)
     of "tensor.integer_reductions":
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "integer reduction fixtures require exact-value tolerances")
@@ -1822,6 +2212,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
           for axis in spec["axes"]:
             let key = if axis.kind == JNull: "all" else: $axis.getInt
             expectTensor(field(byAxis, key), false, "int64")
+    of "tensor.extrema":
+      expectExtremaExpected(expected, inputs)
     of "tensor.integer_output_dtype":
       expectIntegerOutputExpected(expected, inputs)
     of "tensor.float64_reductions":

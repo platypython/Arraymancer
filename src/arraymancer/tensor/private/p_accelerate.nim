@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-## Provides packed CPU float64 reductions and private macOS float32 bulk operations.
+## Provides packed CPU reductions, scans and private macOS bulk operations.
 import std/[math, complex]
 import ../../laser/compiler_optim_hints
 from ./p_complex import convertedComplexReductionValue, normalizedComplexMean
@@ -127,6 +127,142 @@ proc scanPackedComplex*[T; F: SomeFloat](output: ptr Complex[F]; input: ptr T;
       let value = convertedComplexReductionValue(source[index], F)
       accumulateComplexScan(carry, value, multiply)
       destination[index] = Complex[F](re: F(carry.re), im: F(carry.im))
+
+template extremaIdentity*(T: typedesc; maximum: static[bool]): untyped =
+  when T is SomeFloat:
+    when maximum: T(-Inf)
+    else: T(Inf)
+  elif maximum: low(T)
+  else: high(T)
+
+proc extremaScalar*[T](left, right: T; maximum: static[bool]): T {.inline.} =
+  ## Scalar extrema propagate NaNs and retain the first equal operand.
+  when T is SomeFloat:
+    if left != left: return left
+    if right != right: return right
+  when maximum:
+    if right > left: right
+    else: left
+  else:
+    if right < left: right
+    else: left
+
+proc extremaVectorValue*[T](left, right: T; maximum: static[bool]): T {.inline.} =
+  ## Native vector zero ties differ from the scalar horizontal fold.
+  when T is SomeFloat:
+    if left == 0 and right == 0:
+      when defined(arm64):
+        when sizeof(T) == 4:
+          type Word = uint32
+        else:
+          type Word = uint64
+        when maximum: return cast[T](cast[Word](left) and cast[Word](right))
+        else: return cast[T](cast[Word](left) or cast[Word](right))
+      elif defined(amd64) or defined(i386):
+        return right
+  extremaScalar(left, right, maximum)
+
+when defined(macosx) and defined(arm64):
+  proc extremaNativeSpan[T](input: ptr T; count: uint; maximum: static[bool]): T {.inline.}
+  proc extremaNativeAxis[T](output, input: ptr T; outer, length, inner: uint;
+                            maximum: static[bool])
+  proc extremaNativeTwoDimSpan[T](input: ptr T; innerCount, outerCount,
+      outerStride: int; maximum: static[bool]): T {.inline.}
+
+proc extremaSpan*[T; I: SomeInteger](input: ptr UncheckedArray[T]; base: I;
+    count: uint; stride: I; maximum: static[bool]): T {.inline.} =
+  ## Four vector chains fold before the scalar tail, without copying a view.
+  result = extremaIdentity(T, maximum)
+  if count == 0: return
+  if stride == 0: return input[base]
+  when T is bool:
+    for index in 0'u ..< count:
+      if input[base + I(index) * stride] == maximum: return maximum
+  else:
+    when defined(macosx) and defined(arm64) and (T is SomeFloat or T is SomeSignedInt or T is uint8):
+      if stride == 1:
+        return extremaNativeSpan(cast[ptr T](unsafeAddr input[base]), count, maximum)
+    const vectorBytes = when defined(arm64): 16 else: 32
+    const width = vectorBytes div sizeof(T)
+    const lanes = 4 * width
+    when I is SomeUnsignedInt:
+      let unitStride = stride == 1
+    else:
+      let unitStride = stride == 1 or stride == -1
+    var index = 0'u
+    if unitStride and count >= uint(lanes):
+      let bulk = count - count mod uint(lanes)
+      var partials {.noinit.}: array[lanes, T]
+      for lane in 0'u ..< uint(lanes):
+        partials[lane] = input[base + I(lane) * stride]
+      index = uint(lanes)
+      while index < bulk:
+        for lane in 0'u ..< uint(lanes):
+          partials[lane] = extremaVectorValue(partials[lane],
+            input[base + I(index + lane) * stride], maximum)
+        index += uint(lanes)
+      for lane in 0'u ..< uint(width):
+        let left = extremaVectorValue(partials[lane], partials[lane + uint(width)], maximum)
+        let right = extremaVectorValue(partials[lane + uint(2 * width)],
+          partials[lane + uint(3 * width)], maximum)
+        partials[lane] = extremaVectorValue(left, right, maximum)
+      var folded = partials[0]
+      for lane in 1'u ..< uint(width):
+        folded = extremaScalar(folded, partials[lane], maximum)
+      result = extremaScalar(result, folded, maximum)
+    while index < count:
+      result = extremaScalar(result, input[base + I(index) * stride], maximum)
+      inc index
+
+proc extremaTwoDimSpan*[T](input: ptr UncheckedArray[T]; base: int;
+    innerCount, outerCount, innerStride, outerStride: int;
+    maximum: static[bool]): T {.inline.} =
+  ## Cache the second stride instead of decoding tensor coordinates per span.
+  when defined(macosx) and defined(arm64) and (T is SomeSignedInt or T is uint8):
+    if innerStride == 1 and innerCount >= 4 * (16 div sizeof(T)):
+      return extremaNativeTwoDimSpan(cast[ptr T](unsafeAddr input[base]),
+        innerCount, outerCount, outerStride, maximum)
+  result = extremaIdentity(T, maximum)
+  for row in 0 ..< outerCount:
+    result = extremaScalar(result, extremaSpan(input, base + row * outerStride,
+      uint(innerCount), innerStride, maximum), maximum)
+    when T is bool:
+      if result == maximum: return
+
+proc extremaPackedAxis*[T](output, input: ptr T; outer, length, inner: uint;
+                          maximum: static[bool]) =
+  ## Nonempty column tiles keep vector ties separate from scalar leftovers.
+  when defined(macosx) and defined(arm64) and (T is SomeFloat or T is SomeSignedInt or T is uint8):
+    extremaNativeAxis(output, input, outer, length, inner, maximum)
+  else:
+    withCompilerOptimHints()
+    let source = cast[ptr UncheckedArray[T]](input)
+    let destination {.restrict.} = cast[ptr UncheckedArray[T]](output)
+    const vectorBytes = when defined(arm64): 16 else: 32
+    const lanes = 4 * vectorBytes div sizeof(T)
+    for group in 0'u ..< outer:
+      let base = group * length * inner
+      let target = group * inner
+      if inner == 1:
+        destination[target] = extremaSpan(source, base, length, 1'u, maximum)
+      else:
+        var column = 0'u
+        while column + uint(lanes) <= inner:
+          var partials {.noinit.}: array[lanes, T]
+          for lane in 0'u ..< uint(lanes):
+            partials[lane] = source[base + column + lane]
+          for row in 1'u ..< length:
+            for lane in 0'u ..< uint(lanes):
+              partials[lane] = extremaVectorValue(partials[lane],
+                source[base + row * inner + column + lane], maximum)
+          for lane in 0'u ..< uint(lanes):
+            destination[target + column + lane] =
+              extremaVectorValue(partials[lane], extremaIdentity(T, maximum), maximum)
+          column += uint(lanes)
+        while column < inner:
+          destination[target + column] = extremaSpan(source, base + column,
+            length, inner, maximum)
+          inc column
 
 template multiplyProductValue*(target, value: untyped) =
   ## Keep component products rounded before combining them, without scan widening.
@@ -577,6 +713,269 @@ when defined(macosx):
       {.importc, nodecl, header: "<arm_neon.h>".}
     proc vget_high_u16(value: UInt16x8): UInt16x4
       {.importc, nodecl, header: "<arm_neon.h>".}
+
+    proc vminq_f32(left, right: Float32x4): Float32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxq_f32(left, right: Float32x4): Float32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminq_f64(left, right: Float64x2): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxq_f64(left, right: Float64x2): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminvq_f32(value: Float32x4): float32
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxvq_f32(value: Float32x4): float32
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminvq_f64(value: Float64x2): float64
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxvq_f64(value: Float64x2): float64
+      {.importc, nodecl, header: "<arm_neon.h>".}
+
+    type
+      Int8x16 {.importc: "int8x16_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[16, int8]
+      UInt8x16 {.importc: "uint8x16_t", bycopy, header: "<arm_neon.h>".} = object
+        raw: array[16, uint8]
+    proc vld1q_s8(input: ptr int8): Int8x16
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vld1q_u8(input: ptr uint8): UInt8x16
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vld1q_s16(input: ptr int16): Int16x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vst1q_s8(output: ptr int8; value: Int8x16)
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vst1q_u8(output: ptr uint8; value: UInt8x16)
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vst1q_s16(output: ptr int16; value: Int16x8)
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vst1q_s32(output: ptr int32; value: Int32x4)
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vst1q_s64(output: ptr int64; value: Int64x2)
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminq_s8(left, right: Int8x16): Int8x16
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxq_s8(left, right: Int8x16): Int8x16
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminq_u8(left, right: UInt8x16): UInt8x16
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxq_u8(left, right: UInt8x16): UInt8x16
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminq_s16(left, right: Int16x8): Int16x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxq_s16(left, right: Int16x8): Int16x8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminq_s32(left, right: Int32x4): Int32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxq_s32(left, right: Int32x4): Int32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vcgtq_s64(left, right: Int64x2): UInt64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vbslq_s64(mask: UInt64x2; left, right: Int64x2): Int64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminvq_s8(value: Int8x16): int8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxvq_s8(value: Int8x16): int8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminvq_u8(value: UInt8x16): uint8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxvq_u8(value: UInt8x16): uint8
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminvq_s16(value: Int16x8): int16
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxvq_s16(value: Int16x8): int16
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vminvq_s32(value: Int32x4): int32
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vmaxvq_s32(value: Int32x4): int32
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vgetq_lane_s64(value: Int64x2; lane: cint): int64
+      {.importc, nodecl, header: "<arm_neon.h>".}
+
+    template loadExtremaVector(input: untyped; T: typedesc): untyped =
+      when T is float32: vld1q_f32(cast[ptr float32](input))
+      elif T is SomeFloat: vld1q_f64(cast[ptr float64](input))
+      elif T is uint8: vld1q_u8(cast[ptr uint8](input))
+      elif sizeof(T) == 1: vld1q_s8(cast[ptr int8](input))
+      elif sizeof(T) == 2: vld1q_s16(cast[ptr int16](input))
+      elif sizeof(T) == 4: vld1q_s32(cast[ptr int32](input))
+      else: vld1q_s64(cast[ptr int64](input))
+
+    template storeExtremaVector(output, value: untyped; T: typedesc) =
+      when T is float32: vst1q_f32(cast[ptr float32](output), value)
+      elif T is SomeFloat: vst1q_f64(cast[ptr float64](output), value)
+      elif T is uint8: vst1q_u8(cast[ptr uint8](output), value)
+      elif sizeof(T) == 1: vst1q_s8(cast[ptr int8](output), value)
+      elif sizeof(T) == 2: vst1q_s16(cast[ptr int16](output), value)
+      elif sizeof(T) == 4: vst1q_s32(cast[ptr int32](output), value)
+      else: vst1q_s64(cast[ptr int64](output), value)
+
+    template combineExtremaVectors(left, right: untyped; maximum: static[bool]): untyped =
+      when typeof(left) is Float32x4:
+        when maximum: vmaxq_f32(left, right)
+        else: vminq_f32(left, right)
+      elif typeof(left) is Float64x2:
+        when maximum: vmaxq_f64(left, right)
+        else: vminq_f64(left, right)
+      elif typeof(left) is Int8x16:
+        when maximum: vmaxq_s8(left, right)
+        else: vminq_s8(left, right)
+      elif typeof(left) is UInt8x16:
+        when maximum: vmaxq_u8(left, right)
+        else: vminq_u8(left, right)
+      elif typeof(left) is Int16x8:
+        when maximum: vmaxq_s16(left, right)
+        else: vminq_s16(left, right)
+      elif typeof(left) is Int32x4:
+        when maximum: vmaxq_s32(left, right)
+        else: vminq_s32(left, right)
+      else:
+        when maximum: vbslq_s64(vcgtq_s64(left, right), left, right)
+        else: vbslq_s64(vcgtq_s64(right, left), left, right)
+
+    template horizontalExtremaInteger(value: untyped; T: typedesc;
+                                      maximum: static[bool]): untyped =
+      when T is uint8:
+        when maximum: T(vmaxvq_u8(value))
+        else: T(vminvq_u8(value))
+      elif sizeof(T) == 1:
+        when maximum: T(vmaxvq_s8(value))
+        else: T(vminvq_s8(value))
+      elif sizeof(T) == 2:
+        when maximum: T(vmaxvq_s16(value))
+        else: T(vminvq_s16(value))
+      elif sizeof(T) == 4:
+        when maximum: T(vmaxvq_s32(value))
+        else: T(vminvq_s32(value))
+      else:
+        extremaScalar(T(vgetq_lane_s64(value, 0)), T(vgetq_lane_s64(value, 1)), maximum)
+
+    template horizontalExtremaFloat(value: untyped; T: typedesc;
+                                    maximum: static[bool]): untyped =
+      block:
+        var reduced: T
+        when T is float32:
+          when maximum: reduced = vmaxvq_f32(value)
+          else: reduced = vminvq_f32(value)
+        else:
+          when maximum: reduced = vmaxvq_f64(value)
+          else: reduced = vminvq_f64(value)
+        if reduced == 0:
+          # Only zero needs the scalar fold's first-equal sign rather than FMINV.
+          var values {.noinit.}: array[16 div sizeof(T), T]
+          storeExtremaVector(addr values[0], value, T)
+          for lane in 0 ..< values.len:
+            if values[lane] == 0:
+              reduced = values[lane]
+              break
+        reduced
+
+    proc extremaNativeSpan[T](input: ptr T; count: uint; maximum: static[bool]): T =
+      ## Keep vector lanes live until the scalar first-tie horizontal fold.
+      let source = cast[ptr UncheckedArray[T]](input)
+      const width = 16 div sizeof(T)
+      const lanes = 4 * width
+      result = extremaIdentity(T, maximum)
+      var index = 0'u
+      let bulk = count - count mod uint(lanes)
+      if bulk != 0:
+        var a = loadExtremaVector(unsafeAddr source[0], T)
+        var b = loadExtremaVector(unsafeAddr source[width], T)
+        var c = loadExtremaVector(unsafeAddr source[2 * width], T)
+        var d = loadExtremaVector(unsafeAddr source[3 * width], T)
+        index = uint(lanes)
+        while index < bulk:
+          a = combineExtremaVectors(a, loadExtremaVector(unsafeAddr source[index], T), maximum)
+          b = combineExtremaVectors(b, loadExtremaVector(unsafeAddr source[index + uint(width)], T), maximum)
+          c = combineExtremaVectors(c, loadExtremaVector(unsafeAddr source[index + uint(2 * width)], T), maximum)
+          d = combineExtremaVectors(d, loadExtremaVector(unsafeAddr source[index + uint(3 * width)], T), maximum)
+          index += uint(lanes)
+        let folded = combineExtremaVectors(combineExtremaVectors(a, b, maximum),
+          combineExtremaVectors(c, d, maximum), maximum)
+        when T is SomeFloat:
+          result = horizontalExtremaFloat(folded, T, maximum)
+        else:
+          result = horizontalExtremaInteger(folded, T, maximum)
+      when T is SomeInteger:
+        # Integer extrema are exact, so short spans can use a single vector too.
+        let vectorEnd = count - count mod uint(width)
+        if index < vectorEnd:
+          var value = loadExtremaVector(unsafeAddr source[index], T)
+          index += uint(width)
+          while index < vectorEnd:
+            value = combineExtremaVectors(value,
+              loadExtremaVector(unsafeAddr source[index], T), maximum)
+            index += uint(width)
+          result = extremaScalar(result, horizontalExtremaInteger(value, T, maximum), maximum)
+      while index < count:
+        result = extremaScalar(result, source[index], maximum)
+        inc index
+
+    proc extremaNativeTwoDimSpan[T](input: ptr T; innerCount, outerCount,
+        outerStride: int; maximum: static[bool]): T =
+      ## Integer extrema can retain exact vector accumulators across row gaps.
+      let source = cast[ptr UncheckedArray[T]](input)
+      const width = 16 div sizeof(T)
+      const lanes = 4 * width
+      let bulk = innerCount - innerCount mod lanes
+      var a = loadExtremaVector(unsafeAddr source[0], T)
+      var b = loadExtremaVector(unsafeAddr source[width], T)
+      var c = loadExtremaVector(unsafeAddr source[2 * width], T)
+      var d = loadExtremaVector(unsafeAddr source[3 * width], T)
+      result = extremaIdentity(T, maximum)
+      var row = 0
+      var index = lanes
+      while row < outerCount:
+        let base = row * outerStride
+        while index < bulk:
+          a = combineExtremaVectors(a, loadExtremaVector(unsafeAddr source[base + index], T), maximum)
+          b = combineExtremaVectors(b, loadExtremaVector(unsafeAddr source[base + index + width], T), maximum)
+          c = combineExtremaVectors(c, loadExtremaVector(unsafeAddr source[base + index + 2 * width], T), maximum)
+          d = combineExtremaVectors(d, loadExtremaVector(unsafeAddr source[base + index + 3 * width], T), maximum)
+          index += lanes
+        while index < innerCount:
+          result = extremaScalar(result, source[base + index], maximum)
+          inc index
+        inc row
+        index = 0
+      let folded = combineExtremaVectors(combineExtremaVectors(a, b, maximum),
+        combineExtremaVectors(c, d, maximum), maximum)
+      result = extremaScalar(result, horizontalExtremaInteger(folded, T, maximum), maximum)
+
+    proc extremaNativeAxis[T](output, input: ptr T; outer, length, inner: uint;
+                              maximum: static[bool]) =
+      ## Four independent column vectors share loads but never reduction carries.
+      withCompilerOptimHints()
+      let source = cast[ptr UncheckedArray[T]](input)
+      let destination {.restrict.} = cast[ptr UncheckedArray[T]](output)
+      const width = 16 div sizeof(T)
+      const lanes = 4 * width
+      for group in 0'u ..< outer:
+        let base = group * length * inner
+        let target = group * inner
+        if inner == 1:
+          destination[target] = extremaNativeSpan(unsafeAddr source[base], length, maximum)
+        else:
+          var column = 0'u
+          while column + uint(lanes) <= inner:
+            var a = loadExtremaVector(unsafeAddr source[base + column], T)
+            var b = loadExtremaVector(unsafeAddr source[base + column + uint(width)], T)
+            var c = loadExtremaVector(unsafeAddr source[base + column + uint(2 * width)], T)
+            var d = loadExtremaVector(unsafeAddr source[base + column + uint(3 * width)], T)
+            for row in 1'u ..< length:
+              let offset = base + row * inner + column
+              a = combineExtremaVectors(a, loadExtremaVector(unsafeAddr source[offset], T), maximum)
+              b = combineExtremaVectors(b, loadExtremaVector(unsafeAddr source[offset + uint(width)], T), maximum)
+              c = combineExtremaVectors(c, loadExtremaVector(unsafeAddr source[offset + uint(2 * width)], T), maximum)
+              d = combineExtremaVectors(d, loadExtremaVector(unsafeAddr source[offset + uint(3 * width)], T), maximum)
+            storeExtremaVector(addr destination[target + column], a, T)
+            storeExtremaVector(addr destination[target + column + uint(width)], b, T)
+            storeExtremaVector(addr destination[target + column + uint(2 * width)], c, T)
+            storeExtremaVector(addr destination[target + column + uint(3 * width)], d, T)
+            column += uint(lanes)
+          while column < inner:
+            destination[target + column] = extremaSpan(source, base + column,
+              length, inner, maximum)
+            inc column
 
     template multiplyComplexProductVectors(target, value: untyped) =
       let right = value

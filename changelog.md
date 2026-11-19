@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add dtype-preserving CPU ``amin``/``amax`` tensor reductions with negative or
+  multiple axes, optional retained dimensions, and independent outputs.
+  Read strided/broadcast views without conversion buffers; preserve NaN
+  propagation, native signed-zero folds, exact integers and empty-axis errors.
 - Add cast-on-read complex CPU product dtypes with component-width arithmetic,
   packed vector folding before scalar tails, and independent column chains.
   Preserve scalar signed-zero identity multiplication, empty product identities,
