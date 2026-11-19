@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add CPU ``logcumsumexp`` scans for float32/64 and complex64/128 with stable,
+  wide ordered carries and continuous complex phases. Preserve scalar bits,
+  signed/broadcast views and dtype-before-allocation rejection without
+  intermediate tensors; validate axes before unsupported integer/bool dtypes.
 - Add CPU float32/64 and complex64/128 seeded ``logsumexp`` gradients using
   the rounded forward output and conjugated complex exponential. Preserve
   complex-alpha nonfinite arithmetic, component zero signs and signed/broadcast views with

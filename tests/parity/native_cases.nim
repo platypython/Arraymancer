@@ -172,6 +172,15 @@ proc realDtypeLayout[T](source: Tensor[T], layout: string): Tensor[T] =
   of "transpose": result = source.transpose
   of "offset": result = source.transpose[_, 1..^1]
   of "reverse": result = source[^1..0|-1]
+  of "reverse_both": result = source[^1..0|-1, ^1..0|-1]
+  of "offset_columns":
+    # Keep a skipped prefix and padding between rows in the oracle's view.
+    var backing = newTensorUninit[T](2, 6)
+    for row in 0 ..< 2:
+      for column in 0 ..< 6:
+        backing.unsafe_raw_offset[row * 6 + column] =
+          source.atContiguousIndex(row * 3 + column mod 3)
+    result = backing[_, 1..4]
   of "broadcast": result = source.broadcast(4, 3)
   else: result = source
 
@@ -2379,6 +2388,51 @@ proc logsumexpGradient(inputs: JsonNode): JsonNode =
   result["complex64"] = logsumexpGradientDtype[Complex[float32]](inputs["complex64"])
   result["complex128"] = logsumexpGradientDtype[Complex[float64]](inputs["complex128"])
 
+proc logcumsumexpDtype[T](profiles: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in profiles:
+    let source = logsumexpInputTensor[T](spec)
+    var observations = newJObject()
+    for request in spec["requests"]:
+      let id = request["id"].getStr
+      let axis = request["axis"].getInt
+      let axisLimit = max(1, source.shape.len)
+      let invalidAxis = axis < -axisLimit or axis >= axisLimit
+      try:
+        let output = source.logcumsumexp(axis)
+        when T is SomeFloat or T is Complex:
+          observations[id] = logsumexpGradientTensorObservation(output)
+        else:
+          observations[id] = tensorObservation(output)
+      except IndexDefect:
+        if not invalidAxis: raise
+        observations[id] = %*{"error": "invalid_axis"}
+      except ValueError:
+        when T is SomeFloat or T is Complex:
+          raise
+        else:
+          if invalidAxis: raise
+          observations[id] = %*{"error": "unsupported_dtype"}
+    result[name] = observations
+
+
+proc logcumsumexp(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  result["bool"] = logcumsumexpDtype[bool](inputs["bool"])
+  result["int8"] = logcumsumexpDtype[int8](inputs["int8"])
+  result["int16"] = logcumsumexpDtype[int16](inputs["int16"])
+  result["int32"] = logcumsumexpDtype[int32](inputs["int32"])
+  result["int64"] = logcumsumexpDtype[int64](inputs["int64"])
+  result["uint8"] = logcumsumexpDtype[uint8](inputs["uint8"])
+  result["uint16"] = logcumsumexpDtype[uint16](inputs["uint16"])
+  result["uint32"] = logcumsumexpDtype[uint32](inputs["uint32"])
+  result["uint64"] = logcumsumexpDtype[uint64](inputs["uint64"])
+  result["float32"] = logcumsumexpDtype[float32](inputs["float32"])
+  result["float64"] = logcumsumexpDtype[float64](inputs["float64"])
+  result["complex64"] = logcumsumexpDtype[Complex[float32]](inputs["complex64"])
+  result["complex128"] = logcumsumexpDtype[Complex[float64]](inputs["complex128"])
+
+
 
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
@@ -2401,6 +2455,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = aminmax(inputs)
   of "tensor.logsumexp":
     result = logsumexp(inputs)
+  of "tensor.logcumsumexp":
+    result = logcumsumexp(inputs)
   of "tensor.integer_output_dtype":
     result = integerOutputDtype(inputs)
   of "tensor.mean_dtype":

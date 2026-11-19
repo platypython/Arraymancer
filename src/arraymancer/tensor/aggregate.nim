@@ -27,7 +27,8 @@ import  ./data_structure,
         ./private/p_extrema,
         ./private/p_argextrema,
         ./private/p_aminmax,
-        ./private/p_logsumexp
+        ./private/p_logsumexp,
+        ./private/p_logcumsumexp
 import std / [math, macros]
 import complex except Complex64, Complex32
 import ../laser/compiler_optim_hints
@@ -1013,6 +1014,16 @@ proc std*[T: SomeFloat](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.} 
   ## The normalization is by the (n-1), like in the formal definition
   returnEmptyIfEmpty(arg)
   sqrt(arg.variance(axis))
+
+proc logcumsumexp*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    axis = 0): Tensor[T] =
+  ## Inclusive stable logarithmic cumulative sum along a signed axis.
+  ## CPU float32/64 and complex64/128 preserve dtype with wide prefix carries.
+  ## Complex phases are carried without principal wrapping. Scalar inputs keep
+  ## their bits; valid empty inputs retain shape. Integer/bool inputs reject
+  ## after axis validation, including scalars and empty tensors.
+  ## Signed/offset/broadcast views are read directly into independent outputs.
+  scanLogcumsumexp(arg, axis)
 
 proc logsumexp*[T: SomeNumber or bool or Complex](arg: Tensor[T];
     keepdim = false): Tensor[logsumexpDtype(T)] =

@@ -64,7 +64,7 @@ const
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
     "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema", "tensor.indexed_extrema",
     "tensor.paired_extrema", "autograd.paired_extrema", "tensor.aminmax", "tensor.logsumexp",
-    "autograd.logsumexp"]
+    "autograd.logsumexp", "tensor.logcumsumexp"]
   RequiredCaseAreas: array[RequiredCaseIds.len, string] = [
     "api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
@@ -76,7 +76,7 @@ const
     "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch", "api:torch",
-    "api:autograd", "api:torch", "api:torch", "api:autograd"]
+    "api:autograd", "api:torch", "api:torch", "api:autograd", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -3184,6 +3184,323 @@ proc expectLogsumexpExpected(expected, inputs: JsonNode) =
           logsumexpOutputShape(shape, request), dtype, label)
 
 
+const
+  LogcumsumexpDtypes = [
+    "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+    "uint64", "float32", "float64", "complex64", "complex128"]
+  LogcumsumexpIntegerDtypes = [
+    "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
+  LogcumsumexpRealDtypes = ["float32", "float64"]
+  LogcumsumexpComplexDtypes = ["complex64", "complex128"]
+
+type
+  LogcumsumexpScalarSpec = tuple[finite: float64, special: string]
+  LogcumsumexpComplexSpec = tuple[real, imag: LogcumsumexpScalarSpec]
+
+
+proc logcumsumexpFinite(value: float64): LogcumsumexpScalarSpec =
+  (finite: value, special: "")
+
+
+proc logcumsumexpSpecial(value: string): LogcumsumexpScalarSpec =
+  (finite: 0.0, special: value)
+
+
+proc logcumsumexpProfileNames(dtype: string): seq[string] =
+  result = @["dense", "transpose", "offset", "reverse", "broadcast", "cube", "scalar", "empty"]
+  if dtype in LogcumsumexpRealDtypes or dtype in LogcumsumexpComplexDtypes:
+    result.add "zero_signs"
+    result.add "large"
+    result.add "nonfinite"
+    if dtype in LogcumsumexpComplexDtypes:
+      result.add "phases"
+      result.add "complex_nonfinite"
+    for left in 0 ..< 7:
+      for right in 0 ..< 7:
+        result.add "real_pair_" & $left & "_" & $right
+    if dtype in LogcumsumexpComplexDtypes:
+      for left in 0 ..< 12:
+        for right in 0 ..< 12:
+          result.add "complex_pair_" & $left & "_" & $right
+
+
+proc logcumsumexpInputShape(profile: string): seq[int] =
+  case profile
+  of "dense", "transpose", "offset", "reverse": @[2, 3]
+  of "broadcast": @[1, 3]
+  of "cube": @[2, 2, 3]
+  of "scalar": @[]
+  of "empty": @[2, 0, 3]
+  of "zero_signs", "large", "phases": @[3]
+  of "nonfinite": @[4]
+  of "complex_nonfinite": @[3]
+  else:
+    if profile.startsWith("real_pair_") or profile.startsWith("complex_pair_"):
+      @[2]
+    else:
+      invalid("unknown logcumsumexp input profile " & profile)
+
+
+proc logcumsumexpInputLayout(profile: string): string =
+  case profile
+  of "transpose": "transpose"
+  of "offset": "offset_columns"
+  of "reverse": "reverse_both"
+  of "broadcast": "broadcast"
+  else: "identity"
+
+
+proc logcumsumexpRealSpecialValue(index: int): LogcumsumexpScalarSpec =
+  case index
+  of 0: logcumsumexpSpecial("-inf")
+  of 1: logcumsumexpFinite(-1.0)
+  of 2: logcumsumexpFinite(-0.0)
+  of 3: logcumsumexpFinite(0.0)
+  of 4: logcumsumexpFinite(1.0)
+  of 5: logcumsumexpSpecial("+inf")
+  of 6: logcumsumexpSpecial("nan")
+  else: invalid("unknown logcumsumexp real special value")
+
+
+proc logcumsumexpComplexSpecialValue(index: int): LogcumsumexpComplexSpec =
+  case index
+  of 0:
+    (real: logcumsumexpSpecial("-inf"), imag: logcumsumexpSpecial("+inf"))
+  of 1:
+    (real: logcumsumexpSpecial("-inf"), imag: logcumsumexpSpecial("-inf"))
+  of 2:
+    (real: logcumsumexpSpecial("-inf"), imag: logcumsumexpSpecial("nan"))
+  of 3:
+    (real: logcumsumexpSpecial("-inf"), imag: logcumsumexpFinite(-0.0))
+  of 4:
+    (real: logcumsumexpSpecial("+inf"), imag: logcumsumexpSpecial("+inf"))
+  of 5:
+    (real: logcumsumexpSpecial("+inf"), imag: logcumsumexpSpecial("nan"))
+  of 6:
+    (real: logcumsumexpSpecial("+inf"), imag: logcumsumexpFinite(-0.0))
+  of 7:
+    (real: logcumsumexpSpecial("nan"), imag: logcumsumexpFinite(0.0))
+  of 8:
+    (real: logcumsumexpFinite(0.0), imag: logcumsumexpSpecial("nan"))
+  of 9:
+    (real: logcumsumexpFinite(1.0), imag: logcumsumexpFinite(0.0))
+  of 10:
+    (real: logcumsumexpFinite(1.0),
+      imag: logcumsumexpFinite(3.14159265358979323846264338327950288))
+  of 11:
+    (real: logcumsumexpFinite(1.0),
+      imag: logcumsumexpFinite(-3.14159265358979323846264338327950288))
+  else:
+    invalid("unknown logcumsumexp complex special value")
+
+
+proc logcumsumexpEncodeValue(
+    value: LogcumsumexpScalarSpec,
+    index: int,
+    component: string,
+    specials: var JsonNode
+): JsonNode =
+  if value.special.len == 0:
+    return newJFloat(value.finite)
+  var special = newJObject()
+  special["index"] = newJInt(index)
+  special["value"] = %value.special
+  if component.len > 0:
+    special["component"] = %component
+  specials.add special
+  newJFloat(0.0)
+
+
+proc logcumsumexpInputSpec(dtype, profile: string): JsonNode =
+  let shape = logcumsumexpInputShape(profile)
+  let layout = logcumsumexpInputLayout(profile)
+  var scalarValues: seq[LogcumsumexpScalarSpec]
+  var complexValues: seq[LogcumsumexpComplexSpec]
+
+  if profile.startsWith("real_pair_"):
+    let parts = profile.split('_')
+    scalarValues.add logcumsumexpRealSpecialValue(parseInt(parts[2]))
+    scalarValues.add logcumsumexpRealSpecialValue(parseInt(parts[3]))
+  elif profile.startsWith("complex_pair_"):
+    let parts = profile.split('_')
+    complexValues.add logcumsumexpComplexSpecialValue(parseInt(parts[2]))
+    complexValues.add logcumsumexpComplexSpecialValue(parseInt(parts[3]))
+  else:
+    case profile
+    of "dense", "transpose", "offset", "reverse":
+      for value in 0 ..< 6: scalarValues.add logcumsumexpFinite(float64(value))
+    of "broadcast":
+      for value in 0 ..< 3: scalarValues.add logcumsumexpFinite(float64(value))
+    of "cube":
+      for _ in 0 ..< 2:
+        for value in 0 ..< 6: scalarValues.add logcumsumexpFinite(float64(value))
+    of "scalar": scalarValues.add logcumsumexpFinite(0.0)
+    of "empty": discard
+    of "zero_signs":
+      scalarValues.add logcumsumexpFinite(-0.0)
+      scalarValues.add logcumsumexpFinite(0.0)
+      scalarValues.add logcumsumexpFinite(-0.0)
+    of "large":
+      scalarValues.add logcumsumexpFinite(1000.0)
+      scalarValues.add logcumsumexpFinite(999.0)
+      scalarValues.add logcumsumexpFinite(-1000.0)
+    of "nonfinite":
+      scalarValues.add logcumsumexpSpecial("-inf")
+      scalarValues.add logcumsumexpFinite(1.0)
+      scalarValues.add logcumsumexpSpecial("+inf")
+      scalarValues.add logcumsumexpSpecial("nan")
+    of "phases":
+      complexValues.add (real: logcumsumexpFinite(2.0), imag: logcumsumexpFinite(7.0))
+      complexValues.add (real: logcumsumexpFinite(1.0), imag: logcumsumexpFinite(-8.0))
+      complexValues.add (real: logcumsumexpFinite(-2.0), imag: logcumsumexpFinite(0.5))
+    of "complex_nonfinite":
+      complexValues.add (real: logcumsumexpSpecial("-inf"),
+        imag: logcumsumexpSpecial("+inf"))
+      complexValues.add (real: logcumsumexpFinite(1.0), imag: logcumsumexpFinite(0.0))
+      complexValues.add (real: logcumsumexpSpecial("+inf"),
+        imag: logcumsumexpFinite(-0.0))
+    else:
+      invalid("unknown logcumsumexp input profile " & profile)
+
+  let isInteger = dtype in LogcumsumexpIntegerDtypes
+  let isComplex = dtype in LogcumsumexpComplexDtypes
+  if isComplex and complexValues.len == 0:
+    for value in scalarValues:
+      complexValues.add (real: value, imag: logcumsumexpFinite(0.0))
+
+  let payloadKey = if isInteger: "words" else: "values"
+  let payload = newJArray()
+  var specials = newJArray()
+  if isInteger:
+    for value in scalarValues:
+      let word = if dtype == "bool":
+        (if value.finite == 0.0: 0'i64 else: 1'i64)
+      else:
+        int64(value.finite)
+      payload.add newJInt(word)
+  elif isComplex:
+    for index, value in complexValues:
+      var pair = newJArray()
+      pair.add logcumsumexpEncodeValue(value.real, index, "real", specials)
+      pair.add logcumsumexpEncodeValue(value.imag, index, "imag", specials)
+      payload.add pair
+  else:
+    for index, value in scalarValues:
+      payload.add logcumsumexpEncodeValue(value, index, "", specials)
+
+  result = newJObject()
+  result["dtype"] = %dtype
+  result["shape"] = jsonShape(shape)
+  result["layout"] = %layout
+  result[payloadKey] = payload
+  result["specials"] = specials
+  result["requests"] = newJArray()
+  let axisLimit = max(shape.len, 1)
+  for axis in (-axisLimit - 1) ..< (axisLimit + 1):
+    var request = newJObject()
+    request["id"] = %("axis_" & $axis)
+    request["axis"] = newJInt(axis)
+    result["requests"].add request
+
+
+proc logcumsumexpLogicalShape(profile: string): seq[int] =
+  result = logcumsumexpInputShape(profile)
+  case logcumsumexpInputLayout(profile)
+  of "transpose": result = @[result[1], result[0]]
+  of "offset_columns": result = @[result[0], result[1] + 1]
+  of "broadcast": result = @[4, 3]
+  else: discard
+
+
+proc logcumsumexpExpectedError(dtype: string, shape: seq[int], axis: int): string =
+  let axisLimit = max(shape.len, 1)
+  if axis < -axisLimit or axis >= axisLimit:
+    return "invalid_axis"
+  if dtype in LogcumsumexpIntegerDtypes:
+    return "unsupported_dtype"
+
+
+proc expectLogcumsumexpInputZeroSigns(
+    spec, expectedSpec: JsonNode,
+    dtype, label: string
+) =
+  let actualValues = field(spec, "values")
+  let expectedValues = field(expectedSpec, "values")
+  if dtype in LogcumsumexpComplexDtypes:
+    for index in 0 ..< actualValues.len:
+      let actualPair = actualValues[index]
+      let expectedPair = expectedValues[index]
+      require(actualPair.kind == JArray and expectedPair.kind == JArray and
+        actualPair.len == 2 and expectedPair.len == 2,
+        label & " complex source values must be pairs")
+      for component in 0 ..< 2:
+        let actualValue = actualPair[component]
+        let expectedValue = expectedPair[component]
+        require(actualValue.kind == JFloat and expectedValue.kind == JFloat and
+          isNegativeZeroValue(actualValue) == isNegativeZeroValue(expectedValue),
+          label & " complex source signed-zero/value encoding mismatch")
+  else:
+    for index in 0 ..< actualValues.len:
+      let actualValue = actualValues[index]
+      let expectedValue = expectedValues[index]
+      require(actualValue.kind == JFloat and expectedValue.kind == JFloat and
+        isNegativeZeroValue(actualValue) == isNegativeZeroValue(expectedValue),
+        label & " real source signed-zero/value encoding mismatch")
+
+
+proc expectLogcumsumexpInputs(inputs: JsonNode) =
+  expectExtremaFields(inputs, LogcumsumexpDtypes, "logcumsumexp dtype groups")
+  for dtype in LogcumsumexpDtypes:
+    let profiles = field(inputs, dtype)
+    let profileNames = logcumsumexpProfileNames(dtype)
+    expectExtremaFields(profiles, profileNames, "logcumsumexp profiles for " & dtype)
+    for profile in profileNames:
+      let spec = field(profiles, profile)
+      let payloadKey = if dtype in LogcumsumexpIntegerDtypes: "words" else: "values"
+      expectExtremaFields(spec,
+        ["dtype", "shape", "layout", payloadKey, "specials", "requests"],
+        "logcumsumexp input " & dtype & "." & profile)
+      let expectedSpec = logcumsumexpInputSpec(dtype, profile)
+      require(spec == expectedSpec,
+        "logcumsumexp input profile does not match the pinned probe: " &
+        dtype & "." & profile)
+      if dtype in LogcumsumexpRealDtypes or dtype in LogcumsumexpComplexDtypes:
+        expectLogcumsumexpInputZeroSigns(
+          spec, expectedSpec, dtype, "logcumsumexp input " & dtype & "." & profile)
+
+
+proc expectLogcumsumexpExpected(expected, inputs: JsonNode) =
+  expectExtremaFields(expected, LogcumsumexpDtypes, "logcumsumexp expected dtype groups")
+  for dtype in LogcumsumexpDtypes:
+    let inputProfiles = field(inputs, dtype)
+    let profileNames = logcumsumexpProfileNames(dtype)
+    let expectedProfiles = field(expected, dtype)
+    expectExtremaFields(expectedProfiles, profileNames,
+      "logcumsumexp expected profiles for " & dtype)
+    for profile in profileNames:
+      let spec = field(inputProfiles, profile)
+      let requests = field(spec, "requests")
+      let byRequest = field(expectedProfiles, profile)
+      var requestNames: seq[string]
+      for request in requests: requestNames.add request["id"].getStr
+      expectExtremaFields(byRequest, requestNames,
+        "logcumsumexp requests for " & dtype & "." & profile)
+      let shape = logcumsumexpLogicalShape(profile)
+      for request in requests:
+        let requestId = request["id"].getStr
+        let observed = field(byRequest, requestId)
+        let label = "logcumsumexp " & dtype & "." & profile & "." & requestId
+        let expectedError = logcumsumexpExpectedError(
+          dtype, shape, request["axis"].getInt)
+        if expectedError.len > 0:
+          expectExtremaFields(observed, ["error"], label)
+          require(field(observed, "error") == %expectedError,
+            label & " error precedence mismatch")
+        elif dtype in LogcumsumexpComplexDtypes:
+          expectComplexObservation(observed, shape, dtype, label)
+        else:
+          expectExtremaGradientTensor(observed, shape, dtype, label, true)
+
 const PairedExtremaGradientInputNames = [
   "ties", "transpose", "reverse", "broadcast", "nan_first", "zero_ties",
   "scalar", "empty", "cube", "offset", "infinities"]
@@ -3778,6 +4095,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "logsumexp fixtures require 1e-6 tolerances")
       expectLogsumexpInputs(inputs)
+    of "tensor.logcumsumexp":
+      require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
+        "logcumsumexp fixtures require 1e-6 tolerances")
+      expectLogcumsumexpInputs(inputs)
     of "autograd.logsumexp":
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "logsumexp gradient fixtures require 1e-6 tolerances")
@@ -3942,6 +4263,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectAminmaxExpected(expected, inputs)
     of "tensor.logsumexp":
       expectLogsumexpExpected(expected, inputs)
+    of "tensor.logcumsumexp":
+      expectLogcumsumexpExpected(expected, inputs)
     of "autograd.logsumexp":
       expectLogsumexpGradientExpected(expected, inputs)
     of "tensor.integer_output_dtype":

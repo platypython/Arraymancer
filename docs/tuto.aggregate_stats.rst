@@ -279,3 +279,20 @@ before backward. Retained graphs and no-grad mode follow the usual contracts.
 Higher-order gradients, integer/bool differentiation, Metal, output-buffer and
 low-precision overloads remain unsupported.
 
+``logcumsumexp(axis = 0)`` computes a stable logarithmic prefix sum on CPU:
+
+.. code-block:: nim
+
+  let prefixes = [1000.0, 999.0, -1000.0].toTensor.logcumsumexp()
+  echo prefixes  # Approximately [1000.0, 1000.313262, 1000.313262].
+
+Float32/64 and complex64/128 inputs retain their shape and dtype. Ordered
+float64 or complex128 carries round only when storing each prefix, without
+allocating exponential or converted-input tensors. Complex phases stay
+continuous rather than wrapping to the principal logarithm at each step.
+Scalar inputs copy their bits; empty inputs retain their shape. Negative
+axes and signed, offset, transposed and broadcast views are supported, with
+independent dense outputs. Axis validation precedes integer/bool rejection,
+including for scalar and empty inputs. Variable gradients, Metal,
+output-buffer and low-precision overloads are not provided.
+

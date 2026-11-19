@@ -3996,6 +3996,240 @@ def logsumexp_gradient(torch: Any) -> dict[str, Any]:
     return _case("autograd.logsumexp", "api:autograd", inputs, expected, tolerance=1e-6)
 
 
+def _logcumsumexp_raw_inputs() -> dict[str, dict[str, dict[str, Any]]]:
+    """Describe the complete CPU dtype/profile matrix from the pinned probe."""
+    dtype_names = (
+        "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+        "uint64", "float32", "float64", "complex64", "complex128",
+    )
+    integer_names = {
+        "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+    }
+    supported_names = {"float32", "float64", "complex64", "complex128"}
+    real_specials = [
+        float("-inf"), -1.0, -0.0, 0.0, 1.0, float("inf"), float("nan")
+    ]
+    complex_specials = [
+        complex(float("-inf"), float("inf")),
+        complex(float("-inf"), float("-inf")),
+        complex(float("-inf"), float("nan")),
+        complex(float("-inf"), -0.0),
+        complex(float("inf"), float("inf")),
+        complex(float("inf"), float("nan")),
+        complex(float("inf"), -0.0),
+        complex(float("nan"), 0.0),
+        complex(0.0, float("nan")),
+        complex(1.0, 0.0),
+        complex(1.0, math.pi),
+        complex(1.0, -math.pi),
+    ]
+
+    inputs: dict[str, dict[str, dict[str, Any]]] = {}
+    for dtype_name in dtype_names:
+        is_integer = dtype_name in integer_names
+        is_complex = dtype_name in ("complex64", "complex128")
+        cases: dict[str, dict[str, Any]] = {}
+        inputs[dtype_name] = cases
+
+        def add(
+            name: str,
+            shape: list[int],
+            layout: str,
+            raw_values: Sequence[int | float | complex],
+        ) -> None:
+            specials: list[dict[str, Any]] = []
+
+            def encode(value: float, index: int, component: str | None = None) -> float:
+                if math.isnan(value):
+                    special_value = "nan"
+                elif math.isinf(value):
+                    special_value = "+inf" if value > 0 else "-inf"
+                else:
+                    return float(value)
+                special: dict[str, Any] = {"index": index, "value": special_value}
+                if component is not None:
+                    special["component"] = component
+                specials.append(special)
+                return 0.0
+
+            if is_integer:
+                payload_key = "words"
+                payload = []
+                for raw_value in raw_values:
+                    if isinstance(raw_value, complex):
+                        raise ValueError("integer logcumsumexp input cannot be complex")
+                    payload.append(int(bool(raw_value)) if dtype_name == "bool" else int(raw_value))
+            elif is_complex:
+                payload_key = "values"
+                payload = []
+                for index, raw_value in enumerate(raw_values):
+                    value = complex(raw_value)
+                    payload.append([
+                        encode(value.real, index, "real"),
+                        encode(value.imag, index, "imag"),
+                    ])
+            else:
+                payload_key = "values"
+                payload = []
+                for raw_value in raw_values:
+                    if isinstance(raw_value, complex):
+                        raise ValueError("real logcumsumexp input cannot be complex")
+                    payload.append(encode(float(raw_value), len(payload)))
+
+            axis_limit = max(len(shape), 1)
+            cases[name] = {
+                "dtype": dtype_name,
+                "shape": shape,
+                "layout": layout,
+                payload_key: payload,
+                "specials": specials,
+                "requests": [
+                    {"id": f"axis_{axis}", "axis": axis}
+                    for axis in range(-axis_limit - 1, axis_limit + 1)
+                ],
+            }
+
+        base = list(range(6))
+        add("dense", [2, 3], "identity", base)
+        add("transpose", [2, 3], "transpose", base)
+        add("offset", [2, 3], "offset_columns", base)
+        add("reverse", [2, 3], "reverse_both", base)
+        add("broadcast", [1, 3], "broadcast", base[:3])
+        add("cube", [2, 2, 3], "identity", base * 2)
+        add("scalar", [], "identity", [0])
+        add("empty", [2, 0, 3], "identity", [])
+
+        if dtype_name in supported_names:
+            add("zero_signs", [3], "identity", [-0.0, 0.0, -0.0])
+            add("large", [3], "identity", [1000.0, 999.0, -1000.0])
+            add(
+                "nonfinite", [4], "identity",
+                [float("-inf"), 1.0, float("inf"), float("nan")],
+            )
+            if is_complex:
+                add(
+                    "phases", [3], "identity",
+                    [complex(2, 7), complex(1, -8), complex(-2, 0.5)],
+                )
+                add(
+                    "complex_nonfinite", [3], "identity",
+                    [
+                        complex(float("-inf"), float("inf")),
+                        complex(1, 0),
+                        complex(float("inf"), -0.0),
+                    ],
+                )
+            for left_index, left in enumerate(real_specials):
+                for right_index, right in enumerate(real_specials):
+                    add(
+                        f"real_pair_{left_index}_{right_index}",
+                        [2],
+                        "identity",
+                        [left, right],
+                    )
+            if is_complex:
+                for left_index, left in enumerate(complex_specials):
+                    for right_index, right in enumerate(complex_specials):
+                        add(
+                            f"complex_pair_{left_index}_{right_index}",
+                            [2],
+                            "identity",
+                            [left, right],
+                        )
+    return inputs
+
+
+def _logcumsumexp_source(torch: Any, spec: dict[str, Any]) -> Any:
+    dtype_name = spec["dtype"]
+    dtype = getattr(torch, dtype_name)
+    if "words" in spec:
+        source = torch.tensor(spec["words"], dtype=dtype, device="cpu")
+    elif dtype_name in ("complex64", "complex128"):
+        source = torch.tensor(
+            [complex(real, imaginary) for real, imaginary in spec["values"]],
+            dtype=dtype,
+            device="cpu",
+        )
+    else:
+        source = torch.tensor(spec["values"], dtype=dtype, device="cpu")
+    source = source.reshape(spec["shape"])
+    for special in spec["specials"]:
+        value = {
+            "nan": float("nan"),
+            "+inf": float("inf"),
+            "-inf": float("-inf"),
+        }[special["value"]]
+        if dtype_name in ("complex64", "complex128"):
+            component = source.real if special["component"] == "real" else source.imag
+            component.reshape(-1)[special["index"]] = value
+        else:
+            source.reshape(-1)[special["index"]] = value
+    layout = spec["layout"]
+    if layout == "transpose":
+        return source.transpose(0, 1)
+    if layout == "offset_columns":
+        return torch.cat([source, source], dim=1)[:, 1:5]
+    if layout == "reverse_both":
+        return source.flip([0, 1])
+    if layout == "broadcast":
+        return source.expand(4, 3)
+    return source
+
+
+def _logcumsumexp_error_code(error: Exception, dtype_name: str) -> str | None:
+    if isinstance(error, IndexError):
+        return "invalid_axis"
+    if isinstance(error, RuntimeError) and dtype_name in {
+        "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+    }:
+        return "unsupported_dtype"
+    return None
+
+
+def _observe_logcumsumexp_request(
+    torch: Any,
+    source: Any,
+    dtype_name: str,
+    request: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    try:
+        output = torch.logcumsumexp(source, dim=request["axis"])
+    except (RuntimeError, IndexError) as error:
+        code = _logcumsumexp_error_code(error, dtype_name)
+        if code is None:
+            raise ValueError(f"unexpected logcumsumexp rejection for {label}: {error}") from error
+        return {"error": code}
+    return _observe_logsumexp_gradient_tensor(output)
+
+
+def logcumsumexp(torch: Any) -> dict[str, Any]:
+    """Observe actual PyTorch CPU logcumsumexp outputs and dtype/axis rejections."""
+    inputs = _logcumsumexp_raw_inputs()
+    expected: dict[str, dict[str, dict[str, Any]]] = {}
+    for dtype_name, profiles in inputs.items():
+        expected[dtype_name] = {}
+        for profile, spec in profiles.items():
+            source = _logcumsumexp_source(torch, spec)
+            expected[dtype_name][profile] = {
+                request["id"]: _observe_logcumsumexp_request(
+                    torch,
+                    source,
+                    dtype_name,
+                    request,
+                    f"{dtype_name}.{profile}.{request['id']}",
+                )
+                for request in spec["requests"]
+            }
+    return _case(
+        "tensor.logcumsumexp",
+        "api:torch",
+        inputs,
+        expected,
+        tolerance=1e-6,
+    )
+
+
 
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
@@ -4010,7 +4244,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
     complex_prod_dtype, indexed_extrema, paired_extrema, paired_extrema_gradient, aminmax,
-    logsumexp, logsumexp_gradient,
+    logsumexp, logsumexp_gradient, logcumsumexp,
 )
 
 

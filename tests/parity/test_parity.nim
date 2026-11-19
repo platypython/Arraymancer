@@ -1520,7 +1520,7 @@ suite "Pinned PyTorch conformance foundation":
     for caseData in fixtures["cases"]:
       if caseData["id"].getStr == "tensor.aminmax": aminmaxFixture = caseData
     doAssert aminmaxFixture.kind == JObject
-    check fixtures["cases"].len == 55
+    check fixtures["cases"].len == 56
     check aminmaxFixture["area"].getStr == "api:torch"
     check aminmaxFixture["atol"].getFloat == 0
     check aminmaxFixture["rtol"].getFloat == 0
@@ -1615,7 +1615,7 @@ suite "Pinned PyTorch conformance foundation":
     for caseData in fixtures["cases"]:
       if caseData["id"].getStr == "tensor.logsumexp": logsumexpFixture = caseData
     doAssert logsumexpFixture.kind == JObject
-    check fixtures["cases"].len == 55
+    check fixtures["cases"].len == 56
     check logsumexpFixture["area"].getStr == "api:torch"
     check logsumexpFixture["atol"].getFloat == 1e-6
     check logsumexpFixture["rtol"].getFloat == 1e-6
@@ -1675,7 +1675,7 @@ suite "Pinned PyTorch conformance foundation":
     for caseData in fixtures["cases"]:
       if caseData["id"].getStr == "autograd.logsumexp": gradientCase = caseData
     doAssert gradientCase.kind == JObject
-    check fixtures["cases"].len == 55
+    check fixtures["cases"].len == 56
     check gradientCase["area"].getStr == "api:autograd"
     check gradientCase["atol"].getFloat == 1e-6
     check gradientCase["rtol"].getFloat == 1e-6
@@ -1794,4 +1794,87 @@ suite "Pinned PyTorch conformance foundation":
 
     malformed = duplicate(fixtures)
     malformed["cases"][index]["expected"]["stable_float32"]["all_drop"]["extra"] = %true
+    expect ValueError: validateFixtureData(malformed, reference)
+
+  test "CPU logcumsumexp preserves wide prefixes, continuous phases and dispatch order":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var scanCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.logcumsumexp": scanCase = caseData
+    doAssert scanCase.kind == JObject
+    let actual = runCase(scanCase)
+    check compareObservations(scanCase["expected"], actual, 1e-6, 1e-6).len == 0
+    for dtype in ["float64", "complex128"]:
+      check compareObservations(scanCase["expected"][dtype], actual[dtype],
+        1e-12, 1e-12).len == 0
+    var outputs, rejections: int
+    for _, profiles in actual:
+      for _, requests in profiles:
+        for _, observation in requests:
+          if observation.hasKey("error"): inc rejections
+          else: inc outputs
+    check outputs == 1136
+    check rejections == 1514
+    for dtype in ["float32", "float64", "complex64", "complex128"]:
+      check actual[dtype]["transpose"]["axis_-1"]["shape"] == %*[3, 2]
+      check actual[dtype]["offset"]["axis_0"]["shape"] == %*[2, 4]
+      check actual[dtype]["broadcast"]["axis_1"]["shape"] == %*[4, 3]
+      check actual[dtype]["cube"]["axis_-3"]["shape"] == %*[2, 2, 3]
+      check actual[dtype]["empty"]["axis_1"]["shape"] == %*[2, 0, 3]
+      check actual[dtype]["scalar"]["axis_-1"]["shape"] == %*[]
+      check actual[dtype]["dense"]["axis_2"] == %*{"error": "invalid_axis"}
+    for dtype in ["float32", "float64"]:
+      check actual[dtype]["zero_signs"]["axis_0"]["negative_zero_indices"].len == 0
+      let large = actual[dtype]["large"]["axis_0"]["values"]
+      check large[1].getFloat > 1000.3
+      check large[1].getFloat < 1000.4
+    for dtype in ["complex64", "complex128"]:
+      let phases = actual[dtype]["phases"]["axis_0"]["values"]
+      check phases[0]["imag"].getFloat == 7.0
+      check phases[1]["imag"].getFloat > 6.0
+      check phases[1]["imag"].getFloat < 7.0
+    for dtype in ["bool", "int8", "int16", "int32", "int64", "uint8",
+                  "uint16", "uint32", "uint64"]:
+      check actual[dtype]["scalar"]["axis_0"] == %*{"error": "unsupported_dtype"}
+      check actual[dtype]["scalar"]["axis_1"] == %*{"error": "invalid_axis"}
+      check actual[dtype]["empty"]["axis_-1"] == %*{"error": "unsupported_dtype"}
+      check actual[dtype]["empty"]["axis_-4"] == %*{"error": "invalid_axis"}
+
+  test "Reject malformed logcumsumexp source and signed-zero observation contracts":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "tensor.logcumsumexp":
+        index = candidate
+    doAssert index >= 0
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["complex128"].delete("complex_pair_11_11")
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["float32"]["offset"]["layout"] = %"identity"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["float64"]["dense"]["requests"][0]["axis"] = %0
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["bool"]["scalar"]["axis_1"]["error"] =
+      %"unsupported_dtype"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["zero_signs"]["axis_0"]["negative_zero_indices"] =
+      %*[-1]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float64"]["offset"]["axis_0"]["shape"] =
+      %*[4, 2]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex64"]["phases"]["axis_0"]["extra"] =
+      %true
     expect ValueError: validateFixtureData(malformed, reference)
