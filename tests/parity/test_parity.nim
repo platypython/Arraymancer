@@ -855,6 +855,129 @@ suite "Pinned PyTorch conformance foundation":
     expect ValueError: validateFixtureData(malformed, reference)
 
 
+  test "CPU paired extrema autograd matches first-index PyTorch VJPs":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var caseIndex = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "autograd.paired_extrema":
+        caseIndex = index
+    doAssert caseIndex >= 0
+    let pairedGradientCase = fixtures["cases"][caseIndex]
+    let expected = pairedGradientCase["expected"]
+    check pairedGradientCase["area"].getStr == "api:autograd"
+    check pairedGradientCase["atol"].getFloat == 0
+    check pairedGradientCase["rtol"].getFloat == 0
+    check pairedGradientCase["inputs"].len == 11
+    for dtype in ["float32", "float64"]:
+      check expected[dtype].len == pairedGradientCase["inputs"].len
+      for name, spec in pairedGradientCase["inputs"]:
+        check expected[dtype][name].len == spec["axes"].len * 4 *
+          (spec["seed_kinds"].len + 1)
+
+    let actual = runCase(pairedGradientCase)
+    check compareObservations(expected, actual, 0, 0).len == 0
+
+    for dtype in ["float32", "float64"]:
+      let tieMinimum = actual[dtype]["ties"]["min_axis_1_drop_seed_finite"]
+      check tieMinimum["values"]["shape"] == %*[2]
+      check tieMinimum["indices"]["dtype"].getStr == "int64"
+      check tieMinimum["indices"]["values"] == %*[0, 2]
+      check tieMinimum["gradient"]["values"] == %*[-2.0, 0.0, 0.0, 0.0, 0.0, -1.0]
+      check tieMinimum["indices_require_grad"].kind == JBool
+      check not tieMinimum["indices_require_grad"].getBool
+
+      let tieMaximum = actual[dtype]["ties"]["max_axis_1_drop_seed_finite"]
+      check tieMaximum["indices"]["values"] == %*[2, 0]
+      check tieMaximum["gradient"]["values"] == %*[0.0, 0.0, -2.0, -1.0, 0.0, 0.0]
+      check actual[dtype]["ties"]["min_axis_-1_drop_seed_finite"] ==
+        tieMinimum
+
+      let negativeZeroGradient =
+        actual[dtype]["ties"]["min_axis_1_drop_seed_negative_zero"]["gradient"]
+      check negativeZeroGradient["negative_zero_indices"] == %*[0, 5]
+      let negativeZeroValues = negativeZeroGradient["values"]
+      for index in 0 ..< negativeZeroValues.len:
+        let value = negativeZeroValues[index]
+        if index in [0, 5]:
+          check isNegativeZero(value)
+        else:
+          check value.getFloat == 0.0
+          check not isNegativeZero(value)
+
+      let nonfiniteGradient =
+        actual[dtype]["ties"]["min_axis_1_drop_seed_nonfinite"]["gradient"]["values"]
+      check nonfiniteGradient[0].getStr == "+inf"
+      check nonfiniteGradient[5].getStr == "nan"
+      for index in [1, 2, 3, 4]:
+        check nonfiniteGradient[index].getFloat == 0.0
+        check not isNegativeZero(nonfiniteGradient[index])
+
+      let nanMinimum = actual[dtype]["nan_first"]["min_axis_1_drop_seed_finite"]
+      check nanMinimum["values"]["values"][0].getStr == "nan"
+      check nanMinimum["values"]["values"][1].getStr == "nan"
+      check nanMinimum["indices"]["values"] == %*[1, 0]
+      check nanMinimum["gradient"]["values"] == %*[0.0, -2.0, 0.0, -1.0, 0.0, 0.0]
+
+      let infiniteMinimum = actual[dtype]["infinities"]["min_axis_1_drop_seed_finite"]
+      check infiniteMinimum["indices"]["values"] == %*[0, 3]
+      let infiniteMaximum = actual[dtype]["infinities"]["max_axis_1_drop_seed_finite"]
+      check infiniteMaximum["indices"]["values"] == %*[3, 0]
+
+      let scalar = actual[dtype]["scalar"]["min_axis_-1_drop_seed_finite"]
+      check scalar["values"]["shape"] == %*[]
+      check scalar["indices"]["shape"] == %*[]
+      check scalar["indices"]["values"] == %*[0]
+      check scalar["values"]["values"][0].getStr == "nan"
+      check scalar["gradient"]["shape"] == %*[]
+      check scalar["gradient"]["values"] == %*[-2.0]
+
+      let empty = actual[dtype]["empty"]["min_axis_1_drop_seed_finite"]
+      check empty["values"]["shape"] == %*[0]
+      check empty["indices"]["shape"] == %*[0]
+      check empty["seed"]["shape"] == %*[0]
+      check empty["gradient"]["shape"] == %*[0, 3]
+      check empty["indices_require_grad"].getBool == false
+
+      check actual[dtype]["transpose"]["min_axis_0_drop_seed_finite"][
+        "gradient"]["shape"] == %*[3, 2]
+      check actual[dtype]["offset"]["min_axis_0_drop_seed_finite"][
+        "gradient"]["shape"] == %*[4, 2]
+      check actual[dtype]["reverse"]["min_axis_1_drop_seed_finite"][
+        "gradient"]["shape"] == %*[2, 3]
+      check actual[dtype]["broadcast"]["min_axis_0_drop_seed_finite"][
+        "gradient"]["shape"] == %*[2, 3]
+      check actual[dtype]["cube"]["min_axis_1_drop_seed_finite"][
+        "gradient"]["shape"] == %*[2, 2, 3]
+
+    var tieSplit = duplicate(expected)
+    let splitGradient: JsonNode =
+      tieSplit["float32"]["ties"]["min_axis_1_drop_seed_finite"]["gradient"]["values"]
+    splitGradient.elems[0] = %(-1.0)
+    splitGradient.elems[1] = %(-1.0)
+    check compareObservations(tieSplit, actual, 0, 0).len > 0
+
+    var leakedNonfinite = duplicate(expected)
+    let leakedValues: JsonNode =
+      leakedNonfinite["float32"]["ties"]["min_axis_1_drop_seed_nonfinite"]["gradient"]["values"]
+    leakedValues.elems[1] = %"nan"
+    check compareObservations(leakedNonfinite, actual, 0, 0).len > 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["expected"]["float32"]["ties"][
+      "min_axis_1_drop_seed_finite"]["indices"]["dtype"] = %"float32"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["expected"]["float32"]["ties"][
+      "min_axis_1_drop_seed_finite"]["indices"]["values"].elems[0] = %3
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][caseIndex]["expected"]["float32"]["ties"][
+      "min_axis_1_drop_seed_finite"]["indices_require_grad"] = %true
+    expect ValueError: validateFixtureData(malformed, reference)
+
+
   test "Shape differs even when flattened values match":
     let expected = %*{"result": {"shape": [2, 2], "values": [1.0, 2.0, 3.0, 4.0]}}
     let actual = %*{"result": {"shape": [4], "values": [1.0, 2.0, 3.0, 4.0]}}

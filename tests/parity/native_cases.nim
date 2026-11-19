@@ -1827,6 +1827,124 @@ proc extremaGradient(inputs: JsonNode): JsonNode =
   result["float32"] = extremaGradientDtype[float32](inputs)
   result["float64"] = extremaGradientDtype[float64](inputs)
 
+proc pairedExtremaGradientInput[T: SomeFloat](spec: JsonNode): Tensor[T] =
+  var source = indexedExtremaFloatTensor[T](spec["x"])
+  extremaSpecials(source, spec["nonfinite"])
+  case spec["layout"].getStr
+  of "transpose", "offset":
+    source = realDtypeLayout(source, spec["layout"].getStr)
+  of "reverse":
+    source = source[_, ^1..0|-1]
+  of "broadcast":
+    source = source.broadcast(2, 3)
+  of "identity": discard
+  else: raise newException(ValueError, "unknown paired extrema gradient input layout")
+  result = source
+
+
+proc pairedExtremaGradientSeed[T: SomeFloat](shape: Metadata, kind: string): Tensor[T] =
+  var count = 1
+  for dimension in shape: count *= dimension
+  if kind == "strided":
+    if shape.len notin [1, 2] or shape[^1] <= 0:
+      raise newException(ValueError, "invalid strided paired extrema gradient seed shape")
+    var backingShape = shape
+    backingShape[^1] *= 2
+    var backing = newTensorUninit[T](backingShape)
+    var raw = backing.unsafe_raw_offset
+    for index in 0 ..< backing.size: raw[index] = T(0)
+    let width = shape[^1]
+    for index in 0 ..< count:
+      let storageIndex =
+        if shape.len == 1:
+          index * 2 + 1
+        else:
+          (index div width) * (2 * width) + (index mod width) * 2 + 1
+      raw[storageIndex] = T(index mod 5 - 2)
+    if shape.len == 1:
+      result = backing[1..^1|2]
+    else:
+      result = backing[_, 1..^1|2]
+    return
+
+  result = newTensorUninit[T](shape)
+  var raw = result.unsafe_raw_offset
+  for index in 0 ..< count:
+    case kind
+    of "finite": raw[index] = T(index mod 5 - 2)
+    of "negative_zero": raw[index] = T(-0.0)
+    of "nonfinite": raw[index] = if index mod 2 == 0: T(Inf) else: T(NaN)
+    else: raise newException(ValueError, "unknown paired extrema gradient seed kind")
+
+
+proc pairedExtremaGradientInvalidSeed[T: SomeFloat](shape: Metadata): Tensor[T] =
+  var count = 1
+  for dimension in shape: count *= dimension
+  result = newTensorUninit[T](toMetadata(@[count + 1]))
+  var raw = result.unsafe_raw_offset
+  for index in 0 ..< result.size: raw[index] = T(0)
+
+
+proc pairedExtremaGradientObservation[T: SomeFloat](source: Tensor[T],
+    operation: string, axis: int, keepdim: bool, seedKind: string,
+    invalidSeed = false): JsonNode =
+  let context = newContext Tensor[T]
+  let x = context.variable(source, requires_grad = true)
+  let output =
+    if operation == "min":
+      x.minWithIndices(axis, keepdim = keepdim)
+    else:
+      x.maxWithIndices(axis, keepdim = keepdim)
+  if invalidSeed:
+    try:
+      output.values.backprop(pairedExtremaGradientInvalidSeed[T](output.values.value.shape))
+    except IndexDefect:
+      return %*{"error": "seed_shape_mismatch"}
+    except ValueError:
+      return %*{"error": "seed_shape_mismatch"}
+    raise newException(ValueError, "paired extrema accepted a mismatched gradient seed shape")
+  let seed = pairedExtremaGradientSeed[T](output.values.value.shape, seedKind)
+  output.values.backprop(seed)
+  result = %*{
+    "values": extremaGradientObservation(output.values.value),
+    "indices": tensorObservation(output.indices),
+    "seed": extremaGradientObservation(seed),
+    "gradient": extremaGradientObservation(x.grad),
+    "indices_require_grad": false,
+  }
+
+
+proc pairedExtremaGradientCase[T: SomeFloat](spec: JsonNode): JsonNode =
+  let source = pairedExtremaGradientInput[T](spec)
+  result = newJObject()
+  for operation in ["min", "max"]:
+    for axisNode in spec["axes"]:
+      let axis = axisNode.getInt
+      for keepdim in [false, true]:
+        let requestId = indexedExtremaRequestId(operation, %axis, keepdim)
+        for seedKindNode in spec["seed_kinds"]:
+          let seedKind = seedKindNode.getStr
+          result[requestId & "_seed_" & seedKind] =
+            pairedExtremaGradientObservation(source, operation, axis, keepdim, seedKind)
+        result[requestId & "_invalid_seed"] =
+          pairedExtremaGradientObservation(source, operation, axis, keepdim, "", invalidSeed = true)
+
+
+proc pairedExtremaGradientDtype[T: SomeFloat](inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    if spec["invalid_seed"]["kind"].getStr != "shape_mismatch":
+      raise newException(ValueError, "unknown paired extrema invalid seed kind")
+    result[name] = pairedExtremaGradientCase[T](spec)
+
+
+proc pairedExtremaGradient(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  result["float32"] = pairedExtremaGradientDtype[float32](inputs)
+  result["float64"] = pairedExtremaGradientDtype[float64](inputs)
+
+
+
 
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
@@ -1895,6 +2013,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
         "greater": tensorObservation(a >. 2.0), "isnan": tensorObservation(a.isNaN)}
   of "autograd.extrema":
     result = extremaGradient(inputs)
+  of "autograd.paired_extrema":
+    result = pairedExtremaGradient(inputs)
   of "autograd.product_gradient":
     for name, spec in inputs:
       var source = getTensor(spec["x"])

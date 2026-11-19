@@ -225,3 +225,36 @@ proc cpuExtremaGradient*[T: SomeFloat](input, extrema, seed: Tensor[T];
         groupCoordinates[index] = 0
         inputBase -= (input.shape[axis] - 1) * input.strides[axis]
         outputBase -= (input.shape[axis] - 1) * result.strides[axis]
+
+proc cpuPairedExtremaGradient*[T: SomeFloat](indices: Tensor[int64], seed: Tensor[T];
+    inputShape: Metadata; axis: int): Tensor[T] =
+  ## Scatter only the saved first index; inactive positions remain positive zero.
+  result = newTensor[T](inputShape)
+  if result.size == 0: return
+  let destination = result.storage.raw_buffer
+  let upstream = seed.storage.raw_buffer
+  if inputShape.len == 0:
+    destination[0] = upstream[seed.offset]
+    return
+  var inner = 1'u
+  for dimension in axis + 1 ..< inputShape.len:
+    inner *= uint(inputShape[dimension])
+  let length = uint(inputShape[axis])
+  let chosen = indices.storage.raw_buffer
+  let outer = uint(indices.size) div inner
+  if seed.is_C_contiguous:
+    for blockIndex in 0'u ..< outer:
+      let base = blockIndex * length * inner
+      let seedBase = blockIndex * inner
+      for column in 0'u ..< inner:
+        let group = seedBase + column
+        let target = base + uint(chosen[indices.offset + int(group)]) * inner + column
+        destination[target] = upstream[seed.offset + int(group)]
+  else:
+    for blockIndex in 0'u ..< outer:
+      let base = blockIndex * length * inner
+      let seedBase = blockIndex * inner
+      for column in 0'u ..< inner:
+        let group = seedBase + column
+        let target = base + uint(chosen[indices.offset + int(group)]) * inner + column
+        destination[target] = stridedSeedValue(seed, int(group))

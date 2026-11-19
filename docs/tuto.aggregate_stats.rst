@@ -208,7 +208,15 @@ Paired reductions support bool. Wider unsigned dtypes accept scalars and
 valid empty outputs, but reject positive-rank singleton dimensions.
 Axis and empty-reduced-axis errors take precedence over complex dtype rejection;
 complex inputs cannot produce paired outputs, including valid empty outputs.
-No paired autograd, Metal, output-buffer or low-precision overloads are provided.
+CPU float32/float64 ``Variable`` overloads return differentiable values and a
+plain, nondifferentiable int64 index tensor. Backward scatters each seed to
+the first selected index, rather than splitting ties as ``amin``/``amax`` do.
+Unselected gradients remain positive zero even with infinite, NaN or negative-zero
+seeds. Gradients own dense input-shaped storage for signed and broadcast views.
+Do not mutate the returned indices before backward. Retained graphs, explicit
+strided seeds and ``no_grad_mode`` follow the usual autograd contracts.
+Higher-order gradients, Metal, output-buffer and low-precision overloads remain
+unsupported.
 
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

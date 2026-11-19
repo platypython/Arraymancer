@@ -744,3 +744,57 @@ proc amax*[T: SomeFloat](a: Variable[Tensor[T]], axes: openArray[int];
     keepdim = false): Variable[Tensor[T]] =
   ## Maximum across distinct axes, with dtype-preserving tie-split seeded VJPs.
   extremaVariable(a, axes, keepdim, true)
+
+type PairedExtremaGate[T] {.final.} = ref object of Gate[Tensor[T]]
+  cachedIndices: Tensor[int64]
+  inputShape: Metadata
+  axis: int
+
+proc paired_extrema_backward_ag[T: SomeFloat](self: Gate[Tensor[T]];
+    payload: Payload[Tensor[T]]): SmallDiffs[Tensor[T]] =
+  let gate = PairedExtremaGate[T](self)
+  result = newDiffs[Tensor[T]](1)
+  result[0] = cpuPairedExtremaGradient(gate.cachedIndices,
+    payload.variable.grad, gate.inputShape, gate.axis)
+
+proc pairedExtremaVariable[T: SomeFloat](a: Variable[Tensor[T]], axis: int;
+    keepdim: bool; maximum: static[bool]):
+    tuple[values: Variable[Tensor[T]], indices: Tensor[int64]] =
+  let output =
+    when maximum: a.value.maxWithIndices(axis, keepdim)
+    else: a.value.minWithIndices(axis, keepdim)
+  new result.values
+  result.values.context = a.context
+  result.values.value = output.values
+  result.indices = output.indices
+  if a.is_grad_needed:
+    var gate: PairedExtremaGate[T]
+    new gate
+    gate.cachedIndices = result.indices
+    gate.inputShape = a.value.shape
+    gate.axis = if axis < 0: axis + max(a.value.rank, 1) else: axis
+    result.values.grad = zeros_like(output.values)
+    result.values.requires_grad = true
+    when maximum:
+      register_node("MaxWithIndices", gate, paired_extrema_backward_ag[T],
+        result.values, a)
+    else:
+      register_node("MinWithIndices", gate, paired_extrema_backward_ag[T],
+        result.values, a)
+
+proc minWithIndices*[T: SomeFloat](a: Variable[Tensor[T]], axis: int;
+    keepdim = false): tuple[values: Variable[Tensor[T]], indices: Tensor[int64]] =
+  ## CPU minimum values and nondifferentiable int64 first indices along an axis.
+  ## First-order backward scatters the seed only to each chosen logical position;
+  ## inactive gradients are +0 even for nonfinite/-0 seeds. Output and dense
+  ## input-shaped gradients own storage. Saved indices must not change before
+  ## backward. Scalar/negative axes and ``keepdim`` match the Tensor overload.
+  pairedExtremaVariable(a, axis, keepdim, false)
+
+proc maxWithIndices*[T: SomeFloat](a: Variable[Tensor[T]], axis: int;
+    keepdim = false): tuple[values: Variable[Tensor[T]], indices: Tensor[int64]] =
+  ## CPU maximum values and nondifferentiable int64 first indices along an axis.
+  ## Backward routes each seed to the first tie/NaN, without tie splitting or
+  ## nonfinite mask arithmetic. Saved indices must not change before backward;
+  ## signed/broadcast input views still receive independent dense gradients.
+  pairedExtremaVariable(a, axis, keepdim, true)

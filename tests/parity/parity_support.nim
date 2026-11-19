@@ -63,7 +63,7 @@ const
     "tensor.prod_dtype", "tensor.integer_output_dtype", "tensor.complex_scans",
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
     "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema", "tensor.indexed_extrema",
-    "tensor.paired_extrema"]
+    "tensor.paired_extrema", "autograd.paired_extrema"]
   RequiredCaseAreas: array[RequiredCaseIds.len, string] = [
     "api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
@@ -74,7 +74,8 @@ const
     "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch",
     "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
-    "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch", "api:torch"]
+    "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch", "api:torch",
+    "api:autograd"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -2576,6 +2577,195 @@ proc expectPairedExtremaExpected(expected, inputs: JsonNode) =
                   label & " index is outside its reduced dimension")
 
 
+const PairedExtremaGradientInputNames = [
+  "ties", "transpose", "reverse", "broadcast", "nan_first", "zero_ties",
+  "scalar", "empty", "cube", "offset", "infinities"]
+
+
+proc pairedExtremaGradientInputSpec(name: string): JsonNode =
+  case name
+  of "ties":
+    result = %*{
+      "x": {"shape": [2, 3], "values": [1, 1, 2, 3, 3, 0]},
+      "layout": "identity", "nonfinite": [], "axes": [1, -1],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite", "strided"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  of "transpose":
+    result = %*{
+      "x": {"shape": [2, 3], "values": [1, 1, 2, 3, 3, 0]},
+      "layout": "transpose", "nonfinite": [], "axes": [0, -2],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite", "strided"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  of "reverse":
+    result = %*{
+      "x": {"shape": [2, 3], "values": [1, 1, 2, 3, 3, 0]},
+      "layout": "reverse", "nonfinite": [], "axes": [1, -1],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite", "strided"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  of "broadcast":
+    result = %*{
+      "x": {"shape": [1, 3], "values": [1, 1, 2]},
+      "layout": "broadcast", "nonfinite": [], "axes": [1, -1, 0, -2],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite", "strided"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  of "nan_first":
+    result = %*{
+      "x": {"shape": [2, 3], "values": [0, 0, 0, 0, -1, 2]},
+      "layout": "identity",
+      "nonfinite": [
+        {"index": 1, "value": "nan"}, {"index": 2, "value": "nan"},
+        {"index": 3, "value": "nan"}],
+      "axes": [1, -1],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite", "strided"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  of "zero_ties":
+    result = %*{
+      "x": {"shape": [2, 3], "values": [-0.0, 0.0, -0.0, 0.0, -0.0, 0.0]},
+      "layout": "identity", "nonfinite": [], "axes": [1, -1],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite", "strided"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  of "scalar":
+    result = %*{
+      "x": {"shape": [], "values": [0]},
+      "layout": "identity", "nonfinite": [{"index": 0, "value": "nan"}],
+      "axes": [-1, 0],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  of "empty":
+    result = %*{
+      "x": {"shape": [0, 3], "values": []},
+      "layout": "identity", "nonfinite": [], "axes": [1, -1],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  of "cube":
+    result = %*{
+      "x": {"shape": [2, 2, 3], "values": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2]},
+      "layout": "identity", "nonfinite": [],
+      "axes": [1, -2, 0, -3, 2, -1],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  of "offset":
+    result = %*{
+      "x": {"shape": [3, 4], "values": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2]},
+      "layout": "offset", "nonfinite": [], "axes": [0, -2],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite", "strided"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  of "infinities":
+    result = %*{
+      "x": {"shape": [2, 4], "values": [0, 0, 0, 0, 0, 0, 0, 0]},
+      "layout": "identity",
+      "nonfinite": [
+        {"index": 0, "value": "-inf"}, {"index": 1, "value": "-inf"},
+        {"index": 3, "value": "+inf"}, {"index": 4, "value": "+inf"},
+        {"index": 6, "value": "+inf"}, {"index": 7, "value": "-inf"}],
+      "axes": [1, -1],
+      "seed_kinds": ["finite", "negative_zero", "nonfinite", "strided"],
+      "invalid_seed": {"kind": "shape_mismatch"}}
+  else:
+    invalid("unknown paired extrema gradient input " & name)
+
+
+proc pairedExtremaGradientSourceShape(spec: JsonNode): seq[int] =
+  for dimension in spec["x"]["shape"]: result.add dimension.getInt
+  case spec["layout"].getStr
+  of "transpose": swap(result[0], result[1])
+  of "offset": result = @[result[1], result[0] - 1]
+  of "broadcast": result = @[2, 3]
+  else: discard
+
+
+proc pairedExtremaGradientOutputShape(shape: seq[int], axis: int,
+                                      keepdim: bool): seq[int] =
+  let normalizedAxis = if shape.len == 0: 0
+    elif axis < 0: axis + shape.len
+    else: axis
+  for dimension, size in shape:
+    if dimension == normalizedAxis:
+      if keepdim: result.add 1
+    else:
+      result.add size
+
+
+proc expectPairedExtremaGradientInputs(inputs: JsonNode) =
+  require(inputs.kind == JObject and inputs.len == PairedExtremaGradientInputNames.len,
+    "paired extrema gradient inputs do not match required probe cases")
+  for name in PairedExtremaGradientInputNames:
+    let spec = field(inputs, name)
+    let expected = pairedExtremaGradientInputSpec(name)
+    let label = "paired extrema gradient input " & name
+    expectExtremaFields(spec, ["x", "layout", "nonfinite", "axes", "seed_kinds",
+      "invalid_seed"], label)
+    expectInputTensor(field(spec, "x"))
+    for key in ["x", "layout", "nonfinite", "axes", "seed_kinds", "invalid_seed"]:
+      require(field(spec, key) == expected[key], label & " " & key & " mismatch")
+    if name == "zero_ties":
+      let values = field(field(spec, "x"), "values")
+      for index in [0, 2, 4]:
+        require(isNegativeZeroValue(values[index]), label & " lost a negative-zero source")
+      for index in [1, 3, 5]:
+        require(values[index].getFloat == 0.0 and not isNegativeZeroValue(values[index]),
+          label & " changed a positive-zero source")
+
+
+proc expectPairedExtremaGradientObservation(observed: JsonNode, sourceShape,
+    outputShape: seq[int], axis: int, dtype, label: string, invalidSeed = false) =
+  if invalidSeed:
+    expectExtremaFields(observed, ["error"], label)
+    require(text(field(observed, "error"), label & " error") == "seed_shape_mismatch",
+      label & " invalid seed was not rejected for its shape")
+    return
+
+  expectExtremaFields(observed, ["values", "indices", "seed", "gradient",
+    "indices_require_grad"], label)
+  expectExtremaGradientTensor(field(observed, "values"), outputShape, dtype,
+    label & " values", true)
+  expectIntegerOutputTensor(field(observed, "indices"), outputShape, "int64")
+  let limit = if sourceShape.len == 0: 1
+    else: sourceShape[if axis < 0: axis + sourceShape.len else: axis]
+  for index in field(observed, "indices")["values"]:
+    require(index.getBiggestInt >= 0 and index.getBiggestInt < limit.int64,
+      label & " index is outside its reduced dimension")
+  require(field(observed, "indices_require_grad").kind == JBool and
+    not field(observed, "indices_require_grad").getBool,
+    label & " indices unexpectedly require gradients")
+  expectExtremaGradientTensor(field(observed, "seed"), outputShape, dtype,
+    label & " seed", true)
+  expectExtremaGradientTensor(field(observed, "gradient"), sourceShape, dtype,
+    label & " gradient", true)
+
+
+proc expectPairedExtremaGradientExpected(expected, inputs: JsonNode) =
+  expectExtremaFields(expected, ["float32", "float64"], "paired extrema gradient dtypes")
+  for dtype in ["float32", "float64"]:
+    let byCase = field(expected, dtype)
+    expectExtremaFields(byCase, PairedExtremaGradientInputNames,
+      "paired extrema gradient cases for " & dtype)
+    for name in PairedExtremaGradientInputNames:
+      let spec = inputs[name]
+      let byRequest = field(byCase, name)
+      let axes = field(spec, "axes")
+      let seedKinds = field(spec, "seed_kinds")
+      let requestCount = axes.len * 2 * 2 * (seedKinds.len + 1)
+      let label = "paired extrema gradient " & dtype & "." & name
+      require(byRequest.kind == JObject and byRequest.len == requestCount,
+        label & " request observations are incomplete")
+      let sourceShape = pairedExtremaGradientSourceShape(spec)
+      for operation in ["min", "max"]:
+        for axisNode in axes:
+          let axis = axisNode.getInt
+          for keepdim in [false, true]:
+            let requestId = indexedExtremaRequestId(operation, axisNode, keepdim)
+            let outputShape = pairedExtremaGradientOutputShape(sourceShape, axis, keepdim)
+            for seedKindNode in seedKinds:
+              let seedKind = seedKindNode.getStr
+              expectPairedExtremaGradientObservation(
+                field(byRequest, requestId & "_seed_" & seedKind), sourceShape,
+                outputShape, axis, dtype, label & "." & requestId & " seed " & seedKind)
+            expectPairedExtremaGradientObservation(
+              field(byRequest, requestId & "_invalid_seed"), sourceShape,
+              outputShape, axis, dtype, label & "." & requestId & " invalid seed",
+              invalidSeed = true)
+
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
   requireSameReference(data, reference, "fixtures")
@@ -2656,6 +2846,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 1e-7 and c["rtol"].getFloat == 1e-7,
         "extrema gradient fixtures require 1e-7 tolerances")
       expectExtremaGradientInputs(inputs)
+    of "autograd.paired_extrema":
+      require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
+        "paired extrema gradient fixtures require exact-value tolerances")
+      expectPairedExtremaGradientInputs(inputs)
     of "tensor.extrema":
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "extrema fixtures require exact-value tolerances")
@@ -2815,6 +3009,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
             expectTensor(field(byAxis, key), false, "int64")
     of "autograd.extrema":
       expectExtremaGradientExpected(expected, inputs)
+    of "autograd.paired_extrema":
+      expectPairedExtremaGradientExpected(expected, inputs)
     of "tensor.extrema":
       expectExtremaExpected(expected, inputs)
     of "tensor.indexed_extrema":

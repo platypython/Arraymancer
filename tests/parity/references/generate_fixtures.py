@@ -909,6 +909,182 @@ def extrema_gradient(torch: Any) -> dict[str, Any]:
 
     return _case("autograd.extrema", "api:autograd", inputs, expected, tolerance=1e-7)
 
+def paired_extrema_gradient(torch: Any) -> dict[str, Any]:
+    """Observe first-index VJPs from the CPU dimension min/max APIs."""
+    finite_seeds = ["finite", "negative_zero", "nonfinite", "strided"]
+    basic_seeds = ["finite", "negative_zero", "nonfinite"]
+    specs: dict[str, dict[str, Any]] = {
+        "ties": {
+            "x": {"shape": [2, 3], "values": [1, 1, 2, 3, 3, 0]},
+            "layout": "identity", "nonfinite": [], "axes": [1, -1],
+            "seed_kinds": finite_seeds,
+        },
+        "transpose": {
+            "x": {"shape": [2, 3], "values": [1, 1, 2, 3, 3, 0]},
+            "layout": "transpose", "nonfinite": [], "axes": [0, -2],
+            "seed_kinds": finite_seeds,
+        },
+        "reverse": {
+            "x": {"shape": [2, 3], "values": [1, 1, 2, 3, 3, 0]},
+            "layout": "reverse", "nonfinite": [], "axes": [1, -1],
+            "seed_kinds": finite_seeds,
+        },
+        "broadcast": {
+            "x": {"shape": [1, 3], "values": [1, 1, 2]},
+            "layout": "broadcast", "nonfinite": [], "axes": [1, -1, 0, -2],
+            "seed_kinds": finite_seeds,
+        },
+        "nan_first": {
+            "x": {"shape": [2, 3], "values": [0, 0, 0, 0, -1, 2]},
+            "layout": "identity",
+            "nonfinite": [
+                {"index": 1, "value": "nan"}, {"index": 2, "value": "nan"},
+                {"index": 3, "value": "nan"},
+            ],
+            "axes": [1, -1], "seed_kinds": finite_seeds,
+        },
+        "zero_ties": {
+            "x": {"shape": [2, 3], "values": [-0.0, 0.0, -0.0, 0.0, -0.0, 0.0]},
+            "layout": "identity", "nonfinite": [], "axes": [1, -1],
+            "seed_kinds": finite_seeds,
+        },
+        "scalar": {
+            "x": {"shape": [], "values": [0]},
+            "layout": "identity", "nonfinite": [{"index": 0, "value": "nan"}],
+            "axes": [-1, 0], "seed_kinds": basic_seeds,
+        },
+        "empty": {
+            "x": {"shape": [0, 3], "values": []},
+            "layout": "identity", "nonfinite": [], "axes": [1, -1],
+            "seed_kinds": basic_seeds,
+        },
+        "cube": {
+            "x": {"shape": [2, 2, 3], "values": [index % 3 for index in range(12)]},
+            "layout": "identity", "nonfinite": [],
+            "axes": [1, -2, 0, -3, 2, -1], "seed_kinds": basic_seeds,
+        },
+        "offset": {
+            "x": {"shape": [3, 4], "values": [index % 3 for index in range(12)]},
+            "layout": "offset", "nonfinite": [], "axes": [0, -2],
+            "seed_kinds": finite_seeds,
+        },
+        "infinities": {
+            "x": {"shape": [2, 4], "values": [0] * 8},
+            "layout": "identity",
+            "nonfinite": [
+                {"index": 0, "value": "-inf"}, {"index": 1, "value": "-inf"},
+                {"index": 3, "value": "+inf"}, {"index": 4, "value": "+inf"},
+                {"index": 6, "value": "+inf"}, {"index": 7, "value": "-inf"},
+            ],
+            "axes": [1, -1], "seed_kinds": finite_seeds,
+        },
+    }
+    inputs = {
+        name: {
+            "x": spec["x"],
+            "layout": spec["layout"],
+            "nonfinite": spec["nonfinite"],
+            "axes": spec["axes"],
+            "seed_kinds": spec["seed_kinds"],
+            "invalid_seed": {"kind": "shape_mismatch"},
+        }
+        for name, spec in specs.items()
+    }
+    expected: dict[str, Any] = {}
+    for dtype_name in ("float32", "float64"):
+        dtype = getattr(torch, dtype_name)
+        expected[dtype_name] = {}
+        for name, spec in specs.items():
+            source = torch.tensor(spec["x"]["values"], dtype=dtype, device="cpu").reshape(
+                spec["x"]["shape"]
+            )
+            for special in spec["nonfinite"]:
+                source.reshape(-1)[special["index"]] = _extrema_gradient_number(special["value"])
+            layout = spec["layout"]
+            if layout == "transpose":
+                source = source.transpose(0, 1)
+            elif layout == "offset":
+                source = source.transpose(0, 1)[:, 1:]
+            elif layout == "reverse":
+                source = source.flip([1])
+            elif layout == "broadcast":
+                source = source.expand(2, 3)
+
+            observations: dict[str, Any] = {}
+            for operation in ("min", "max"):
+                for axis in spec["axes"]:
+                    for keepdim in (False, True):
+                        request_id = (
+                            f"{operation}_axis_{axis}_{'keep' if keepdim else 'drop'}"
+                        )
+                        for seed_kind in spec["seed_kinds"]:
+                            leaf = source.detach().requires_grad_(True)
+                            pair = (
+                                torch.min(leaf, dim=axis, keepdim=keepdim)
+                                if operation == "min"
+                                else torch.max(leaf, dim=axis, keepdim=keepdim)
+                            )
+                            count = pair.values.numel()
+                            finite_values = [index % 5 - 2 for index in range(count)]
+                            if seed_kind == "finite":
+                                seed = torch.tensor(finite_values, dtype=dtype, device="cpu").reshape(
+                                    pair.values.shape
+                                )
+                            elif seed_kind == "negative_zero":
+                                seed = torch.full_like(pair.values, -0.0)
+                            elif seed_kind == "nonfinite":
+                                values = [
+                                    float("inf") if index % 2 == 0 else float("nan")
+                                    for index in range(count)
+                                ]
+                                seed = torch.tensor(values, dtype=dtype, device="cpu").reshape(
+                                    pair.values.shape
+                                )
+                            elif seed_kind == "strided":
+                                seed_storage = torch.zeros(count * 2 + 1, dtype=dtype, device="cpu")
+                                seed_storage[1::2] = torch.tensor(
+                                    finite_values, dtype=dtype, device="cpu"
+                                )
+                                seed = seed_storage[1::2].reshape(pair.values.shape)
+                            else:
+                                raise ValueError(f"unknown paired extrema seed kind: {seed_kind}")
+                            pair.values.backward(seed)
+                            if leaf.grad is None:
+                                raise ValueError("paired extrema backward did not populate the input gradient")
+                            observations[f"{request_id}_seed_{seed_kind}"] = {
+                                "values": _observe_extrema_gradient(pair.values),
+                                "indices": _observe_integer_output(pair.indices),
+                                "seed": _observe_extrema_gradient(seed),
+                                "gradient": _observe_extrema_gradient(leaf.grad),
+                                "indices_require_grad": pair.indices.requires_grad,
+                            }
+
+                        leaf = source.detach().requires_grad_(True)
+                        pair = (
+                            torch.min(leaf, dim=axis, keepdim=keepdim)
+                            if operation == "min"
+                            else torch.max(leaf, dim=axis, keepdim=keepdim)
+                        )
+                        invalid_seed = torch.zeros(
+                            pair.values.numel() + 1, dtype=dtype, device="cpu"
+                        )
+                        try:
+                            pair.values.backward(invalid_seed)
+                        except RuntimeError as error:
+                            message = str(error).lower()
+                            if "shape" not in message and "size" not in message:
+                                raise
+                            observations[f"{request_id}_invalid_seed"] = {
+                                "error": "seed_shape_mismatch"
+                            }
+                        else:
+                            raise ValueError("PyTorch accepted a mismatched paired extrema seed shape")
+            expected[dtype_name][name] = observations
+
+    return _case("autograd.paired_extrema", "api:autograd", inputs, expected, tolerance=0.0)
+
+
+
 
 def _extrema_gradient_number(value: int | float | str) -> float:
     if isinstance(value, str):
@@ -2896,7 +3072,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
-    complex_prod_dtype, indexed_extrema, paired_extrema,
+    complex_prod_dtype, indexed_extrema, paired_extrema, paired_extrema_gradient,
 )
 
 

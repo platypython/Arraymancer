@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add CPU float32/float64 seeded gradients for ``minWithIndices`` and
+  ``maxWithIndices``. Scatter only the first selected index, retaining inactive
+  positive zeros with nonfinite/negative-zero seeds; preserve scalar, empty,
+  signed/broadcast-view and retained-graph behavior without mask tensors.
 - Replace legacy two-output extrema helpers with ``minWithIndices`` and
   ``maxWithIndices``: independent values first, int64 indices second, squeezed
   defaults and optional retained dimensions. Preserve first NaN payloads and
