@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-## Provides first-index CPU extrema without allocating discarded value tensors.
+## Provides first-index CPU extrema with optional independent paired values.
 import std/complex
 import ../data_structure, ../init_cpu
 import ./p_accelerate, ./p_extrema
@@ -32,60 +32,130 @@ proc replacesExtremum[T](best, candidate: T; maximum: static[bool]): bool {.inli
 proc argContiguousSpan[T; I: SomeInteger](source: ptr UncheckedArray[T];
     base: I; length: uint; maximum: static[bool]): int64 {.inline.} =
   ## Vector-fold the value, then locate its first occurrence without scratch storage.
-  let best = extremaSpan(source, base, length, I(1), maximum)
-  when T is SomeFloat:
-    if best != best:
-      for index in 0'u ..< length - 1'u:
-        let candidate = source[base + I(index)]
-        if candidate != candidate: return int64(index)
-      return int64(length - 1'u)
-  for index in 0'u ..< length - 1'u:
-    if source[base + I(index)] == best: return int64(index)
-  # The folded value occurs in this nonempty span, so the last index must match.
-  result = int64(length - 1'u)
+  when T is bool:
+    for index in 0'u ..< length:
+      if source[base + I(index)] == maximum: return int64(index)
+    return 0
+  else:
+    let best = extremaSpan(source, base, length, I(1), maximum)
+    when T is SomeFloat:
+      if best != best:
+        for index in 0'u ..< length - 1'u:
+          let candidate = source[base + I(index)]
+          if candidate != candidate: return int64(index)
+        return int64(length - 1'u)
+    for index in 0'u ..< length - 1'u:
+      if source[base + I(index)] == best: return int64(index)
+    # The folded value occurs in this nonempty span, so the last index must match.
+    result = int64(length - 1'u)
 
 proc argStridedSpan[T](source: ptr UncheckedArray[T]; base, length, stride: int;
-                       maximum: static[bool]): int64 {.inline.} =
-  ## Keep logical index order when a reduced dimension walks signed strides.
-  if stride == 0: return 0
+    maximum: static[bool]; paired: static[bool] = false;
+    selected: ptr T = nil): int64 {.inline.} =
+  ## Keep logical index order and retain the selected source bits for paired outputs.
+  if stride == 0:
+    when paired: selected[] = source[base]
+    return 0
   if stride == 1:
-    return argContiguousSpan(source, base, uint(length), maximum)
-  var best = source[base]
-  var offset = base + stride
-  for index in 1 ..< length:
-    let candidate = source[offset]
-    if replacesExtremum(best, candidate, maximum):
-      best = candidate
-      result = int64(index)
-    offset += stride
+    result = argContiguousSpan(source, base, uint(length), maximum)
+    when paired: selected[] = source[base + int(result)]
+    return
+  when T is bool:
+    var offset = base
+    for index in 0 ..< length:
+      if source[offset] == maximum:
+        when paired: selected[] = maximum
+        return int64(index)
+      offset += stride
+    when paired: selected[] = not maximum
+    return 0
+  else:
+    var best = source[base]
+    var offset = base + stride
+    for index in 1 ..< length:
+      let candidate = source[offset]
+      if replacesExtremum(best, candidate, maximum):
+        best = candidate
+        result = int64(index)
+      offset += stride
+    when paired: selected[] = best
 
 proc argPackedAxis[T](output: ptr int64; input: ptr T;
-                      outer, length, inner: uint; maximum: static[bool]) =
-  ## Column tiles retain values on the stack and write only the requested indices.
+    outer, length, inner: uint; maximum: static[bool];
+    paired: static[bool] = false; values: ptr T = nil) =
+  ## Column tiles retain first-source values and allocate no intermediate tensors.
   withCompilerOptimHints()
   let source = cast[ptr UncheckedArray[T]](input)
   let destination {.restrict.} = cast[ptr UncheckedArray[int64]](output)
+  when paired:
+    let valueDestination {.restrict.} = cast[ptr UncheckedArray[T]](values)
   for group in 0'u ..< outer:
     let base = group * length * inner
     let target = group * inner
     if inner == 1:
       destination[target] = argContiguousSpan(source, base, length, maximum)
+      when paired:
+        valueDestination[target] = source[base + uint(destination[target])]
     else:
-      var column = 0'u
-      while column < inner:
-        let lanes = min(32'u, inner - column)
-        var best {.noinit.}: array[32, T]
-        for lane in 0'u ..< lanes:
-          best[lane] = source[base + column + lane]
-          destination[target + column + lane] = 0
-        for row in 1'u ..< length:
-          let rowBase = base + row * inner + column
-          for lane in 0'u ..< lanes:
-            let candidate = source[rowBase + lane]
-            if replacesExtremum(best[lane], candidate, maximum):
-              best[lane] = candidate
-              destination[target + column + lane] = int64(row)
-        column += lanes
+      when T is bool:
+        for column in 0'u ..< inner:
+          when paired:
+            destination[target + column] = argStridedSpan(source,
+              int(base + column), int(length), int(inner), maximum, true,
+              addr valueDestination[target + column])
+          else:
+            destination[target + column] = argStridedSpan(source,
+              int(base + column), int(length), int(inner), maximum)
+      else:
+        when sizeof(T) == 8:
+          type LaneIndex = uint64
+        else:
+          type LaneIndex = uint32
+        if uint64(length) > uint64(high(LaneIndex)):
+          for column in 0'u ..< inner:
+            when paired:
+              destination[target + column] = argStridedSpan(source,
+                int(base + column), int(length), int(inner), maximum, true,
+                addr valueDestination[target + column])
+            else:
+              destination[target + column] = argStridedSpan(source,
+                int(base + column), int(length), int(inner), maximum)
+          continue
+        template reduceColumns(lanes: static[int]) =
+          block:
+            var best {.noinit.}: array[lanes, T]
+            var bestIndices: array[lanes, LaneIndex]
+            for lane in 0 ..< lanes:
+              best[lane] = source[base + column + uint(lane)]
+            for row in 1'u ..< length:
+              let rowBase = base + row * inner + column
+              for lane in 0 ..< lanes:
+                let candidate = source[rowBase + uint(lane)]
+                when T is SomeFloat:
+                  # Unordered candidates win once; equal values retain source bits.
+                  when maximum:
+                    let replace = uint8(best[lane] == best[lane]) and
+                      uint8(not (candidate <= best[lane]))
+                  else:
+                    let replace = uint8(best[lane] == best[lane]) and
+                      uint8(not (candidate >= best[lane]))
+                  best[lane] = if replace != 0: candidate else: best[lane]
+                  bestIndices[lane] = if replace != 0: LaneIndex(row) else: bestIndices[lane]
+                else:
+                  if replacesExtremum(best[lane], candidate, maximum):
+                    best[lane] = candidate
+                    bestIndices[lane] = LaneIndex(row)
+            for lane in 0 ..< lanes:
+              destination[target + column + uint(lane)] = int64(bestIndices[lane])
+              when paired:
+                valueDestination[target + column + uint(lane)] = best[lane]
+        var column = 0'u
+        while column + 32'u <= inner:
+          reduceColumns(32)
+          column += 32'u
+        while column < inner:
+          reduceColumns(1)
+          inc column
 
 proc argLogicalWhole[T](source: ptr UncheckedArray[T]; shape, strides: Metadata;
                         length: int; maximum: static[bool]): int64 =
@@ -111,8 +181,9 @@ proc argLogicalWhole[T](source: ptr UncheckedArray[T]; shape, strides: Metadata;
 
 proc argLogicalAxis[T](output: ptr UncheckedArray[int64];
     source: ptr UncheckedArray[T]; shape, strides: Metadata;
-    axis, length, outputCount: int; maximum: static[bool]) =
-  ## Carry retained coordinates once per output instead of decoding each element.
+    axis, length, outputCount: int; maximum: static[bool];
+    paired: static[bool] = false; values: ptr T = nil) =
+  ## Carry retained coordinates once per output; paired values reuse the selected bits.
   var retainedShape, retainedStrides, coordinates: Metadata
   for dimension in 0 ..< shape.len:
     if dimension != axis:
@@ -120,8 +191,14 @@ proc argLogicalAxis[T](output: ptr UncheckedArray[int64];
       retainedStrides.add strides[dimension]
   coordinates.len = retainedShape.len
   var base = 0
+  when paired:
+    let valueDestination = cast[ptr UncheckedArray[T]](values)
   for group in 0 ..< outputCount:
-    output[group] = argStridedSpan(source, base, length, strides[axis], maximum)
+    when paired:
+      output[group] = argStridedSpan(source, base, length, strides[axis],
+        maximum, true, addr valueDestination[group])
+    else:
+      output[group] = argStridedSpan(source, base, length, strides[axis], maximum)
     var dimension = retainedShape.len - 1
     while dimension >= 0:
       inc coordinates[dimension]
@@ -200,3 +277,48 @@ proc reduceArgExtrema*[T: SomeNumber or bool or Complex](arg: Tensor[T];
         else:
           argLogicalAxis(destination, source, arg.shape, arg.strides,
             dimension, length, outputCount, maximum)
+
+proc reducePairedExtrema*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    axis: int; keepdim: bool;
+    maximum: static[bool]): tuple[values: Tensor[T], indices: Tensor[int64]] =
+  ## Validate before allocation, then fill only the two independent final outputs.
+  let dimension = normalizedExtremaAxis(arg.rank, axis)
+  let length = if arg.rank == 0: 1 else: arg.shape[dimension]
+  if length == 0:
+    raise newException(IndexDefect, "paired extrema empty reduced axis")
+  when T is Complex:
+    raise newException(ValueError, "paired extrema unsupported CPU dtype")
+  else:
+    var outputShape: Metadata
+    var outputCount = 1
+    for current in 0 ..< arg.rank:
+      if current == dimension:
+        if keepdim: outputShape.add 1
+      else:
+        outputShape.add arg.shape[current]
+        outputCount *= arg.shape[current]
+    when T is SomeUnsignedInt and sizeof(T) > 1:
+      # Paired reducers skip dispatch for scalars and empties, not singleton axes.
+      if arg.rank > 0 and outputCount != 0:
+        raise newException(ValueError, "paired extrema unsupported CPU dtype")
+    result.values = newTensorUninit[T](outputShape)
+    result.indices = newTensorUninit[int64](outputShape)
+    if outputCount == 0: return
+    let source = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+    let values = cast[ptr UncheckedArray[T]](result.values.get_offset_ptr)
+    let indices = cast[ptr UncheckedArray[int64]](result.indices.get_offset_ptr)
+    if arg.rank == 0:
+      values[0] = source[0]
+      indices[0] = 0
+      return
+    when not (T is SomeUnsignedInt and sizeof(T) > 1):
+      if arg.is_C_contiguous:
+        var outer = 1'u
+        var inner = 1'u
+        for current in 0 ..< dimension: outer *= uint(arg.shape[current])
+        for current in dimension + 1 ..< arg.rank: inner *= uint(arg.shape[current])
+        argPackedAxis(cast[ptr int64](indices), cast[ptr T](source),
+          outer, uint(length), inner, maximum, true, cast[ptr T](values))
+      else:
+        argLogicalAxis(indices, source, arg.shape, arg.strides,
+          dimension, length, outputCount, maximum, true, cast[ptr T](values))

@@ -1012,41 +1012,15 @@ proc std*[T: SomeFloat](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.} 
   returnEmptyIfEmpty(arg)
   sqrt(arg.variance(axis))
 
-proc argmax_max*[T: SomeNumber](arg: Tensor[T], axis: int): tuple[indices: Tensor[int], maxes: Tensor[T]] {.noinit.} =
-  ## Returns (indices, maxes) along an axis
-  ##
-  ## Input:
-  ##   - A tensor
-  ##   - An axis (int)
-  ##
-  ## Returns:
-  ##   - A tuple of tensors (indices, maxes) along this axis
-  ##
-  ## Example:
-  ##   .. code:: nim
-  ##     let a = [[0, 4, 7],
-  ##              [1, 9, 5],
-  ##              [3, 4, 1]].toTensor
-  ##     assert argmax_max(a, 0).indices == [[2, 1, 0]].toTensor
-  ##     assert argmax_max(a, 1).indices == [[2],
-  ##                                     [1],
-  ##                                     [1]].toTensor
-
-  if arg.size == 0:
-    result.indices.reset()
-    result.maxes.reset()
-
-  result.maxes = arg.atAxisIndex(axis, 0).clone()
-  result.indices = zeros[int](result.maxes.shape)
-
-  let dmax = result.maxes.unsafe_raw_buf()
-  let dind = result.indices.unsafe_raw_buf()
-
-  for i, subtensor in arg.enumerateAxis(axis, 1, arg.shape[axis] - 1):
-    for j, val in enumerate(subtensor):
-      if val > dmax[j]:
-        dind[j] = i
-        dmax[j] = val
+proc maxWithIndices*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int;
+    keepdim = false): tuple[values: Tensor[T], indices: Tensor[int64]] =
+  ## Return independent maximum values and int64 indices within ``axis``.
+  ## Values retain the input dtype and the first selected source bits.
+  ## First ties and NaNs win; negative axes and signed/broadcast views are valid.
+  ## The reduced axis is removed unless ``keepdim``; scalars remain rank zero.
+  ## Bool is supported. Complex inputs reject after axis/empty-axis validation.
+  ## Wider unsigned inputs support only scalars and valid empty outputs.
+  reducePairedExtrema(arg, axis, keepdim, true)
 
 proc argmax*[T: SomeNumber or bool or Complex](arg: Tensor[T];
     keepdim = false): Tensor[int64] =
@@ -1066,41 +1040,12 @@ proc argmax*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int;
   ## Wider unsigned inputs only support empty outputs or explicit singleton axes.
   reduceArgExtrema(arg, axis, false, keepdim, true)
 
-proc argmin_min*[T: SomeNumber](arg: Tensor[T], axis: int): tuple[indices: Tensor[int], mins: Tensor[T]] {.noinit.} =
-  ## Returns (indices, mins) along an axis
-  ##
-  ## Input:
-  ##   - A tensor
-  ##   - An axis (int)
-  ##
-  ## Returns:
-  ##   - A tuple of tensors (indices, min) along this axis
-  ##
-  ## Example:
-  ##   .. code:: nim
-  ##     let a = [[0, 4, 7],
-  ##              [1, 9, 5],
-  ##              [3, 4, 1]].toTensor
-  ##     assert argmin_min(a, 0).indices == [[0, 0, 2]].toTensor
-  ##     assert argmin_min(a, 1).indices == [[0],
-  ##                                     [0],
-  ##                                     [2]].toTensor
-
-  if arg.size == 0:
-    result.indices.reset()
-    result.mins.reset()
-
-  result.mins = arg.atAxisIndex(axis, 0).clone()
-  result.indices = zeros[int](result.mins.shape)
-
-  let dmin = result.mins.unsafe_raw_buf()
-  let dind = result.indices.unsafe_raw_buf()
-
-  for i, subtensor in arg.enumerateAxis(axis, 1, arg.shape[axis] - 1):
-    for j, val in enumerate(subtensor):
-      if val < dmin[j]:
-        dind[j] = i
-        dmin[j] = val
+proc minWithIndices*[T: SomeNumber or bool or Complex](arg: Tensor[T], axis: int;
+    keepdim = false): tuple[values: Tensor[T], indices: Tensor[int64]] =
+  ## Minimum counterpart of ``maxWithIndices``, with values first and indices second.
+  ## Both outputs have independent storage. First equal values/NaNs win, preserving
+  ## the selected signed-zero bits. Dtype, axis and empty-output rules match.
+  reducePairedExtrema(arg, axis, keepdim, false)
 
 proc argmin*[T: SomeNumber or bool or Complex](arg: Tensor[T];
     keepdim = false): Tensor[int64] =

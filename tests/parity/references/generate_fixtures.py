@@ -2822,6 +2822,67 @@ def indexed_extrema(torch: Any) -> dict[str, Any]:
             expected[dtype_name][case_name] = by_request
     return _case("tensor.indexed_extrema", "api:torch", inputs, expected, tolerance=0.0)
 
+def _observe_paired_extrema_request(
+    torch: Any,
+    source: Any,
+    dtype_name: str,
+    operation: str,
+    axis: int,
+    keepdim: bool,
+    label: str,
+) -> dict[str, Any]:
+    try:
+        output = getattr(torch, operation)(source, dim=axis, keepdim=keepdim)
+    except (IndexError, NotImplementedError, RuntimeError, TypeError) as error:
+        code = _indexed_extrema_error_code(error)
+        if code not in {"axis_out_of_range", "empty_reduced_axis", "unsupported_dtype"}:
+            raise ValueError(f"unexpected paired {operation} rejection for {label}: {error}") from error
+        return {"error": code}
+
+    if dtype_name in ("complex64", "complex128"):
+        raise ValueError(f"paired {operation} unexpectedly accepted complex input for {label}")
+    if str(output.values.dtype).removeprefix("torch.") != dtype_name:
+        raise ValueError(f"paired {operation} changed value dtype for {label}")
+    if str(output.indices.dtype).removeprefix("torch.") != "int64":
+        raise ValueError(f"paired {operation} returned non-int64 indices for {label}")
+    observe_values = _observe_extrema_gradient if dtype_name in ("float32", "float64") else _observe_integer_output
+    return {
+        "values": observe_values(output.values),
+        "indices": _observe_integer_output(output.indices),
+    }
+
+
+def paired_extrema(torch: Any) -> dict[str, Any]:
+    """Observe CPU min/max values and indices from the paired PyTorch dimension APIs."""
+    inputs: dict[str, dict[str, dict[str, Any]]] = {}
+    expected: dict[str, dict[str, dict[str, Any]]] = {}
+    for dtype_name in _INDEXED_EXTREMA_DTYPES:
+        inputs[dtype_name] = {}
+        expected[dtype_name] = {}
+        for case_name, raw_spec in _indexed_extrema_raw_cases(torch, dtype_name).items():
+            spec = _indexed_extrema_input(dtype_name, raw_spec)
+            spec["axes"] = [axis for axis in spec["axes"] if axis is not None]
+            inputs[dtype_name][case_name] = spec
+            source = _indexed_extrema_source(torch, dtype_name, spec)
+            by_request: dict[str, Any] = {}
+            for operation in ("min", "max"):
+                for axis in spec["axes"]:
+                    for keepdim in (False, True):
+                        request_id = _indexed_extrema_request_id(operation, axis, keepdim)
+                        by_request[request_id] = _observe_paired_extrema_request(
+                            torch,
+                            source,
+                            dtype_name,
+                            operation,
+                            axis,
+                            keepdim,
+                            f"{dtype_name}.{case_name}.{request_id}",
+                        )
+            expected[dtype_name][case_name] = by_request
+    return _case("tensor.paired_extrema", "api:torch", inputs, expected, tolerance=0.0)
+
+
+
 
 
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
@@ -2835,7 +2896,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
-    complex_prod_dtype, indexed_extrema,
+    complex_prod_dtype, indexed_extrema, paired_extrema,
 )
 
 

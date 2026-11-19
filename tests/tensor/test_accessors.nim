@@ -31,9 +31,11 @@ proc main() =
       for _ in singleton.axis(0, 1, 0): inc slices
       for _ in singleton.enumerateAxis(0, 1, 0): inc slices
       check slices == 0
-      let (indices, values) = singleton.argmax_max(0)
-      check indices == [0].toTensor
-      check values == [3].toTensor
+      let (values, indices) = singleton.maxWithIndices(0)
+      check indices.shape.len == 0
+      check indices.atContiguousIndex(0) == 0'i64
+      check values.shape.len == 0
+      check values.atContiguousIndex(0) == 3
 
     test "Accessing and setting a single value":
       var a = zeros[int](@[2,3,4])

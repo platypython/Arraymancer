@@ -188,8 +188,27 @@ Bool and complex inputs reject before dimension validation. Wider unsigned
 inputs reject except for explicit singleton dimensions on positive-rank
 inputs and valid empty outputs. Empty whole reductions and zero-length reduced
 axes reject. These index-only operations do not provide autograd or Metal
-implementations; legacy ``argmin_min``/``argmax_max`` retain their two-output
-contracts.
+implementations.
+
+``minWithIndices(values, axis)`` and ``maxWithIndices(values, axis)`` provide
+the two-output CPU reductions corresponding to PyTorch's ``min(dim=...)`` and
+``max(dim=...)``. The tuple contains ``values`` first and ``indices`` second.
+Both tensors are independent outputs, with the input dtype for values and
+int64 indices. Pass ``keepdim = true`` to retain the reduced dimension.
+The selected first element supplies the value bits, including signed zeros
+and NaN payloads.
+
+.. code-block:: nim
+
+  let (maxima, positions) = scores.maxWithIndices(1)
+  echo maxima     # [3.0, 5.0]
+  echo positions  # [0, 1]
+
+Paired reductions support bool. Wider unsigned dtypes accept scalars and
+valid empty outputs, but reject positive-rank singleton dimensions.
+Axis and empty-reduced-axis errors take precedence over complex dtype rejection;
+complex inputs cannot produce paired outputs, including valid empty outputs.
+No paired autograd, Metal, output-buffer or low-precision overloads are provided.
 
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

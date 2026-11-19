@@ -1696,6 +1696,85 @@ proc extremaGradientObservation[T: SomeFloat](t: Tensor[T]): JsonNode =
         if (cast[uint64](value) shr 63) == 1'u64: indices.add newJInt(index)
   result["negative_zero_indices"] = indices
 
+proc pairedExtremaErrorCode(message: string): string =
+  result = extremaErrorCode(message)
+  if result in ["axis_out_of_range", "empty_reduced_axis", "unsupported_dtype"]:
+    return
+  let normalized = message.toLowerAscii
+  if normalized.contains("axis out of range") or normalized.contains("dimension out of range"):
+    result = "axis_out_of_range"
+  elif normalized.contains("empty reduced axis") or normalized.contains("nonzero size"):
+    result = "empty_reduced_axis"
+  elif normalized.contains("unsupported") and normalized.contains("dtype"):
+    result = "unsupported_dtype"
+
+
+proc pairedExtremaObservation[T](source: Tensor[T], operation: string,
+    axis: JsonNode, keepdim: bool): JsonNode =
+  try:
+    let dimension = axis.getInt
+    let output =
+      if operation == "min":
+        source.minWithIndices(dimension, keepdim = keepdim)
+      else:
+        source.maxWithIndices(dimension, keepdim = keepdim)
+    result = newJObject()
+    when T is Complex[float32] or T is Complex[float64]:
+      raise newException(ValueError, "paired extrema unexpectedly accepted complex input")
+    elif T is SomeFloat:
+      result["values"] = extremaGradientObservation(output.values)
+    else:
+      result["values"] = tensorObservation(output.values)
+    result["indices"] = tensorObservation(output.indices)
+  except IndexDefect as error:
+    let code = pairedExtremaErrorCode(error.msg)
+    if code notin ["axis_out_of_range", "empty_reduced_axis", "unsupported_dtype"]:
+      raise
+    result = %*{"error": code}
+  except ValueError as error:
+    let code = pairedExtremaErrorCode(error.msg)
+    if code notin ["axis_out_of_range", "empty_reduced_axis", "unsupported_dtype"]:
+      raise
+    result = %*{"error": code}
+
+
+proc pairedExtremaCase[T](spec: JsonNode): JsonNode =
+  let source = indexedExtremaInputTensor[T](spec)
+  result = newJObject()
+  for operation in ["min", "max"]:
+    for axis in spec["axes"]:
+      for keepdim in [false, true]:
+        let requestId = indexedExtremaRequestId(operation, axis, keepdim)
+        result[requestId] = pairedExtremaObservation(source, operation, axis, keepdim)
+
+
+proc pairedExtremaDtype[T](inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = pairedExtremaCase[T](spec)
+
+
+proc pairedExtrema(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for dtype, cases in inputs:
+    result[dtype] = case dtype
+      of "bool": pairedExtremaDtype[bool](cases)
+      of "int8": pairedExtremaDtype[int8](cases)
+      of "int16": pairedExtremaDtype[int16](cases)
+      of "int32": pairedExtremaDtype[int32](cases)
+      of "int64": pairedExtremaDtype[int64](cases)
+      of "uint8": pairedExtremaDtype[uint8](cases)
+      of "uint16": pairedExtremaDtype[uint16](cases)
+      of "uint32": pairedExtremaDtype[uint32](cases)
+      of "uint64": pairedExtremaDtype[uint64](cases)
+      of "float32": pairedExtremaDtype[float32](cases)
+      of "float64": pairedExtremaDtype[float64](cases)
+      of "complex64": pairedExtremaDtype[Complex[float32]](cases)
+      of "complex128": pairedExtremaDtype[Complex[float64]](cases)
+      else: raise newException(ValueError, "unsupported paired extrema input dtype")
+
+
+
 proc extremaGradientCase[T: SomeFloat](spec: JsonNode): JsonNode =
   let source = extremaGradientInput[T](spec)
   result = newJArray()
@@ -1764,6 +1843,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = extrema(inputs)
   of "tensor.indexed_extrema":
     result = indexedExtrema(inputs)
+  of "tensor.paired_extrema":
+    result = pairedExtrema(inputs)
   of "tensor.integer_output_dtype":
     result = integerOutputDtype(inputs)
   of "tensor.mean_dtype":

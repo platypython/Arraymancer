@@ -760,6 +760,101 @@ suite "Pinned PyTorch conformance foundation":
     expect ValueError: validateFixtureData(malformed, reference)
 
 
+  test "CPU paired extrema match the complete PyTorch probe contract":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var pairedCaseIndex = -1
+    for index in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][index]["id"].getStr == "tensor.paired_extrema":
+        pairedCaseIndex = index
+    doAssert pairedCaseIndex >= 0
+    let pairedCase = fixtures["cases"][pairedCaseIndex]
+    let expected = pairedCase["expected"]
+    check pairedCase["area"].getStr == "api:torch"
+    check pairedCase["atol"].getFloat == 0
+    check pairedCase["rtol"].getFloat == 0
+    check expected.len == 13
+    for dtype, inputCases in pairedCase["inputs"]:
+      check expected[dtype].len == inputCases.len
+      for name, spec in inputCases:
+        check expected[dtype][name].len == spec["axes"].len * 4
+
+    let actual = runCase(pairedCase)
+    check compareObservations(expected, actual, 0, 0).len == 0
+
+    check expected["float32"]["ties"]["min_axis_0_drop"]["values"]["values"] ==
+      %*[1.0, 1.0, 3.0]
+    check expected["float32"]["ties"]["min_axis_0_drop"]["indices"]["values"] == %*[1, 0, 0]
+    check expected["float32"]["ties"]["max_axis_0_drop"]["values"]["values"] ==
+      %*[2.0, 3.0, 3.0]
+    check expected["float32"]["ties"]["max_axis_0_drop"]["indices"]["values"] == %*[0, 1, 0]
+    check expected["float32"]["nan_first"]["min_axis_1_drop"]["values"]["values"][0].getStr == "nan"
+    check expected["float32"]["nan_first"]["min_axis_1_drop"]["indices"]["values"] == %*[1, 0]
+    check expected["float32"]["zero_ties"]["min_axis_0_drop"]["values"][
+      "negative_zero_indices"] == %*[0, 2]
+    check actual["float32"]["zero_ties"]["min_axis_0_drop"]["values"][
+      "negative_zero_indices"] == %*[0, 2]
+    check expected["bool"]["ties"]["min_axis_0_drop"]["values"]["values"] == %*[true, true, true]
+    check expected["bool"]["ties"]["min_axis_0_drop"]["indices"]["values"] == %*[0, 0, 0]
+
+    check expected["uint64"]["integer_bounds"]["min_axis_0_drop"]["error"].getStr ==
+      "unsupported_dtype"
+    check expected["uint64"]["integer_bounds"]["max_axis_0_drop"]["error"].getStr ==
+      "unsupported_dtype"
+    check expected["uint64"]["scalar"]["max_axis_0_drop"]["values"][
+      "word_encoding"].getStr == "signed_twos_complement"
+    check expected["uint64"]["scalar"]["max_axis_0_drop"]["values"]["values"] == %*[3]
+    check expected["uint64"]["scalar"]["max_axis_0_drop"]["indices"]["values"] == %*[0]
+    check expected["uint16"]["scalar"]["min_axis_0_drop"]["values"]["shape"] == %*[]
+    check expected["uint16"]["scalar"]["min_axis_0_drop"]["indices"]["values"] == %*[0]
+    check expected["uint16"]["singleton"]["min_axis_0_drop"]["error"].getStr ==
+      "unsupported_dtype"
+    check expected["uint16"]["empty_outer"]["min_axis_0_drop"]["error"].getStr ==
+      "empty_reduced_axis"
+    check expected["uint16"]["empty_outer"]["max_axis_1_drop"]["values"]["shape"] == %*[0]
+    check expected["uint16"]["empty_outer"]["max_axis_1_drop"]["indices"]["values"].len == 0
+    check expected["complex64"]["ties"]["min_axis_2_drop"]["error"].getStr ==
+      "axis_out_of_range"
+    check expected["complex64"]["empty_reduced"]["max_axis_1_keep"]["error"].getStr ==
+      "empty_reduced_axis"
+    check expected["complex64"]["empty_outer"]["min_axis_1_drop"]["error"].getStr ==
+      "unsupported_dtype"
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][pairedCaseIndex]["expected"]["float32"]["ties"].delete(
+      "min_axis_0_drop")
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][pairedCaseIndex]["expected"]["float32"]["ties"][
+      "min_axis_0_drop"]["indices"]["dtype"] = %"float32"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][pairedCaseIndex]["expected"]["float32"]["ties"][
+      "min_axis_0_drop"]["values"]["shape"] = %*[2]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][pairedCaseIndex]["expected"]["float32"]["ties"][
+      "min_axis_0_drop"]["indices"]["values"].elems[0] = %2
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][pairedCaseIndex]["expected"]["float32"]["zero_ties"][
+      "min_axis_0_drop"]["values"]["negative_zero_indices"].elems[0] = %1
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][pairedCaseIndex]["expected"]["complex64"]["empty_reduced"][
+      "max_axis_1_keep"]["error"] = %"unsupported_dtype"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][pairedCaseIndex]["inputs"]["float32"]["ties"][
+      "axes"].elems[0] = newJNull()
+    expect ValueError: validateFixtureData(malformed, reference)
+
+
   test "Shape differs even when flattened values match":
     let expected = %*{"result": {"shape": [2, 2], "values": [1.0, 2.0, 3.0, 4.0]}}
     let actual = %*{"result": {"shape": [4], "values": [1.0, 2.0, 3.0, 4.0]}}

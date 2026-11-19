@@ -62,7 +62,8 @@ const
     "tensor.mean_dtype", "tensor.sum_dtype", "tensor.cumsum_dtype", "tensor.cumprod_dtype",
     "tensor.prod_dtype", "tensor.integer_output_dtype", "tensor.complex_scans",
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
-    "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema", "tensor.indexed_extrema"]
+    "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema", "tensor.indexed_extrema",
+    "tensor.paired_extrema"]
   RequiredCaseAreas: array[RequiredCaseIds.len, string] = [
     "api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
@@ -73,7 +74,7 @@ const
     "api:autograd", "api:autograd", "api:autograd", "api:torch", "api:torch",
     "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
-    "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch"]
+    "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch", "api:torch"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -2479,6 +2480,102 @@ proc expectExtremaGradientExpected(expected, inputs: JsonNode) =
           label & " gradient", true)
 
 
+proc expectPairedExtremaInputs(inputs: JsonNode) =
+  require(inputs.kind == JObject and inputs.len == IndexedExtremaDtypeNames.len,
+    "paired extrema inputs do not match required dtypes")
+  var indexedInputs = newJObject()
+  for dtype in IndexedExtremaDtypeNames:
+    let cases = field(inputs, dtype)
+    let caseNames = indexedExtremaCaseNames(dtype)
+    require(cases.kind == JObject and cases.len == caseNames.len,
+      "paired extrema cases do not match required coverage for " & dtype)
+    var indexedCases = newJObject()
+    for name in caseNames:
+      let spec = field(cases, name)
+      let axes = field(spec, "axes")
+      require(axes.kind == JArray, "paired extrema axes must be an array")
+      var indexedAxes = newJArray()
+      indexedAxes.add newJNull()
+      for axis in axes:
+        require(axis.kind == JInt, "paired extrema axes must omit whole-reduction null")
+        indexedAxes.add axis
+      var indexedSpec = newJObject()
+      for key, value in spec:
+        if key != "axes": indexedSpec[key] = value
+      indexedSpec["axes"] = indexedAxes
+      indexedCases[name] = indexedSpec
+    indexedInputs[dtype] = indexedCases
+  expectIndexedExtremaInputs(indexedInputs)
+
+
+proc pairedExtremaExpectedError(dtype: string, shape: seq[int], axis: JsonNode): string =
+  let rank = shape.len
+  let value = axis.getInt
+  let axisLimit = max(1, rank)
+  if value < -axisLimit or value >= axisLimit:
+    return "axis_out_of_range"
+  if rank > 0:
+    let normalizedAxis = if value < 0: value + rank else: value
+    if shape[normalizedAxis] == 0:
+      return "empty_reduced_axis"
+  if dtype in ["complex64", "complex128"]:
+    return "unsupported_dtype"
+  if dtype in ["uint16", "uint32", "uint64"]:
+    if rank == 0:
+      return ""
+    for dimension in shape:
+      if dimension == 0:
+        return ""
+    return "unsupported_dtype"
+
+
+proc expectPairedExtremaValueTensor(node: JsonNode, shape: seq[int],
+                                    dtype, label: string) =
+  if dtype in ["float32", "float64"]:
+    expectExtremaGradientTensor(node, shape, dtype, label, true)
+  else:
+    expectIntegerOutputTensor(node, shape, dtype)
+
+
+proc expectPairedExtremaExpected(expected, inputs: JsonNode) =
+  expectExtremaFields(expected, IndexedExtremaDtypeNames, "paired extrema dtypes")
+  for dtype in IndexedExtremaDtypeNames:
+    let byCase = field(expected, dtype)
+    let caseNames = indexedExtremaCaseNames(dtype)
+    expectExtremaFields(byCase, caseNames, "paired extrema cases for " & dtype)
+    for name in caseNames:
+      let spec = inputs[dtype][name]
+      let axes = field(spec, "axes")
+      let byRequest = field(byCase, name)
+      require(byRequest.kind == JObject and byRequest.len == axes.len * 4,
+        "paired extrema request observations are incomplete for " & dtype & "." & name)
+      let shape = indexedExtremaLogicalShape(indexedExtremaInputShape(name),
+        indexedExtremaInputLayout(name))
+      for operation in ["min", "max"]:
+        for axis in axes:
+          for keepdim in [false, true]:
+            let requestId = indexedExtremaRequestId(operation, axis, keepdim)
+            let observed = field(byRequest, requestId)
+            let label = "paired extrema " & dtype & "." & name & "." & requestId
+            let expectedError = pairedExtremaExpectedError(dtype, shape, axis)
+            if expectedError.len > 0:
+              expectExtremaFields(observed, ["error"], label)
+              require(text(field(observed, "error"), label & " error") == expectedError,
+                label & " error precedence mismatch")
+            else:
+              expectExtremaFields(observed, ["values", "indices"], label)
+              let outputShape = indexedExtremaOutputShape(shape, axis, keepdim)
+              expectPairedExtremaValueTensor(field(observed, "values"), outputShape,
+                dtype, label & " values")
+              expectIntegerOutputTensor(field(observed, "indices"), outputShape, "int64")
+              let value = axis.getInt
+              let limit = if shape.len == 0: 1
+                else: shape[if value < 0: value + shape.len else: value]
+              for index in field(observed, "indices")["values"]:
+                require(index.getBiggestInt >= 0 and index.getBiggestInt < limit.int64,
+                  label & " index is outside its reduced dimension")
+
+
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
   requireSameReference(data, reference, "fixtures")
@@ -2567,6 +2664,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "indexed extrema fixtures require exact-value tolerances")
       expectIndexedExtremaInputs(inputs)
+    of "tensor.paired_extrema":
+      require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
+        "paired extrema fixtures require exact-value tolerances")
+      expectPairedExtremaInputs(inputs)
     of "tensor.integer_reductions":
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "integer reduction fixtures require exact-value tolerances")
@@ -2718,6 +2819,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectExtremaExpected(expected, inputs)
     of "tensor.indexed_extrema":
       expectIndexedExtremaExpected(expected, inputs)
+    of "tensor.paired_extrema":
+      expectPairedExtremaExpected(expected, inputs)
     of "tensor.integer_output_dtype":
       expectIntegerOutputExpected(expected, inputs)
     of "tensor.float64_reductions":

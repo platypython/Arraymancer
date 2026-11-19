@@ -1,6 +1,12 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Replace legacy two-output extrema helpers with ``minWithIndices`` and
+  ``maxWithIndices``: independent values first, int64 indices second, squeezed
+  defaults and optional retained dimensions. Preserve first NaN payloads and
+  signed-zero ties across packed and signed/broadcast views.
+  Support bool and pinned scalar/empty unsigned exceptions; validate axes
+  before unsupported complex dtypes.
 - Return independent int64 CPU ``argmin``/``argmax`` indices, removing reduced
   dimensions by default. Support whole reductions, negative axes and ``keepdim``;
   select first ties and NaNs in logical order without discarded value tensors.
