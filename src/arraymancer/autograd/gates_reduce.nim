@@ -16,7 +16,8 @@ import  ../private/ast_utils,
         ../tensor,
         ./autograd_common,
         ./private/p_extrema_gradient,
-        sequtils
+        ./private/p_logsumexp_gradient,
+        std/[complex, sequtils]
 when defined(macosx) and defined(arm64):
   import ../tensor/private/p_accelerate
 
@@ -798,3 +799,63 @@ proc maxWithIndices*[T: SomeFloat](a: Variable[Tensor[T]], axis: int;
   ## nonfinite mask arithmetic. Saved indices must not change before backward;
   ## signed/broadcast input views still receive independent dense gradients.
   pairedExtremaVariable(a, axis, keepdim, true)
+
+type LogsumexpGate[T] {.final.} = ref object of Gate[Tensor[T]]
+  cachedInput, cachedNormalizer: Tensor[T]
+  reduced: Metadata
+
+proc logsumexp_backward_ag[T: SomeFloat or Complex](self: Gate[Tensor[T]];
+    payload: Payload[Tensor[T]]): SmallDiffs[Tensor[T]] =
+  let gate = LogsumexpGate[T](self)
+  result = newDiffs[Tensor[T]](1)
+  result[0] = cpuLogsumexpGradient(gate.cachedInput, gate.cachedNormalizer,
+    payload.variable.grad, gate.reduced)
+
+proc logsumexpVariable[T: SomeFloat or Complex](a: Variable[Tensor[T]];
+    axes: openArray[int]; whole: static[bool]; keepdim: bool): Variable[Tensor[T]] =
+  new result
+  result.context = a.context
+  when whole:
+    result.value = a.value.logsumexp(keepdim)
+  else:
+    result.value = a.value.logsumexp(axes, keepdim)
+  if a.is_grad_needed:
+    var gate: LogsumexpGate[T]
+    new gate
+    gate.cachedInput = a.value
+    gate.cachedNormalizer = result.value
+    gate.reduced.len = a.value.rank
+    when whole:
+      for axis in 0 ..< a.value.rank: gate.reduced[axis] = 1
+    else:
+      if axes.len == 0:
+        for axis in 0 ..< a.value.rank: gate.reduced[axis] = 1
+      elif a.value.rank > 0:
+        for axis in axes:
+          let normalized = if axis < 0: axis + a.value.rank else: axis
+          gate.reduced[normalized] = 1
+    result.grad = zeros_like(result.value)
+    result.requires_grad = true
+    register_node("Logsumexp", gate, logsumexp_backward_ag[T], result, a)
+
+proc logsumexp*[T: SomeFloat or Complex](a: Variable[Tensor[T]];
+    keepdim = false): Variable[Tensor[T]] =
+  ## Stable CPU float32/64 and complex64/128 reduction to a scalar by default.
+  ## First-order backward computes seed * conj(exp(input - rounded output)),
+  ## with one independent dense input-shaped gradient. Saved input and output
+  ## storage must not be mutated before backward. ``keepdim`` retains all axes.
+  logsumexpVariable(a, [], true, keepdim)
+
+proc logsumexp*[T: SomeFloat or Complex](a: Variable[Tensor[T]]; axis: int;
+    keepdim = false): Variable[Tensor[T]] =
+  ## Stable logarithmic reduction along a signed axis, with seeded first-order VJPs.
+  ## Signed/offset/broadcast inputs and seeds are read without conversion tensors.
+  ## Scalar/empty rules and independent output storage match Tensor ``logsumexp``.
+  logsumexpVariable(a, [axis], false, keepdim)
+
+proc logsumexp*[T: SomeFloat or Complex](a: Variable[Tensor[T]];
+    axes: openArray[int]; keepdim = false): Variable[Tensor[T]] =
+  ## Reduce distinct signed axes; explicit empty lists retain the Tensor contract.
+  ## Gradients use the rounded forward result, not an unrounded softmax.
+  ## This CPU API does not provide higher-order, Metal or output-buffer overloads.
+  logsumexpVariable(a, axes, false, keepdim)

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 ## Exercises portable conformance comparisons, native matches and strict coverage policy.
-import std/[json, unittest]
+import std/[json, math, unittest]
 import ./[parity_support, native_cases, run_parity]
 
 proc duplicate(node: JsonNode): JsonNode = parseJson($node)
@@ -1520,7 +1520,7 @@ suite "Pinned PyTorch conformance foundation":
     for caseData in fixtures["cases"]:
       if caseData["id"].getStr == "tensor.aminmax": aminmaxFixture = caseData
     doAssert aminmaxFixture.kind == JObject
-    check fixtures["cases"].len == 54
+    check fixtures["cases"].len == 55
     check aminmaxFixture["area"].getStr == "api:torch"
     check aminmaxFixture["atol"].getFloat == 0
     check aminmaxFixture["rtol"].getFloat == 0
@@ -1615,7 +1615,7 @@ suite "Pinned PyTorch conformance foundation":
     for caseData in fixtures["cases"]:
       if caseData["id"].getStr == "tensor.logsumexp": logsumexpFixture = caseData
     doAssert logsumexpFixture.kind == JObject
-    check fixtures["cases"].len == 54
+    check fixtures["cases"].len == 55
     check logsumexpFixture["area"].getStr == "api:torch"
     check logsumexpFixture["atol"].getFloat == 1e-6
     check logsumexpFixture["rtol"].getFloat == 1e-6
@@ -1668,6 +1668,98 @@ suite "Pinned PyTorch conformance foundation":
     check actual["float32"]["axes_0_-2_drop"] == %*{"error": "duplicate_axes"}
     check actual["float32"]["axis_2_drop"] == %*{"error": "invalid_axis"}
     check actual["scalar_negative_zero"]["axis_1_drop"] == %*{"error": "invalid_axis"}
+
+  test "CPU logsumexp seeded VJP parity covers views, dtypes, and edge cases":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var gradientCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "autograd.logsumexp": gradientCase = caseData
+    doAssert gradientCase.kind == JObject
+    check fixtures["cases"].len == 55
+    check gradientCase["area"].getStr == "api:autograd"
+    check gradientCase["atol"].getFloat == 1e-6
+    check gradientCase["rtol"].getFloat == 1e-6
+    check gradientCase["inputs"].len == 4
+    for dtype in ["float32", "float64", "complex64", "complex128"]:
+      check gradientCase["inputs"].hasKey(dtype)
+      check gradientCase["inputs"][dtype].len == 12
+      for name in ["dense", "multi_axes", "cube", "transpose", "offset", "reverse",
+                   "broadcast", "nonfinite", "scalar", "empty",
+                   "rounded_forward", "complex_phase"]:
+        check gradientCase["inputs"][dtype].hasKey(name)
+
+    let actual = runCase(gradientCase)
+    check compareObservations(gradientCase["expected"], actual,
+      gradientCase["atol"].getFloat, gradientCase["rtol"].getFloat).len == 0
+    for dtype in ["float64", "complex128"]:
+      check compareObservations(gradientCase["expected"][dtype], actual[dtype],
+        1e-12, 1e-12).len == 0
+
+    let rounded = actual["float32"]["rounded_forward"]["all_drop_seed_finite"]
+    let roundedOutput = rounded["output"]["values"][0].getFloat
+    let roundedSeed = rounded["seed"]["values"][0].getFloat
+    let roundedGradient = rounded["gradient"]["values"][0].getFloat
+    let roundedExpected = roundedSeed * exp(1000.0 - roundedOutput)
+    let unroundedExpected = roundedSeed / (1.0 + exp(-1.0))
+    check abs(roundedGradient - roundedExpected) < 1e-6
+    check abs(roundedGradient - unroundedExpected) > 1e-6
+
+    let realNegativeZero =
+      actual["float32"]["dense"]["all_drop_seed_negative_zero"]["seed"]
+    check realNegativeZero["negative_zero_indices"] == %*[0]
+    let complexNegativeZero =
+      actual["complex64"]["scalar"]["all_drop_seed_negative_zero"]["seed"]["negative_zero"]
+    check complexNegativeZero["real"] == %*[0]
+    check complexNegativeZero["imag"] == %*[0]
+    let complexPhase =
+      actual["complex128"]["complex_phase"]["all_drop_seed_finite"]["gradient"]["values"]
+    check abs(complexPhase[0]["imag"].getFloat) > 1e-3
+
+    check actual["float32"]["dense"]["axis_2_drop"] == %*{"error": "invalid_axis"}
+    check actual["float32"]["dense"]["axes_0_-2_drop"] == %*{"error": "duplicate_axes"}
+    check actual["float32"]["dense"]["axes_empty_drop"] ==
+      %*{"error": "empty_axes_drop_mismatch"}
+    check actual["float32"]["dense"]["all_drop_invalid_seed"] ==
+      %*{"error": "seed_shape_mismatch"}
+    check actual["float32"]["scalar"]["all_drop_seed_finite"]["output"]["shape"] == %*[]
+    check actual["complex128"]["empty"]["all_drop_seed_finite"]["gradient"]["shape"] == %*[0, 3]
+
+  test "Reject malformed logsumexp gradient fixture schemas and observations":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "autograd.logsumexp":
+        index = candidate
+    doAssert index >= 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["float32"]["dense"]["requests"][0]["seed_kinds"] =
+      %*["finite"]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["float32"]["dense"]["dtype"] = %"float64"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["dense"]["axes_0_-2_drop"]["error"] =
+      %"invalid_axis"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["dense"]["all_drop_invalid_seed"]["error"] =
+      %"invalid_axis"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["dense"]["all_drop_seed_finite"]["gradient"]["shape"] =
+      %*[2]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex128"]["complex_phase"]["all_drop_seed_finite"]["output"]["extra"] =
+      %true
+    expect ValueError: validateFixtureData(malformed, reference)
 
   test "Reject malformed logsumexp fixture schemas and observations":
     let fixtures = loadFixtures(parityRoot & "fixtures.json")

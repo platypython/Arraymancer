@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add CPU float32/64 and complex64/128 seeded ``logsumexp`` gradients using
+  the rounded forward output and conjugated complex exponential. Preserve
+  complex-alpha nonfinite arithmetic, component zero signs and signed/broadcast views with
+  one independent dense gradient and bounded transcendental tiles.
 - Add stable CPU ``logsumexp`` whole/single/multiple-axis tensor reductions
   without intermediate tensors. Promote integer/bool inputs numerically to
   float32; preserve floating/complex dtypes, principal complex phases, empty

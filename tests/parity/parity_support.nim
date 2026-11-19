@@ -63,7 +63,8 @@ const
     "tensor.prod_dtype", "tensor.integer_output_dtype", "tensor.complex_scans",
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
     "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema", "tensor.indexed_extrema",
-    "tensor.paired_extrema", "autograd.paired_extrema", "tensor.aminmax", "tensor.logsumexp"]
+    "tensor.paired_extrema", "autograd.paired_extrema", "tensor.aminmax", "tensor.logsumexp",
+    "autograd.logsumexp"]
   RequiredCaseAreas: array[RequiredCaseIds.len, string] = [
     "api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
@@ -75,7 +76,7 @@ const
     "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch", "api:torch",
-    "api:autograd", "api:torch", "api:torch"]
+    "api:autograd", "api:torch", "api:torch", "api:autograd"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -3372,6 +3373,307 @@ proc expectPairedExtremaGradientExpected(expected, inputs: JsonNode) =
               outputShape, axis, dtype, label & "." & requestId & " invalid seed",
               invalidSeed = true)
 
+const LogsumexpGradientDtypes = ["float32", "float64", "complex64", "complex128"]
+const LogsumexpGradientInputNames = [
+  "dense", "multi_axes", "cube", "transpose", "offset", "reverse", "broadcast",
+  "nonfinite", "scalar", "empty", "rounded_forward", "complex_phase"]
+
+
+proc logsumexpGradientRequest(id, kind: string, keepdim: bool,
+                              seedKinds: openArray[string],
+                              axis = 0, axes: openArray[int] = []): JsonNode =
+  result = newJObject()
+  result["id"] = %id
+  result["kind"] = %kind
+  result["keepdim"] = %keepdim
+  result["seed_kinds"] = newJArray()
+  for seedKind in seedKinds: result["seed_kinds"].add %seedKind
+  if kind == "axis": result["axis"] = %axis
+  elif kind == "axes":
+    result["axes"] = newJArray()
+    for value in axes: result["axes"].add newJInt(value)
+
+
+proc logsumexpGradientWholeRequest(keepdim: bool,
+                                  seedKinds: openArray[string]): JsonNode =
+  result = logsumexpGradientRequest(
+    "all" & (if keepdim: "_keep" else: "_drop"), "whole", keepdim, seedKinds)
+
+
+proc logsumexpGradientAxisRequest(axis: int, keepdim: bool,
+                                 seedKinds: openArray[string]): JsonNode =
+  result = logsumexpGradientRequest(
+    "axis_" & $axis & (if keepdim: "_keep" else: "_drop"), "axis", keepdim,
+    seedKinds, axis = axis)
+
+
+proc logsumexpGradientAxesRequest(axes: openArray[int], keepdim: bool,
+                                 seedKinds: openArray[string]): JsonNode =
+  var id = "axes"
+  if axes.len == 0: id.add "_empty"
+  else:
+    for axis in axes: id.add "_" & $axis
+  id.add (if keepdim: "_keep" else: "_drop")
+  result = logsumexpGradientRequest(id, "axes", keepdim, seedKinds, axes = axes)
+
+
+proc logsumexpGradientRequests(profile: string): JsonNode =
+  let basicSeeds = ["finite", "negative_zero", "positive_infinity", "nan", "ramp"]
+  let stridedSeeds = ["finite", "negative_zero", "positive_infinity", "nan", "ramp", "strided"]
+  result = newJArray()
+  case profile
+  of "dense", "transpose", "offset", "broadcast", "nonfinite":
+    result.add logsumexpGradientWholeRequest(false, basicSeeds)
+    result.add logsumexpGradientWholeRequest(true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(0, false, stridedSeeds)
+    result.add logsumexpGradientAxisRequest(0, true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(-1, false, stridedSeeds)
+    result.add logsumexpGradientAxisRequest(-1, true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([0, 1], false, basicSeeds)
+    result.add logsumexpGradientAxesRequest([1, 0], true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], false, [])
+    result.add logsumexpGradientAxisRequest(2, false, [])
+    result.add logsumexpGradientAxesRequest([0, -2], false, [])
+    result.add logsumexpGradientAxesRequest([0, 2, 0], false, [])
+  of "multi_axes":
+    result.add logsumexpGradientWholeRequest(false, basicSeeds)
+    result.add logsumexpGradientWholeRequest(true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(1, false, stridedSeeds)
+    result.add logsumexpGradientAxisRequest(1, true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([0, 2], false, stridedSeeds)
+    result.add logsumexpGradientAxesRequest([2, 0], true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], false, [])
+    result.add logsumexpGradientAxisRequest(3, false, [])
+    result.add logsumexpGradientAxesRequest([0, -3], false, [])
+  of "cube":
+    result.add logsumexpGradientWholeRequest(false, basicSeeds)
+    result.add logsumexpGradientWholeRequest(true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(0, false, stridedSeeds)
+    result.add logsumexpGradientAxisRequest(1, true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(-1, false, basicSeeds)
+    result.add logsumexpGradientAxesRequest([0, 2], false, stridedSeeds)
+    result.add logsumexpGradientAxesRequest([2, 0], true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], false, [])
+    result.add logsumexpGradientAxisRequest(3, false, [])
+    result.add logsumexpGradientAxesRequest([0, -3], false, [])
+    result.add logsumexpGradientAxesRequest([0, 3, 0], false, [])
+  of "reverse", "rounded_forward", "complex_phase":
+    result.add logsumexpGradientWholeRequest(false, basicSeeds)
+    result.add logsumexpGradientWholeRequest(true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(0, false, basicSeeds)
+    result.add logsumexpGradientAxisRequest(0, true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], false, [])
+    result.add logsumexpGradientAxisRequest(1, false, [])
+    result.add logsumexpGradientAxesRequest([0, -1], false, [])
+  of "scalar":
+    result.add logsumexpGradientWholeRequest(false, basicSeeds)
+    result.add logsumexpGradientWholeRequest(true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(0, false, basicSeeds)
+    result.add logsumexpGradientAxisRequest(0, true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], false, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(1, false, [])
+  of "empty":
+    result.add logsumexpGradientWholeRequest(false, basicSeeds)
+    result.add logsumexpGradientWholeRequest(true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(0, false, basicSeeds)
+    result.add logsumexpGradientAxisRequest(0, true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(1, false, basicSeeds)
+    result.add logsumexpGradientAxisRequest(1, true, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], false, basicSeeds)
+    result.add logsumexpGradientAxesRequest([], true, basicSeeds)
+    result.add logsumexpGradientAxisRequest(2, false, [])
+    result.add logsumexpGradientAxesRequest([0, -2], false, [])
+  else:
+    invalid("unknown logsumexp gradient request profile " & profile)
+
+
+proc logsumexpGradientInputSpec(dtype, name: string): JsonNode =
+  let complex = dtype in ["complex64", "complex128"]
+  var shape: seq[int]
+  var layout = "identity"
+  var values = newJArray()
+  var specials = newJArray()
+  case name
+  of "dense", "transpose":
+    shape = @[2, 3]
+    if name == "transpose": layout = "transpose"
+    if complex:
+      values = %*[[1.0, 0.5], [-2.0, 1.0], [0.0, -1.0],
+        [3.0, -0.5], [0.25, 2.0], [-1.0, 0.0]]
+    else:
+      values = %*[1.0, -2.0, 0.5, 3.0, -1.0, 2.0]
+  of "multi_axes":
+    shape = @[2, 3, 2]
+    for index in 0 ..< 12:
+      let real = index mod 5 - 2
+      if complex:
+        values.add %*[real, (index mod 3 - 1).float64 * 0.5]
+      else:
+        values.add newJInt(real)
+  of "cube":
+    shape = @[2, 2, 2]
+    for index in 0 ..< 8:
+      let real = index mod 5 - 2
+      if complex:
+        values.add %*[real, (index mod 3 - 1).float64 * 0.5]
+      else:
+        values.add newJInt(real)
+  of "offset":
+    shape = @[3, 4]
+    layout = "offset"
+    for index in 0 ..< 12:
+      let real = index mod 7 - 3
+      if complex:
+        values.add %*[real, (index mod 4 - 1).float64 * 0.25]
+      else:
+        values.add newJInt(real)
+  of "reverse":
+    shape = @[5]
+    layout = "reverse"
+    if complex:
+      values = %*[[2.0, 0.5], [-1.0, 1.0], [3.0, -0.75],
+        [0.25, 2.0], [-2.0, -0.5]]
+    else:
+      values = %*[2.0, -1.0, 3.0, 0.25, -2.0]
+  of "broadcast":
+    shape = @[1, 3]
+    layout = "broadcast"
+    if complex: values = %*[[0.5, 0.25], [-1.0, -0.5], [2.0, 1.0]]
+    else: values = %*[0.5, -1.0, 2.0]
+  of "nonfinite":
+    shape = @[2, 3]
+    if complex:
+      values = %*[[0.0, 0.5], [1.0, -0.25], [2.0, 1.0],
+        [3.0, -1.0], [4.0, 0.75], [5.0, -0.5]]
+      specials = %*[
+        {"index": 0, "component": "real", "value": "+inf"},
+        {"index": 1, "component": "imag", "value": "nan"},
+        {"index": 4, "component": "real", "value": "-inf"}]
+    else:
+      values = %*[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+      specials = %*[
+        {"index": 0, "value": "-inf"}, {"index": 1, "value": "+inf"},
+        {"index": 2, "value": "nan"}]
+  of "scalar":
+    shape = @[]
+    if complex: values = %*[[2.0, 7.0]]
+    else:
+      values.add newJFloat(-0.0)
+  of "empty":
+    shape = @[0, 3]
+  of "rounded_forward":
+    shape = @[2]
+    if complex: values = %*[[1000.0, 0.0], [999.0, 0.0]]
+    else: values = %*[1000.0, 999.0]
+  of "complex_phase":
+    shape = @[2]
+    if complex: values = %*[[2.0, 7.0], [1.0, -3.0]]
+    else: values = %*[2.0, 1.0]
+  else:
+    invalid("unknown logsumexp gradient input " & name)
+
+  result = newJObject()
+  result["dtype"] = %dtype
+  result["shape"] = jsonShape(shape)
+  result["layout"] = %layout
+  result["values"] = values
+  result["specials"] = specials
+  result["requests"] = logsumexpGradientRequests(name)
+  result["invalid_seed"] = %*{"kind": "shape_mismatch"}
+
+
+proc logsumexpGradientSourceShape(name: string): seq[int] =
+  case name
+  of "dense": @[2, 3]
+  of "transpose": @[3, 2]
+  of "multi_axes": @[2, 3, 2]
+  of "cube": @[2, 2, 2]
+  of "offset": @[4, 2]
+  of "reverse": @[5]
+  of "broadcast": @[4, 3]
+  of "nonfinite": @[2, 3]
+  of "scalar": @[]
+  of "empty": @[0, 3]
+  of "rounded_forward", "complex_phase": @[2]
+  else: invalid("unknown logsumexp gradient source shape " & name)
+
+
+proc expectLogsumexpGradientInputs(inputs: JsonNode) =
+  require(inputs.kind == JObject and inputs.len == LogsumexpGradientDtypes.len,
+    "logsumexp gradient dtype groups are incomplete")
+  for dtype in LogsumexpGradientDtypes:
+    require(inputs.hasKey(dtype), "missing logsumexp gradient dtype " & dtype)
+    let cases = field(inputs, dtype)
+    require(cases.kind == JObject and cases.len == LogsumexpGradientInputNames.len,
+      "logsumexp gradient inputs do not match required cases for " & dtype)
+    for name in LogsumexpGradientInputNames:
+      require(cases.hasKey(name), "missing logsumexp gradient input " & dtype & "." & name)
+      require(field(cases, name) == logsumexpGradientInputSpec(dtype, name),
+        "logsumexp gradient input schema mismatch for " & dtype & "." & name)
+
+
+proc expectLogsumexpGradientTensor(node: JsonNode, shape: seq[int],
+                                  dtype, label: string) =
+  if dtype in ["complex64", "complex128"]:
+    expectComplexObservation(node, shape, dtype, label)
+  else:
+    expectExtremaGradientTensor(node, shape, dtype, label, true)
+
+
+proc expectLogsumexpGradientExpected(expected, inputs: JsonNode) =
+  expectExtremaFields(expected, LogsumexpGradientDtypes, "logsumexp gradient dtypes")
+  for dtype in LogsumexpGradientDtypes:
+    let byCase = field(expected, dtype)
+    expectExtremaFields(byCase, LogsumexpGradientInputNames,
+      "logsumexp gradient cases for " & dtype)
+    for name in LogsumexpGradientInputNames:
+      let spec = field(inputs[dtype], name)
+      let sourceShape = logsumexpGradientSourceShape(name)
+      let requests = field(spec, "requests")
+      let byRequest = field(byCase, name)
+      let label = "logsumexp gradient " & dtype & "." & name
+      require(byRequest.kind == JObject, label & " observations must be an object")
+      var expectedObservationCount = 0
+      for request in requests:
+        if logsumexpExpectedError(sourceShape, request).len > 0:
+          inc expectedObservationCount
+        else:
+          expectedObservationCount += request["seed_kinds"].len + 1
+      require(byRequest.len == expectedObservationCount,
+        label & " observations are incomplete")
+      for request in requests:
+        let requestId = request["id"].getStr
+        let expectedError = logsumexpExpectedError(sourceShape, request)
+        if expectedError.len > 0:
+          let observed = field(byRequest, requestId)
+          expectExtremaFields(observed, ["error"], label & "." & requestId)
+          require(field(observed, "error") == %expectedError,
+            label & "." & requestId & " error precedence mismatch")
+        else:
+          let outputShape = logsumexpOutputShape(sourceShape, request)
+          for seedKindNode in request["seed_kinds"]:
+            let seedKind = seedKindNode.getStr
+            let key = requestId & "_seed_" & seedKind
+            let observed = field(byRequest, key)
+            expectExtremaFields(observed, ["output", "seed", "gradient"],
+              label & "." & key)
+            expectLogsumexpGradientTensor(field(observed, "output"), outputShape,
+              dtype, label & "." & key & " output")
+            expectLogsumexpGradientTensor(field(observed, "seed"), outputShape,
+              dtype, label & "." & key & " seed")
+            expectLogsumexpGradientTensor(field(observed, "gradient"), sourceShape,
+              dtype, label & "." & key & " gradient")
+          let invalidSeed = field(byRequest, requestId & "_invalid_seed")
+          expectExtremaFields(invalidSeed, ["error"], label & "." & requestId & " invalid seed")
+          require(field(invalidSeed, "error") == %"seed_shape_mismatch",
+            label & "." & requestId & " invalid seed shape mismatch")
+
+
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
   requireSameReference(data, reference, "fixtures")
@@ -3476,6 +3778,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "logsumexp fixtures require 1e-6 tolerances")
       expectLogsumexpInputs(inputs)
+    of "autograd.logsumexp":
+      require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
+        "logsumexp gradient fixtures require 1e-6 tolerances")
+      expectLogsumexpGradientInputs(inputs)
 
     of "tensor.integer_reductions":
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
@@ -3636,6 +3942,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectAminmaxExpected(expected, inputs)
     of "tensor.logsumexp":
       expectLogsumexpExpected(expected, inputs)
+    of "autograd.logsumexp":
+      expectLogsumexpGradientExpected(expected, inputs)
     of "tensor.integer_output_dtype":
       expectIntegerOutputExpected(expected, inputs)
     of "tensor.float64_reductions":

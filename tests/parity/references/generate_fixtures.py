@@ -3649,6 +3649,355 @@ def logsumexp(torch: Any) -> dict[str, Any]:
     return _case("tensor.logsumexp", "api:torch", inputs, expected, tolerance=1e-6)
 
 
+def _logsumexp_gradient_requests(profile: str) -> list[dict[str, Any]]:
+    basic_seeds = ["finite", "negative_zero", "positive_infinity", "nan", "ramp"]
+    strided_seeds = [*basic_seeds, "strided"]
+
+    def request(
+        kind: str,
+        dimensions: int | list[int] | None,
+        keepdim: bool,
+        seed_kinds: list[str] | None = None,
+    ) -> dict[str, Any]:
+        value = _logsumexp_request(kind, dimensions, keepdim)
+        value["seed_kinds"] = list(basic_seeds if seed_kinds is None else seed_kinds)
+        return value
+
+    if profile in ("dense", "transpose", "offset", "broadcast", "nonfinite"):
+        return [
+            request("whole", None, False),
+            request("whole", None, True),
+            request("axis", 0, False, strided_seeds),
+            request("axis", 0, True),
+            request("axis", -1, False, strided_seeds),
+            request("axis", -1, True),
+            request("axes", [0, 1], False),
+            request("axes", [1, 0], True),
+            request("axes", [], True),
+            request("axes", [], False, []),
+            request("axis", 2, False, []),
+            request("axes", [0, -2], False, []),
+            request("axes", [0, 2, 0], False, []),
+        ]
+    if profile == "multi_axes":
+        return [
+            request("whole", None, False),
+            request("whole", None, True),
+            request("axis", 1, False, strided_seeds),
+            request("axis", 1, True),
+            request("axes", [0, 2], False, strided_seeds),
+            request("axes", [2, 0], True),
+            request("axes", [], True),
+            request("axes", [], False, []),
+            request("axis", 3, False, []),
+            request("axes", [0, -3], False, []),
+        ]
+    if profile == "cube":
+        return [
+            request("whole", None, False),
+            request("whole", None, True),
+            request("axis", 0, False, strided_seeds),
+            request("axis", 1, True),
+            request("axis", -1, False),
+            request("axes", [0, 2], False, strided_seeds),
+            request("axes", [2, 0], True),
+            request("axes", [], True),
+            request("axes", [], False, []),
+            request("axis", 3, False, []),
+            request("axes", [0, -3], False, []),
+            request("axes", [0, 3, 0], False, []),
+        ]
+    if profile in ("reverse", "rounded_forward", "complex_phase"):
+        return [
+            request("whole", None, False),
+            request("whole", None, True),
+            request("axis", 0, False),
+            request("axis", 0, True),
+            request("axes", [], True),
+            request("axes", [], False, []),
+            request("axis", 1, False, []),
+            request("axes", [0, -1], False, []),
+        ]
+    if profile == "scalar":
+        return [
+            request("whole", None, False),
+            request("whole", None, True),
+            request("axis", 0, False),
+            request("axis", 0, True),
+            request("axes", [], False),
+            request("axes", [], True),
+            request("axis", 1, False, []),
+        ]
+    if profile == "empty":
+        return [
+            request("whole", None, False),
+            request("whole", None, True),
+            request("axis", 0, False),
+            request("axis", 0, True),
+            request("axis", 1, False),
+            request("axis", 1, True),
+            request("axes", [], False),
+            request("axes", [], True),
+            request("axis", 2, False, []),
+            request("axes", [0, -2], False, []),
+        ]
+    raise ValueError(f"unknown logsumexp gradient request profile: {profile}")
+
+
+def _logsumexp_gradient_raw_inputs() -> dict[str, dict[str, dict[str, Any]]]:
+    inputs: dict[str, dict[str, dict[str, Any]]] = {}
+    for dtype in ("float32", "float64", "complex64", "complex128"):
+        is_complex = dtype in ("complex64", "complex128")
+        cases: dict[str, dict[str, Any]] = {}
+        inputs[dtype] = cases
+
+        def add(
+            name: str,
+            shape: list[int],
+            layout: str,
+            real_values: list[int | float],
+            complex_values: list[list[int | float]] | None = None,
+            specials: list[dict[str, Any]] | None = None,
+        ) -> None:
+            if is_complex:
+                if complex_values is None:
+                    values: list[Any] = [[value, 0.0] for value in real_values]
+                else:
+                    values = complex_values
+            else:
+                values = real_values
+            cases[name] = {
+                "dtype": dtype,
+                "shape": shape,
+                "layout": layout,
+                "values": values,
+                "specials": [] if specials is None else specials,
+                "requests": _logsumexp_gradient_requests(name),
+                "invalid_seed": {"kind": "shape_mismatch"},
+            }
+
+        add(
+            "dense",
+            [2, 3],
+            "identity",
+            [1.0, -2.0, 0.5, 3.0, -1.0, 2.0],
+            [[1.0, 0.5], [-2.0, 1.0], [0.0, -1.0],
+             [3.0, -0.5], [0.25, 2.0], [-1.0, 0.0]],
+        )
+        add(
+            "multi_axes",
+            [2, 3, 2],
+            "identity",
+            [index % 5 - 2 for index in range(12)],
+            [[index % 5 - 2, (index % 3 - 1) * 0.5] for index in range(12)],
+        )
+        add(
+            "cube",
+            [2, 2, 2],
+            "identity",
+            [index % 5 - 2 for index in range(8)],
+            [[index % 5 - 2, (index % 3 - 1) * 0.5] for index in range(8)],
+        )
+        add(
+            "transpose",
+            [2, 3],
+            "transpose",
+            [1.0, -2.0, 0.5, 3.0, -1.0, 2.0],
+            [[1.0, 0.5], [-2.0, 1.0], [0.0, -1.0],
+             [3.0, -0.5], [0.25, 2.0], [-1.0, 0.0]],
+        )
+        add(
+            "offset",
+            [3, 4],
+            "offset",
+            [index % 7 - 3 for index in range(12)],
+            [[index % 7 - 3, (index % 4 - 1) * 0.25] for index in range(12)],
+        )
+        add(
+            "reverse",
+            [5],
+            "reverse",
+            [2.0, -1.0, 3.0, 0.25, -2.0],
+            [[2.0, 0.5], [-1.0, 1.0], [3.0, -0.75],
+             [0.25, 2.0], [-2.0, -0.5]],
+        )
+        add(
+            "broadcast",
+            [1, 3],
+            "broadcast",
+            [0.5, -1.0, 2.0],
+            [[0.5, 0.25], [-1.0, -0.5], [2.0, 1.0]],
+        )
+        add(
+            "nonfinite",
+            [2, 3],
+            "identity",
+            [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            [[0.0, 0.5], [1.0, -0.25], [2.0, 1.0],
+             [3.0, -1.0], [4.0, 0.75], [5.0, -0.5]],
+            specials=(
+                [
+                    {"index": 0, "component": "real", "value": "+inf"},
+                    {"index": 1, "component": "imag", "value": "nan"},
+                    {"index": 4, "component": "real", "value": "-inf"},
+                ]
+                if is_complex
+                else [
+                    {"index": 0, "value": "-inf"},
+                    {"index": 1, "value": "+inf"},
+                    {"index": 2, "value": "nan"},
+                ]
+            ),
+        )
+        add(
+            "scalar",
+            [],
+            "identity",
+            [-0.0],
+            [[2.0, 7.0]],
+        )
+        add("empty", [0, 3], "identity", [])
+        add(
+            "rounded_forward",
+            [2],
+            "identity",
+            [1000.0, 999.0],
+            [[1000.0, 0.0], [999.0, 0.0]],
+        )
+        add(
+            "complex_phase",
+            [2],
+            "identity",
+            [2.0, 1.0],
+            [[2.0, 7.0], [1.0, -3.0]],
+        )
+    return inputs
+
+
+def _observe_logsumexp_gradient_tensor(tensor: Any) -> dict[str, Any]:
+    if tensor.is_complex():
+        return _observe_complex(tensor)
+    observation = _observe(tensor)
+    values = tensor.detach().reshape(-1).tolist()
+    observation["negative_zero_indices"] = [
+        index for index, value in enumerate(values)
+        if value == 0 and math.copysign(1.0, float(value)) < 0.0
+    ]
+    return observation
+
+
+def _logsumexp_gradient_seed(torch: Any, output: Any, dtype_name: str,
+                             kind: str) -> Any:
+    dtype = getattr(torch, dtype_name)
+    count = output.numel()
+    is_complex = dtype_name in ("complex64", "complex128")
+    if kind == "finite":
+        value = complex(2.0, -0.5) if is_complex else 2.0
+        values = [value] * count
+    elif kind == "negative_zero":
+        value = complex(-0.0, -0.0) if is_complex else -0.0
+        values = [value] * count
+    elif kind == "positive_infinity":
+        value = complex(float("inf"), 0.0) if is_complex else float("inf")
+        values = [value] * count
+    elif kind == "nan":
+        value = complex(float("nan"), 0.0) if is_complex else float("nan")
+        values = [value] * count
+    elif kind in ("ramp", "strided"):
+        values = (
+            [complex(index % 5 - 2, (index % 3 - 1) * 0.5)
+             for index in range(count)]
+            if is_complex
+            else [index % 5 - 2 for index in range(count)]
+        )
+        if kind == "strided":
+            if output.ndim not in (1, 2) or count == 0:
+                raise ValueError("invalid strided logsumexp gradient seed shape")
+            backing = torch.zeros(count * 2 + 1, dtype=dtype, device="cpu")
+            backing[1::2] = torch.tensor(values, dtype=dtype, device="cpu")
+            return backing[1::2].reshape(output.shape)
+    else:
+        raise ValueError(f"unknown logsumexp gradient seed kind: {kind}")
+    return torch.tensor(values, dtype=dtype, device="cpu").reshape(output.shape)
+
+
+def _logsumexp_gradient_forward(torch: Any, source: Any, request: dict[str, Any]) -> Any:
+    kind = request["kind"]
+    if kind == "whole":
+        dimensions: int | tuple[int, ...] = tuple(range(source.ndim))
+    elif kind == "axis":
+        dimensions = request["axis"]
+    else:
+        dimensions = tuple(request["axes"])
+    return torch.logsumexp(source, dim=dimensions, keepdim=request["keepdim"])
+
+
+def _observe_logsumexp_gradient_request(
+    torch: Any, source: Any, dtype_name: str, request: dict[str, Any], label: str
+) -> dict[str, Any]:
+    request_id = request["id"]
+    leaf = source.detach().requires_grad_(True)
+    try:
+        output = _logsumexp_gradient_forward(torch, leaf, request)
+    except (IndexError, RuntimeError, TypeError) as error:
+        code = _logsumexp_error_code(error)
+        if code is None:
+            raise ValueError(f"unexpected logsumexp gradient rejection for {label}: {error}") from error
+        return {request_id: {"error": code}}
+
+    observations: dict[str, Any] = {}
+    for index, seed_kind in enumerate(request["seed_kinds"]):
+        if index > 0:
+            leaf = source.detach().requires_grad_(True)
+            output = _logsumexp_gradient_forward(torch, leaf, request)
+        seed = _logsumexp_gradient_seed(torch, output, dtype_name, seed_kind)
+        output.backward(seed)
+        if leaf.grad is None:
+            raise ValueError(f"logsumexp gradient did not populate the input gradient for {label}")
+        observations[f"{request_id}_seed_{seed_kind}"] = {
+            "output": _observe_logsumexp_gradient_tensor(output),
+            "seed": _observe_logsumexp_gradient_tensor(seed),
+            "gradient": _observe_logsumexp_gradient_tensor(leaf.grad),
+        }
+
+    invalid_leaf = source.detach().requires_grad_(True)
+    invalid_output = _logsumexp_gradient_forward(torch, invalid_leaf, request)
+    invalid_seed = torch.zeros(
+        invalid_output.numel() + 1, dtype=invalid_output.dtype, device="cpu"
+    )
+    try:
+        invalid_output.backward(invalid_seed)
+    except RuntimeError as error:
+        message = str(error).lower()
+        if "shape" not in message and "size" not in message:
+            raise
+        observations[f"{request_id}_invalid_seed"] = {"error": "seed_shape_mismatch"}
+    else:
+        raise ValueError(f"PyTorch accepted a mismatched logsumexp gradient seed for {label}")
+    return observations
+
+
+def logsumexp_gradient(torch: Any) -> dict[str, Any]:
+    """Observe authentic CPU logsumexp forward values and seeded first-order VJPs."""
+    inputs = _logsumexp_gradient_raw_inputs()
+    expected: dict[str, dict[str, dict[str, Any]]] = {}
+    for dtype_name, cases in inputs.items():
+        expected[dtype_name] = {}
+        for name, spec in cases.items():
+            source = _logsumexp_source(torch, spec)
+            observations: dict[str, Any] = {}
+            for request in spec["requests"]:
+                observations.update(
+                    _observe_logsumexp_gradient_request(
+                        torch, source, dtype_name, request, f"{dtype_name}.{name}.{request['id']}"
+                    )
+                )
+            expected[dtype_name][name] = observations
+    return _case("autograd.logsumexp", "api:autograd", inputs, expected, tolerance=1e-6)
+
+
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -3661,7 +4010,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     integer_scans, integer_reductions, extrema, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
     complex_prod_dtype, indexed_extrema, paired_extrema, paired_extrema_gradient, aminmax,
-    logsumexp,
+    logsumexp, logsumexp_gradient,
 )
 
 

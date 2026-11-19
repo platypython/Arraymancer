@@ -45,7 +45,7 @@ when defined(macosx):
   proc sineCosine(value: float64; sine, cosine: ptr float64)
     {.importc: "__sincos", header: "<math.h>".}
 
-proc exponentialComplex[T: SomeFloat](value: Complex[T]): Complex[T] {.inline.} =
+proc exponentialComplex*[T: SomeFloat](value: Complex[T]): Complex[T] {.inline.} =
   ## Keep IEEE complex branches that a direct exp*cos/sin formula loses.
   if value.im == T(0):
     return Complex[T](re: exp(value.re), im: value.im)
@@ -63,7 +63,7 @@ proc exponentialComplex[T: SomeFloat](value: Complex[T]): Complex[T] {.inline.} 
   else:
     complex.exp(value)
 
-proc complexExponentialParts[F: SomeFloat](real, imaginary, magnitude, sine,
+proc complexExponentialParts*[F: SomeFloat](real, imaginary, magnitude, sine,
     cosine: F): Complex[F] {.inline.} =
   ## Vector transcendental calls still need the scalar IEEE exceptional branches.
   if imaginary == F(0): return Complex[F](re: magnitude, im: imaginary)

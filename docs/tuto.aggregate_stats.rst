@@ -259,6 +259,23 @@ produce empty outputs. Duplicate or invalid axes reject.
 An explicit empty axis list reduces all axes. Matching the pinned PyTorch
 broadcast behavior, nonempty positive-rank inputs require ``keepdim = true``
 for that spelling; use the no-axis overload for a dropped whole result.
-This CPU forward API does not provide autograd, Metal, output-buffer or
-low-precision overloads.
+
+CPU float32/64 and complex64/128 variables support the same overloads with
+first-order seeded gradients:
+
+.. code-block:: nim
+
+  let normalizer = source.logsumexp(1)
+  normalizer.backprop(seed)  # Seed shape must exactly match the output.
+
+Backward computes ``seed * conj(exp(input - rounded_forward_output))``.
+Rounding the forward result matters for large real inputs; complex derivatives
+conjugate the exponential, including its phase. Complex subtraction preserves
+PyTorch's default complex-alpha IEEE effects for infinite components.
+Gradients own dense input-shaped
+storage; signed, offset and broadcast inputs and seeds do not require converted
+tensor intermediates. Saved input and forward-output storage must not be mutated
+before backward. Retained graphs and no-grad mode follow the usual contracts.
+Higher-order gradients, integer/bool differentiation, Metal, output-buffer and
+low-precision overloads remain unsupported.
 

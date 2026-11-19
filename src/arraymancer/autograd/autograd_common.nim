@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import std / [typetraits, macros, sets]
+import std / [typetraits, macros, sets, complex]
 # Keep generic backend helpers open instead of binding CPU-only overloads.
 from ../tensor/data_structure import Tensor
 from ../tensor/init_cpu import newTensorWith
@@ -159,13 +159,17 @@ proc gradientZerosLike[TT](value: TT): TT =
   when TT is Tensor[float32] or TT is Tensor[float64]:
     type Scalar = typeof(value.storage.raw_buffer[0])
     newTensorWith[Scalar](value.shape, Scalar(-0.0))
+  elif TT is Tensor[Complex[float32]] or TT is Tensor[Complex[float64]]:
+    type Scalar = typeof(value.storage.raw_buffer[0].re)
+    newTensorWith[Complex[Scalar]](value.shape,
+      Complex[Scalar](re: Scalar(-0.0), im: Scalar(-0.0)))
   else:
     value.zeros_like
 
 proc variable*[TT](ctx: Context[TT], value: TT, requires_grad = false): Variable[TT] =
   ## Wrap a variable to the context
   ## T is a Tensor[T, CudaTensor[T] or scalar T
-  ## CPU float gradients initialize to the signed-zero additive identity (-0).
+  ## CPU real and complex gradients initialize to signed-zero additive identities.
   new result
   result.context = ctx
   result.value = value
@@ -236,6 +240,11 @@ proc resetIntermediate[TT](v: Variable[TT]) =
     let gradient = v.grad
     forEach element in gradient:
       element = Scalar(-0.0)
+  elif TT is Tensor[Complex[float32]] or TT is Tensor[Complex[float64]]:
+    type Scalar = typeof(v.grad.storage.raw_buffer[0].re)
+    let gradient = v.grad
+    forEach element in gradient:
+      element = Complex[Scalar](re: Scalar(-0.0), im: Scalar(-0.0))
   elif compiles(v.grad.setZero()):
     v.grad.setZero()
   elif compiles(v.grad.fill(getSubType(TT)(0))):
