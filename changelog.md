@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add cast-on-read complex CPU product dtypes with component-width arithmetic,
+  packed vector folding before scalar tails, and independent column chains.
+  Preserve scalar signed-zero identity multiplication, empty product identities,
+  numeric wrapping casts, boolean truth and discarded-imaginary warning order.
 - Add cast-on-read complex CPU sum dtypes, including real, wrapping integer and
   boolean outputs for complex inputs. Share bounded cascade kernels with means
   while preserving default complex sum grouping, scalar zero identities,

@@ -61,7 +61,8 @@ const
     "tensor.integer_scans", "tensor.integer_reductions", "tensor.float64_reductions",
     "tensor.mean_dtype", "tensor.sum_dtype", "tensor.cumsum_dtype", "tensor.cumprod_dtype",
     "tensor.prod_dtype", "tensor.integer_output_dtype", "tensor.complex_scans",
-    "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype"]
+    "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
+    "tensor.complex_prod_dtype"]
   RequiredCaseAreas = ["api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd",
     "api:autograd", "api:autograd", "api:autograd", "api:autograd", "api:autograd",
@@ -827,6 +828,29 @@ proc complexScanNumber(node: JsonNode): bool =
 proc complexScanFiniteFloat(node: JsonNode): bool =
   node.kind == JFloat and classify(node.getFloat) notin {fcNan, fcInf, fcNegInf}
 
+proc complexSafeIntegerCast(node: JsonNode, dtype: string): bool =
+  if node.kind == JInt:
+    let value = node.getBiggestInt
+    case dtype
+    of "uint8": value >= 0 and value <= high(uint8).int64
+    of "int8": value >= low(int8).int64 and value <= high(int8).int64
+    of "int16": value >= low(int16).int64 and value <= high(int16).int64
+    of "int32": value >= low(int32).int64 and value <= high(int32).int64
+    of "int64": true
+    else: false
+  elif node.kind == JFloat:
+    let value = trunc(node.getFloat)
+    case dtype
+    of "uint8": value >= 0.0 and value <= high(uint8).float64
+    of "int8": value >= low(int8).float64 and value <= high(int8).float64
+    of "int16": value >= low(int16).float64 and value <= high(int16).float64
+    of "int32": value >= low(int32).float64 and value <= high(int32).float64
+    of "int64": value >= low(int64).float64 and value < 9223372036854775808.0
+    else: false
+  else:
+    false
+
+
 proc expectComplexScanInput(spec: JsonNode, name: string) =
   let hasNonfinite = name == "nonfinite"
   require(spec.kind == JObject and spec.len == (if hasNonfinite: 7 else: 6),
@@ -1279,7 +1303,8 @@ proc complexSumDtypeTargets(name: string): seq[string] =
 
 proc expectComplexScanDtypeInput(spec: JsonNode, name: string;
                                  mean: static[bool] = false,
-                                 sum: static[bool] = false) =
+                                 sum: static[bool] = false,
+                                 prod: static[bool] = false) =
   let nonfinite = name == "nonfinite"
   require(spec.kind == JObject and spec.len == (if nonfinite: 8 else: 7),
     "complex scan dtype input fields are incomplete for " & name)
@@ -1339,6 +1364,8 @@ proc expectComplexScanDtypeInput(spec: JsonNode, name: string;
       else: @["complex64", "complex128"]
     elif sum:
       complexSumDtypeTargets(name)
+    elif prod:
+      complexSumDtypeTargets(name)
     else:
       complexScanDtypeTargets(name)
   require(outputs.kind == JArray and outputs.len == targets.len,
@@ -1348,6 +1375,13 @@ proc expectComplexScanDtypeInput(spec: JsonNode, name: string;
     let dtype = text(output, "complex scan output dtype")
     require(dtype in targets and dtype notin seen, "unexpected or duplicate complex scan output dtype")
     seen.incl(dtype)
+  if (sum or prod) and sourceDtype in ["complex64", "complex128"]:
+    for output in outputs:
+      let dtype = output.getStr
+      if dtype in ["uint8", "int8", "int16", "int32", "int64"]:
+        for value in values:
+          require(complexSafeIntegerCast(value[0], dtype),
+            "complex source exceeds the safe " & dtype & " cast domain for " & name)
   case name
   of "rounding":
     require(values == %*[[1.9, 2.0], [2.9, -3.0], [0.0, 4.0]],
@@ -1469,6 +1503,11 @@ proc expectComplexSumDtypeInputs(inputs: JsonNode) =
   for name in ComplexReductionDtypeInputNames:
     expectComplexScanDtypeInput(field(inputs, name), name, sum = true)
 
+proc expectComplexProdDtypeInputs(inputs: JsonNode) =
+  require(inputs.kind == JObject and inputs.len == ComplexReductionDtypeInputNames.len,
+    "complex product dtype sources are incomplete")
+  for name in ComplexReductionDtypeInputNames:
+    expectComplexScanDtypeInput(field(inputs, name), name, prod = true)
 
 proc expectComplexMeanResult(node: JsonNode, shape: seq[int], dtype: string,
                              rejected: bool, label: string) =
@@ -1513,20 +1552,20 @@ proc expectComplexMeanDtypeExpected(expected, inputs: JsonNode) =
         else:
           expectComplexInvalidAxis(node, label)
 
-proc expectComplexSumResult(node: JsonNode, shape: seq[int], dtype: string,
-                            rejected: bool, label: string) =
+proc expectComplexReductionResult(node: JsonNode, shape: seq[int], dtype: string,
+                                  rejected: bool, label: string) =
   if rejected:
     expectIntegerOutputResult(node, shape, dtype, true, "unsupported_output_dtype", label)
   else:
     expectComplexScanDtypeTensor(node, shape, dtype, label)
 
-proc expectComplexSumDtypeExpected(expected, inputs: JsonNode) =
+proc expectComplexReductionDtypeExpected(expected, inputs: JsonNode, operation: string) =
   require(expected.kind == JObject and expected.len == inputs.len,
-    "complex sum dtype observations do not match sources")
+    "complex " & operation & " dtype observations do not match sources")
   for name, spec in inputs:
     let outputs = field(expected, name)
     require(outputs.kind == JObject and outputs.len == spec["output_dtypes"].len,
-      "complex sum output dtype observations are incomplete for " & name)
+      "complex " & operation & " output dtype observations are incomplete for " & name)
     let logicalShape = float64LogicalShape(spec, spec["layout"].getStr)
     let count = integerOutputNumel(logicalShape)
     for targetNode in spec["output_dtypes"]:
@@ -1535,26 +1574,32 @@ proc expectComplexSumDtypeExpected(expected, inputs: JsonNode) =
       let rejected = target in ["uint16", "uint32", "uint64"] and count > 0
       let observed = field(outputs, target)
       require(observed.kind == JObject and observed.len == 3,
-        "complex sum whole/valid/invalid axis observations are incomplete")
-      let label = "complex sum " & name & "." & target
-      expectComplexSumResult(field(observed, "all"), @[], dtype, rejected, label)
+        "complex " & operation & " whole/valid/invalid axis observations are incomplete")
+      let label = "complex " & operation & " " & name & "." & target
+      expectComplexReductionResult(field(observed, "all"), @[], dtype, rejected, label)
 
       let axes = field(observed, "axes")
       require(axes.kind == JObject and axes.len == spec["axes"].len,
-        "complex sum axis observations are incomplete")
+        "complex " & operation & " axis observations are incomplete")
       for axisNode in spec["axes"]:
         var shape = logicalShape
         if shape.len > 0:
           let axis = if axisNode.getInt < 0: axisNode.getInt + shape.len else: axisNode.getInt
           shape[axis] = 1
-        expectComplexSumResult(field(axes, $axisNode.getInt), shape, dtype, rejected, label)
+        expectComplexReductionResult(field(axes, $axisNode.getInt), shape, dtype, rejected, label)
 
       let invalidAxes = field(observed, "invalid_axes")
       require(invalidAxes.kind == JObject and invalidAxes.len == spec["invalid_axes"].len,
-        "complex sum invalid axis observations are incomplete")
+        "complex " & operation & " invalid axis observations are incomplete")
       for axisNode in spec["invalid_axes"]:
         expectComplexInvalidAxis(
           field(invalidAxes, $axisNode.getInt), label & ".invalid_axis." & $axisNode.getInt)
+
+proc expectComplexSumDtypeExpected(expected, inputs: JsonNode) =
+  expectComplexReductionDtypeExpected(expected, inputs, "sum")
+
+proc expectComplexProdDtypeExpected(expected, inputs: JsonNode) =
+  expectComplexReductionDtypeExpected(expected, inputs, "product")
 
 proc validateFixtureData*(data, reference: JsonNode) =
   require(field(data, "format").kind == JInt and data["format"].getInt == 1, "unsupported fixtures format")
@@ -1628,6 +1673,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "complex sum dtype fixtures require 1e-6 tolerances")
       expectComplexSumDtypeInputs(inputs)
+    of "tensor.complex_prod_dtype":
+      require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
+        "complex product dtype fixtures require 1e-6 tolerances")
+      expectComplexProdDtypeInputs(inputs)
     of "tensor.integer_reductions":
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "integer reduction fixtures require exact-value tolerances")
@@ -1757,6 +1806,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectComplexMeanDtypeExpected(expected, inputs)
     of "tensor.complex_sum_dtype":
       expectComplexSumDtypeExpected(expected, inputs)
+    of "tensor.complex_prod_dtype":
+      expectComplexProdDtypeExpected(expected, inputs)
     of "tensor.integer_reductions":
       require(expected.kind == JObject and expected.len == inputs.len,
         "integer reduction expected cases must match inputs")

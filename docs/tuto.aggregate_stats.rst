@@ -112,5 +112,21 @@ Wider unsigned sums accept only empty inputs, rejecting nonempty scalars too.
 Those nonempty numeric casts warn before kernel rejection; invalid axes reject
 before warnings, while empty inputs remain quiet.
 
+Complex products accept complex output dtypes for real, boolean and complex
+inputs, with no conversion buffer. Arithmetic uses the requested component
+width, not the widened carries used by scans. Default complex products retain
+their input dtype. Packed products fold four independent vectors before
+multiplying the scalar tail; columns retain independent ordered chains.
+Rounding, overflow and underflow can therefore depend on grouping.
+
+Whole and scalar-axis products multiply the ``1+0i`` identity rather than
+copying a scalar's bits. For example, ``-0-0i`` becomes ``+0-0i``.
+Empty products produce ones in the retained output shape. Complex-to-real
+floating products discard imaginary parts with the shared warning; integer
+products truncate real parts before wrapping, within the defined cast range.
+Boolean products AND the truth of both components without warning.
+Wider unsigned products accept only empty inputs. Numeric casts warn before
+nonempty kernel rejection; invalid axes reject first, and empty inputs stay quiet.
+
 Generic aggregates on the whole tensor or along an axis can be computed
 with ``agg`` and ``agg_inplace`` functions.

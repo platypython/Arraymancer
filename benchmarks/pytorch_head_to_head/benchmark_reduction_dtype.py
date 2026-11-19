@@ -21,6 +21,12 @@ Build and run the complex mean benchmark:
 This mode covers 30 groups, 96 explicit/default mean actions and 576 timing
 comparisons. Matching complex input/output groups include the three default
 overload actions in addition to the three explicit-dtype actions.
+Build and run the complex product benchmark:
+  nim c -d:release -d:complexProducts --path:src --out:build/reduction_dtype_runner benchmarks/pytorch_head_to_head/reduction_dtype_runner.nim
+  python benchmarks/pytorch_head_to_head/benchmark_reduction_dtype.py --complex-products
+This mode covers 42 groups, 132 explicit/default product actions and 792 timing
+comparisons, with default overloads only for matching complex input/output dtypes.
+
 The 22 floating input/output groups each contain thirteen actions, for 286 actions
 and 1,716 median/p95 comparisons across three paired rounds. Integer outputs have
 ten supported sum/product/scan actions; bool outputs have six sum/product actions,
@@ -63,6 +69,10 @@ COMPLEX_SCAN_CASES = (
 )
 COMPLEX_SUM_CASES = ("sum", "sum_rows", "sum_columns")
 COMPLEX_SUM_DEFAULT_CASES = ("sum_default", "sum_rows_default", "sum_columns_default")
+COMPLEX_PRODUCT_CASES = ("prod", "prod_rows", "prod_columns")
+COMPLEX_PRODUCT_DEFAULT_CASES = (
+    "prod_default", "prod_rows_default", "prod_columns_default",
+)
 COMPLEX_MEAN_CASES = ("mean", "mean_rows", "mean_columns")
 COMPLEX_MEAN_DEFAULT_CASES = (
     "mean_default", "mean_rows_default", "mean_columns_default",
@@ -120,7 +130,25 @@ def operation(
     name: str, value: torch.Tensor, output_dtype: str, *, explicit_scan_dtype: bool = False,
 ) -> Callable[[], torch.Tensor]:
     """Resolve an allocating reduction or scan; keep casting inside the action."""
-    if output_dtype in COMPLEX_DTYPES and name in COMPLEX_SUM_CASES + COMPLEX_SUM_DEFAULT_CASES:
+    if output_dtype in COMPLEX_DTYPES and (
+        name in COMPLEX_PRODUCT_CASES + COMPLEX_PRODUCT_DEFAULT_CASES
+    ):
+        is_default = name in COMPLEX_PRODUCT_DEFAULT_CASES
+        action = name.removesuffix("_default")
+        reducer = value.prod
+        if action == "prod":
+            if is_default:
+                return lambda: reducer()
+            dtype = TORCH_DTYPES[output_dtype]
+            return lambda: reducer(dtype=dtype)
+        axis = -1 if action == "prod_rows" else -2
+        if is_default:
+            return lambda: reducer(dim=axis, keepdim=True)
+        dtype = TORCH_DTYPES[output_dtype]
+        return lambda: reducer(dim=axis, keepdim=True, dtype=dtype)
+    if output_dtype in COMPLEX_DTYPES and (
+        name in COMPLEX_SUM_CASES + COMPLEX_SUM_DEFAULT_CASES
+    ):
         is_default = name in COMPLEX_SUM_DEFAULT_CASES
         action = name.removesuffix("_default")
         reducer = value.sum
@@ -191,9 +219,19 @@ def operation(
     return lambda: reducer(dim=axis, keepdim=True, dtype=dtype)
 
 
-def make_source(dtype: str) -> tuple[torch.Tensor, dict[str, Any]]:
+def make_source(
+    dtype: str, *, complex_products: bool = False,
+) -> tuple[torch.Tensor, dict[str, Any]]:
     """Create one resident, already typed source and its native manifest values."""
     if dtype in COMPLEX_DTYPES:
+        if complex_products:
+            indices = torch.arange(ROWS * COLUMNS, dtype=torch.int64) % 17
+            real_cycle = torch.tensor([1.0] * 8 + [0.5] * 8 + [1.0], dtype=torch.float64)
+            imag_cycle = torch.tensor([1.0] * 8 + [-0.5] * 8 + [0.0], dtype=torch.float64)
+            source = torch.complex(real_cycle[indices], imag_cycle[indices])
+            source = source.reshape(ROWS, COLUMNS).to(dtype=TORCH_DTYPES[dtype])
+            values = [[item.real, item.imag] for item in source.flatten().tolist()]
+            return source, {"values": values}
         indices = torch.arange(ROWS * COLUMNS, dtype=torch.float64)
         real = 1 + ((indices % 17) - 8) * 0.0001
         imag = ((indices % 2) * 2 - 1) * 0.0002
@@ -203,6 +241,10 @@ def make_source(dtype: str) -> tuple[torch.Tensor, dict[str, Any]]:
         values = [[item.real, item.imag] for item in source.flatten().tolist()]
         return source, {"values": values}
     if dtype in INTEGER_DTYPES:
+        if complex_products:
+            words = [1] * (ROWS * COLUMNS)
+            source = torch.ones((ROWS, COLUMNS), dtype=TORCH_DTYPES[dtype])
+            return source, {"words": words}
         words = [index % 5 - 2 for index in range(ROWS * COLUMNS)]
         source = torch.tensor(words, dtype=torch.int64).reshape(ROWS, COLUMNS)
         return source.to(dtype=TORCH_DTYPES[dtype]), {"words": words}
@@ -228,6 +270,13 @@ def complex_sum_actions(input_dtype: str, output_dtype: str) -> tuple[str, ...]:
         return COMPLEX_SUM_CASES + COMPLEX_SUM_DEFAULT_CASES
     return COMPLEX_SUM_CASES
 
+
+def complex_product_actions(input_dtype: str, output_dtype: str) -> tuple[str, ...]:
+    """Return explicit products plus defaults for matching complex dtype pairs."""
+    if input_dtype == output_dtype and input_dtype in COMPLEX_DTYPES:
+        return COMPLEX_PRODUCT_CASES + COMPLEX_PRODUCT_DEFAULT_CASES
+    return COMPLEX_PRODUCT_CASES
+
 def run_group(
     args: argparse.Namespace,
     input_dtype: str,
@@ -237,7 +286,9 @@ def run_group(
     input_hashes: dict[str, str],
     failures: list[str],
 ) -> dict[str, Any]:
-    if args.complex_sums:
+    if args.complex_products:
+        action_names = complex_product_actions(input_dtype, output_dtype)
+    elif args.complex_sums:
         action_names = complex_sum_actions(input_dtype, output_dtype)
     elif args.complex_means:
         action_names = complex_mean_actions(input_dtype, output_dtype)
@@ -420,8 +471,19 @@ def main() -> int:
         "--complex-sums", action="store_true",
         help="Benchmark allocating complex-output and complex-input sum dtype overloads",
     )
+    parser.add_argument(
+        "--complex-products", action="store_true",
+        help="Benchmark allocating complex-output product dtype overloads",
+    )
     args = parser.parse_args()
     explicit_output_dtypes = args.output_dtypes is not None
+    if args.complex_products and explicit_output_dtypes:
+        parser.error("--complex-products cannot be combined with --output-dtypes")
+    if args.complex_products and (
+        args.complex_sums or args.complex_scans or args.complex_means or
+        args.complex_scan_dtypes
+    ):
+        parser.error("--complex-products cannot be combined with other complex modes")
     if args.complex_sums and explicit_output_dtypes:
         parser.error("--complex-sums cannot be combined with --output-dtypes")
     if args.complex_sums and (
@@ -467,7 +529,9 @@ def main() -> int:
     compile_command = [
         "nim", "c", "-d:release", "--path:src", f"--out:{args.runner}",
     ]
-    if args.complex_sums:
+    if args.complex_products:
+        compile_command.append("-d:complexProducts")
+    elif args.complex_sums:
         compile_command.append("-d:complexSums")
     if args.complex_means:
         compile_command.append("-d:complexMeans")
@@ -480,7 +544,21 @@ def main() -> int:
     failures: list[str] = []
     input_hashes: dict[str, str] = {}
     groups: list[dict[str, Any]] = []
-    if args.complex_sums:
+    if args.complex_products:
+        input_dtypes = INPUT_DTYPES + COMPLEX_DTYPES
+        output_dtypes = (
+            COMPLEX_DTYPES + OUTPUT_DTYPES + INTEGER_OUTPUT_DTYPES + BOOL_OUTPUT_DTYPES
+        )
+        for input_dtype in input_dtypes:
+            source, payload = make_source(input_dtype, complex_products=True)
+            selected_outputs = (
+                COMPLEX_DTYPES if input_dtype not in COMPLEX_DTYPES else output_dtypes
+            )
+            for output_dtype in selected_outputs:
+                groups.append(run_group(
+                    args, input_dtype, output_dtype, source, payload, input_hashes, failures,
+                ))
+    elif args.complex_sums:
         input_dtypes = INPUT_DTYPES + COMPLEX_DTYPES
         output_dtypes = COMPLEX_DTYPES + OUTPUT_DTYPES + INTEGER_OUTPUT_DTYPES + BOOL_OUTPUT_DTYPES
         for input_dtype in input_dtypes:
@@ -542,6 +620,12 @@ def main() -> int:
 
     action_count = sum(len(group["actions"]) for group in groups)
     comparison_count = action_count * 3 * 2
+    if args.complex_products and (
+        len(groups) != 42 or action_count != 132 or comparison_count != 792
+    ):
+        failures.append(
+            "complex product protocol expected 42 groups, 132 actions, and 792 comparisons"
+        )
     if args.complex_means and (
         len(groups) != 30 or action_count != 96 or comparison_count != 576
     ):
@@ -554,7 +638,7 @@ def main() -> int:
         failures.append(
             "complex sum protocol expected 42 groups, 132 actions, and 792 comparisons"
         )
-    if args.complex_means or args.complex_sums:
+    if args.complex_means or args.complex_sums or args.complex_products:
         actions_by_output_dtype = {
             output_dtype: list(dict.fromkeys(
                 action
@@ -582,7 +666,7 @@ def main() -> int:
         "paired_rounds_per_group": 3,
         "comparisons": comparison_count,
     }
-    if args.complex_means or args.complex_sums:
+    if args.complex_means or args.complex_sums or args.complex_products:
         protocol["actions_per_group"] = {
             f'{group["input_dtype"]}_to_{group["output_dtype"]}': list(group["actions"])
             for group in groups

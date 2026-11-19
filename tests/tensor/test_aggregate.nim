@@ -701,6 +701,130 @@ proc main() =
       columns[0, 0] = complex32(100, 100)
       check owner[1] == complex(1.0, 1.0)
 
+    test "Complex product dtypes cast before component arithmetic and wrapping":
+      let precise = [16777217.0, 1.0].toTensor
+      check precise.product(dtype = Complex[float32]) == complex32(16777216, 0)
+      check precise.product(dtype = Complex[float64]) == complex(16777217.0)
+      var narrowedColumns = newTensorWith[Complex[float64]]([2, 9],
+        complex(1.0000000596046448))
+      for column in 0 ..< 9:
+        narrowedColumns[0, column] = complex(1.0000001192092896)
+      check narrowedColumns.product(0, dtype = Complex[float32]) ==
+        newTensorWith[Complex[float32]]([1, 9], complex32(1.0000001192092896, 0))
+      let unsigned = [0x8000008000000001'u64].toTensor
+      check cast[uint32](unsigned.product(dtype = Complex[float32]).re) == 0x5f000001'u32
+      let rounded = [complex(3.9, 2.0), complex(100.0, -1.0)].toTensor
+      check rounded.product(dtype = int8) == 44'i8
+      check rounded.product(dtype = int64) == 300'i64
+      check [complex(200.0), complex(2.0)].toTensor.product(dtype = uint8) == 144'u8
+      check [complex(0.0, 1.0), complex(2.0)].toTensor.product(dtype = bool)
+      check not [complex(0.0), complex(2.0)].toTensor.product(dtype = bool)
+      check [complex(0.0, NaN), complex(2.0)].toTensor.product(dtype = bool)
+      let negativeZero = cast[float32](0x80000000'u32)
+      var truth = newTensorWith[Complex[float32]]([2, 9], complex32(1, 0))
+      truth[0, 0] = complex32(negativeZero, negativeZero)
+      truth[1, 8] = complex32(0, float32(NaN))
+      check not truth.product(dtype = bool)
+      check truth.product(0, dtype = bool) ==
+        [[false, true, true, true, true, true, true, true, true]].toTensor
+      check truth.product(1, dtype = bool) == [[false], [true]].toTensor
+      check [true, true].toTensor.product(dtype = Complex[float32]) == complex32(1, 0)
+      check [true, false].toTensor.product(dtype = Complex[float64]) == complex(0.0)
+      let discarded = [complex(7.0, NaN), complex(2.0)].toTensor
+      check discarded.product(dtype = float32) == 14'f32
+      check discarded.product(dtype = float64) == 14.0
+
+    test "Complex products fold packed vectors before scalar tails":
+      when defined(arm64):
+        var source = newTensorWith[Complex[float32]]([65], complex32(1, 0))
+        source[0] = complex32(1e30, 0)
+        source[1] = complex32(1e30, 0)
+        source[2] = complex32(1e-30, 0)
+        source[3] = complex32(1e-30, 0)
+        let scalar = source[0..6].product
+        check scalar.re.isNaN and scalar.im.isNaN
+        for length in [8, 9, 17, 65]:
+          check source[0..<length].product == complex32(1, 0)
+        let tiny = [complex(1e-100), complex(1e-100), complex(1e-100),
+                    complex(1e-100), complex(1e200)].toTensor
+        check tiny.product == complex(0.0)
+      var cycle = newTensorUninit[Complex[float64]](128, 128)
+      for index in 0 ..< cycle.size:
+        let position = index mod 17
+        cycle[index div 128, index mod 128] =
+          if position < 8: complex(1.0, 1.0)
+          elif position < 16: complex(0.5, -0.5)
+          else: complex(1.0)
+      check cycle.product == complex(-2.0, 2.0)
+      check cycle.product(dtype = Complex[float32]) == complex32(-2, 2)
+
+    test "Complex products retain scalar zero signs and empty dtype exceptions":
+      let negative = cast[float32](0x80000000'u32)
+      let scalar = newTensorWith[Complex[float32]]([], complex32(negative, negative))
+      let whole = scalar.product
+      let axis = scalar.product(-1)
+      check cast[uint32](whole.re) == 0'u32
+      check cast[uint32](whole.im) == 0x80000000'u32
+      check axis.shape.len == 0
+      check cast[uint32](axis.atContiguousIndex(0).re) == 0'u32
+      check cast[uint32](axis.atContiguousIndex(0).im) == 0x80000000'u32
+      let empty = newTensor[Complex[float64]](2, 0, 3)
+      check empty.product == complex(1.0)
+      check empty.product(dtype = uint16) == 1'u16
+      check empty.product(1, dtype = Complex[float32]) ==
+        newTensorWith[Complex[float32]]([2, 1, 3], complex32(1, 0))
+      check empty.product(1, dtype = uint64) == newTensorWith[uint64]([2, 1, 3], 1'u64)
+      expect ValueError: discard scalar.product(dtype = uint16)
+      expect ValueError: discard scalar.product(0, dtype = uint64)
+      expect IndexDefect: discard scalar.product(2, dtype = uint16)
+
+    test "Complex product column tiles preserve nonfinite and signed-zero identities":
+      let source64 = [[complex64(Inf, 0), complex64(0, Inf),
+        complex64(NaN, 1), complex64(1, NaN), complex64(-0.0, -0.0),
+        complex64(-0.0, 0.0), complex64(0.0, -0.0), complex64(0.0, 0.0),
+        complex64(2, -3)]].toTensor
+      var source32 = newTensorUninit[Complex[float32]](1, 9)
+      for column in 0..<9:
+        source32[0, column] = complex32(float32(source64[0, column].re),
+          float32(source64[0, column].im))
+      template checkColumns(expression: untyped) =
+        block:
+          let observed = expression
+          check observed.shape == [1, 9]
+          check observed[0, 0].re == Inf and observed[0, 0].im.isNaN
+          check observed[0, 1].re.isNaN and observed[0, 1].im == Inf
+          for column in 2..3:
+            check observed[0, column].re.isNaN and observed[0, column].im.isNaN
+          check observed[0, 4].re.classify == fcZero
+          check observed[0, 4].im.classify == fcNegZero
+          check observed[0, 5].re.classify == fcNegZero
+          check observed[0, 5].im.classify == fcZero
+          for column in 6..7:
+            check observed[0, column].re.classify == fcZero
+            check observed[0, column].im.classify == fcZero
+          check observed[0, 8].re == 2 and observed[0, 8].im == -3
+      checkColumns(source64.product(0))
+      checkColumns(source64.product(0, dtype = Complex[float32]))
+      checkColumns(source32.product(0))
+      checkColumns(source32.product(0, dtype = Complex[float64]))
+
+    test "Complex product views preserve signed strides, truth and output independence":
+      let owner = [complex(99.0, 1.0), complex(1.0, 1.0), complex(2.0, -1.0),
+                   complex(3.0), complex(99.0, 1.0)].toTensor
+      let reversed = owner[3..1|-1]
+      check reversed.product(dtype = Complex[float32]) == complex32(9, 3)
+      check reversed.product(dtype = int32) == 6'i32
+      let broadcast = reversed.reshape(3, 1).broadcast(3, 5)
+      var columns = broadcast.product(0, dtype = Complex[float32])
+      check columns == newTensorWith[Complex[float32]]([1, 5], complex32(9, 3))
+      check broadcast.product(1, dtype = float32) == [[243'f32], [32'f32], [1'f32]].toTensor
+      let truth = [[complex(1.0), complex(0.0, 4.0), complex(0.0)],
+                   [complex(2.0), complex(0.0, 1.0), complex(2.0)]].toTensor
+      check truth.product(0, dtype = bool) == [[true, true, false]].toTensor
+      check truth.product(1, dtype = bool) == [[false], [true]].toTensor
+      columns[0, 0] = complex32(100, 100)
+      check owner[1] == complex(1.0, 1.0)
+
     test "Product":
       let a = [[1,2,4],[8,16,32]].toTensor()
       let a_c = a.asType(Complex[float64])

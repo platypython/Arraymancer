@@ -102,7 +102,9 @@ proc reducePackedIntegerOutput[T, U](input: ptr UncheckedArray[T], base, count: 
                                      multiply: static[bool]; dtype: typedesc[U]): U =
   ## Numeric zero and decisive boolean values finish these exact reductions.
   when U is bool:
-    when T is SomeFloat and multiply:
+    when T is Complex and multiply:
+      result = reducePackedComplexTruth(input, base, count)
+    elif T is SomeFloat and multiply:
       result = reducePackedFloatTruth(input, base, count)
     else:
       result = multiply
@@ -115,7 +117,7 @@ proc reducePackedIntegerOutput[T, U](input: ptr UncheckedArray[T], base, count: 
       when T is bool:
         if not input[base + index]: return U(0)
       else:
-        combineInteger(word, input[base + index], true)
+        combineIntegerOutput(word, input[base + index], int64, true)
         if cast[U](word) == U(0): return U(0)
     result = cast[U](word)
   else:
@@ -163,6 +165,11 @@ proc reduceIntegerAxis[T, U](arg: Tensor[T], axis: int;
     var inner = 1'u
     for dimension in axis + 1 ..< arg.rank: inner *= arg.shape[dimension].uint
     let length = axisLength.uint
+    when U is bool and T is Complex and multiply:
+      if inner > 1:
+        reduceComplexTruthColumns(result.get_offset_ptr, arg.get_offset_ptr,
+          outer, length, inner)
+        return
     for batch in 0'u ..< outer:
       let base = batch * length * inner
       if inner == 1:
@@ -293,6 +300,10 @@ proc sum*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noinit.}
   else:
     sumAlongAxis(arg, axis)
 
+proc reduceComplexProductTotal[T, U](arg: Tensor[T]; dtype: typedesc[U]): U
+proc reduceComplexProductTensorAxis[T, U](arg: Tensor[T], axis: int;
+                                         dtype: typedesc[U]): Tensor[U]
+
 proc product*[T](arg: Tensor[T]): sumProductElement(T) =
   ## Compute the product of all elements; an empty product is one.
   ## Integers and booleans promote to int64 before modulo-2^64 arithmetic.
@@ -300,6 +311,8 @@ proc product*[T](arg: Tensor[T]): sumProductElement(T) =
   ## can depend on their grouping rather than a left-to-right multiplication order.
   when T is SomeInteger or T is bool:
     reduceIntegers(arg, true, int64)
+  elif T is Complex:
+    reduceComplexProductTotal(arg, T)
   else:
     if arg.size == 0: return productIdentity[T]()
     when T is float64:
@@ -320,6 +333,8 @@ proc product*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noin
   let axis = reductionAxis(arg.rank, axis)
   when T is SomeInteger or T is bool:
     reduceIntegerAxis(arg, axis, true, int64)
+  elif T is Complex:
+    reduceComplexProductTensorAxis(arg, axis, T)
   else:
     if arg.rank == 0:
       if arg.size == 0: return newTensor[T](0)
@@ -461,14 +476,14 @@ iterator stridedReductionValues[T](input: ptr UncheckedArray[T], base, count, st
 
 template productConvertedValues(values: untyped; U: typedesc): untyped =
   block:
-    var product = U(1)
+    var product = productIdentity[U]()
     for value in values:
       when typeof(value) is bool:
         if not value:
-          product = U(0)
+          product = default(U)
           break
       else:
-        product *= convertedReductionValue(value, U)
+        multiplyProductValue(product, convertedReductionValue(value, U))
     product
 
 proc productConvertedSpan[T, U](input: ptr UncheckedArray[T], base, count: uint;
@@ -480,6 +495,54 @@ proc productConvertedSpan[T, U](input: ptr UncheckedArray[T], base, count: uint;
     reduceConvertedProductSpan(unsafeAddr input[base], count, U)
   else:
     productConvertedValues(stridedReductionValues(input, base.int, count.int, 1), U)
+
+proc reduceComplexProductTotal[T, U](arg: Tensor[T]; dtype: typedesc[U]): U =
+  ## Dense storage follows the packed tree; signed vectors keep logical order.
+  if arg.size == 0: return productIdentity[U]()
+  let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+  if arg.is_C_contiguous or arg.is_F_contiguous:
+    return productComplexSpan(input, 0'u, arg.size.uint, 1'u, U)
+  if arg.rank == 1:
+    return productComplexSpan(input, 0, arg.size.uint, arg.strides[0], U)
+  productConvertedValues(arg, U)
+
+proc reduceComplexProductTensorAxis[T, U](arg: Tensor[T], axis: int;
+                                         dtype: typedesc[U]): Tensor[U] =
+  ## Cast directly into bounded carries and allocate only the final output.
+  withCompilerOptimHints()
+  let input = cast[ptr UncheckedArray[T]](arg.get_offset_ptr)
+  if arg.rank == 0:
+    if arg.size == 0: return newTensor[U](0)
+    var value = productIdentity[U]()
+    multiplyProductValue(value, convertedReductionValue(input[0], U))
+    return newTensorWith[U]([], value)
+  var shape = arg.shape
+  shape[axis] = 1
+  let length = arg.shape[axis]
+  if length == 0: return newTensorWith[U](shape, productIdentity[U]())
+  result = newTensorUninit[U](shape)
+  if result.size == 0: return
+  if arg.is_C_contiguous:
+    var outer = 1'u
+    var inner = 1'u
+    for dimension in 0 ..< axis: outer *= arg.shape[dimension].uint
+    for dimension in axis + 1 ..< arg.rank: inner *= arg.shape[dimension].uint
+    productComplexAxis(result.get_offset_ptr, arg.get_offset_ptr,
+      outer, length.uint, inner)
+    return
+  let output {.restrict.} = cast[ptr UncheckedArray[U]](result.get_offset_ptr)
+  for index in 0 ..< result.size:
+    var remainder = index
+    var base = 0
+    for dimension in countdown(arg.rank - 1, 0):
+      if dimension != axis:
+        base += (remainder mod shape[dimension]) * arg.strides[dimension]
+        remainder = remainder div shape[dimension]
+    if arg.strides[axis] == 1 or arg.strides[axis] == -1:
+      output[index] = productComplexSpan(input, base, length.uint, arg.strides[axis], U)
+    else:
+      output[index] = productConvertedValues(
+        stridedReductionValues(input, base, length, arg.strides[axis]), U)
 
 proc reduceConvertedAxis[T, U](arg: Tensor[T], axis: int;
                                dtype: typedesc[U]; average: static[bool];
@@ -750,12 +813,27 @@ proc sum*[T: SomeNumber or bool or Complex, U: SomeFloat](arg: Tensor[T], axis: 
         return arg.sum(axis)
     reduceConvertedAxis(arg, axis, U, false)
 
-proc product*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T];
-                                                   dtype: typedesc[U]): U =
-  ## Product after casting each real input to the requested floating ``dtype``.
-  ## Arithmetic stays in that dtype, including overflow and underflow.
-  ## Unsigned inputs convert numerically; empty products are one.
-  ## No converted input tensor is allocated.
+proc product*[T: SomeNumber or bool or Complex; F: SomeFloat](arg: Tensor[T];
+    dtype: typedesc[Complex[F]]): Complex[F] =
+  ## Cast on read, then multiply in the complex output's component width.
+  ## Empty products are 1+0i. Packed vectors fold before scalar tails;
+  ## grouping can change rounding and intermediate overflow or underflow.
+  reduceComplexProductTotal(arg, Complex[F])
+
+proc product*[T: SomeNumber or bool or Complex; F: SomeFloat](arg: Tensor[T], axis: int;
+    dtype: typedesc[Complex[F]]): Tensor[Complex[F]] =
+  ## Retain the reduced dimension, with one independent final allocation.
+  ## Empty axes produce 1+0i; scalar axes multiply the identity before storing.
+  ## Signed and broadcast views are read in place without a conversion tensor.
+  let axis = reductionAxis(arg.rank, axis)
+  reduceComplexProductTensorAxis(arg, axis, Complex[F])
+
+proc product*[T: SomeNumber or bool or Complex, U: SomeFloat](arg: Tensor[T];
+                                                              dtype: typedesc[U]): U =
+  ## Cast on read and multiply in the requested floating dtype.
+  ## Unsigned inputs convert numerically; complex inputs discard imaginary parts
+  ## with the shared cast warning. Empty products are one.
+  warnComplexToRealCast(T, U, arg.size)
   if arg.size == 0: return U(1)
   when T is U:
     if arg.is_C_contiguous: return arg.product
@@ -764,12 +842,13 @@ proc product*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T];
     return productConvertedSpan(input, 0'u, arg.size.uint, U)
   productConvertedValues(arg, U)
 
-proc product*[T: SomeNumber or bool, U: SomeFloat](arg: Tensor[T], axis: int;
-                                                   dtype: typedesc[U]): Tensor[U] =
-  ## Product in the requested floating dtype, retaining the reduced dimension.
-  ## Empty reductions produce ones; scalar axes 0 and -1 preserve scalar signs.
-  ## Views are cast on read. Only the independent final output is allocated.
+proc product*[T: SomeNumber or bool or Complex, U: SomeFloat](arg: Tensor[T], axis: int;
+                                                              dtype: typedesc[U]): Tensor[U] =
+  ## Retained-axis products allocate only the independent final output.
+  ## Empty axes produce one; scalar signs and signed views are preserved.
+  ## Complex numeric casts discard imaginary parts with the shared warning.
   let axis = reductionAxis(arg.rank, axis)
+  warnComplexToRealCast(T, U, arg.size)
   when T is U and (T is float64 or (defined(macosx) and T is float32)):
     if arg.rank > 0 and arg.size > 0 and arg.is_C_contiguous:
       return arg.product(axis)
@@ -805,19 +884,22 @@ proc sum*[T: SomeNumber or bool or Complex, U: SomeInteger or bool](arg: Tensor[
   warnComplexToRealCast(T, U, arg.size)
   reduceIntegerAxis(arg, axis, false, U)
 
-proc product*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T];
-                                                            dtype: typedesc[U]): U =
+proc product*[T: SomeNumber or bool or Complex, U: SomeInteger or bool](arg: Tensor[T];
+                                                                       dtype: typedesc[U]): U =
   ## Cast on read and multiply modulo dtype; bool products are logical AND.
   ## Empty products are one/true. Wider unsigned outputs reject nonempty inputs.
   ## Floating inputs must truncate to a value representable in dtype.
+  ## Complex numeric casts warn; bool checks both components without warning.
+  warnComplexToRealCast(T, U, arg.size)
   reduceIntegers(arg, true, U)
 
-proc product*[T: SomeNumber or bool, U: SomeInteger or bool](arg: Tensor[T], axis: int;
-                                                            dtype: typedesc[U]): Tensor[U] =
+proc product*[T: SomeNumber or bool or Complex, U: SomeInteger or bool](arg: Tensor[T], axis: int;
+                                                                       dtype: typedesc[U]): Tensor[U] =
   ## Retained-axis wrapping products or boolean ANDs; views are read in place.
   ## Empty reduced axes yield one/true. Wider unsigned outputs reject nonempty
   ## inputs, including scalars. Floating casts must fit the requested dtype.
   let axis = reductionAxis(arg.rank, axis)
+  warnComplexToRealCast(T, U, arg.size)
   reduceIntegerAxis(arg, axis, true, U)
 
 proc min*[T](arg: Tensor[T]): T =

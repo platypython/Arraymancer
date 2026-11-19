@@ -2074,6 +2074,66 @@ def complex_sum_dtype(torch: Any) -> dict[str, Any]:
     return _case("tensor.complex_sum_dtype", "api:torch", specs, expected, tolerance=1e-6)
 
 
+def complex_prod_dtype(torch: Any) -> dict[str, Any]:
+    """Observe explicit and default CPU complex product output dtypes."""
+    specs = _complex_reduction_dtype_inputs()
+    for spec in specs.values():
+        if spec["dtype"] in ("complex64", "complex128"):
+            spec["output_dtypes"].append("default")
+
+    expected: dict[str, Any] = {}
+    for name, spec in specs.items():
+        source = (
+            _complex_scan_source(torch, spec)
+            if spec["dtype"] in ("complex64", "complex128")
+            else _real_dtype_source(torch, spec)
+        )
+        source_expected: dict[str, Any] = {}
+        for target in spec["output_dtypes"]:
+            output_dtype = None if target == "default" else getattr(torch, target)
+
+            def prod_call(axis: int | None) -> Any:
+                if target == "default":
+                    return (
+                        source.prod()
+                        if axis is None
+                        else source.prod(dim=axis, keepdim=True)
+                    )
+                return (
+                    source.prod(dtype=output_dtype)
+                    if axis is None
+                    else source.prod(dim=axis, keepdim=True, dtype=output_dtype)
+                )
+
+            reject = target in ("uint16", "uint32", "uint64") and source.numel() > 0
+            target_expected: dict[str, Any] = {
+                "all": _unsupported_integer_output(
+                    lambda: prod_call(None), "prod", target, reject,
+                    f"{name}.prod.all.{target}",
+                    observer=_complex_scan_dtype_observation,
+                )
+            }
+            axes: dict[str, Any] = {}
+            for axis in spec["axes"]:
+                axes[str(axis)] = _unsupported_integer_output(
+                    lambda axis=axis: prod_call(axis), "prod", target, reject,
+                    f"{name}.prod.{axis}.{target}",
+                    observer=_complex_scan_dtype_observation,
+                )
+            target_expected["axes"] = axes
+
+            invalid_axes: dict[str, Any] = {}
+            for axis in spec["invalid_axes"]:
+                invalid_axes[str(axis)] = _complex_invalid_reduction_axis(
+                    lambda axis=axis: prod_call(axis),
+                    f"{name}.prod.invalid_axis.{axis}.{target}",
+                )
+            target_expected["invalid_axes"] = invalid_axes
+            source_expected[target] = target_expected
+        expected[name] = source_expected
+    return _case("tensor.complex_prod_dtype", "api:torch", specs, expected, tolerance=1e-6)
+
+
 CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     transpose_alias, empty_shape, scalar_metadata, elementwise_shapes, broadcast_same_rank,
     broadcast_leading_dims, matmul_2d, mean_gradient, mse_mean,
@@ -2085,6 +2145,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     cumsum_gradient, cumprod_gradient,
     integer_scans, integer_reductions, mean_dtype, sum_dtype, prod_dtype, cumsum_dtype, cumprod_dtype,
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
+    complex_prod_dtype,
 )
 
 

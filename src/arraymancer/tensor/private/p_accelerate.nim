@@ -128,6 +128,146 @@ proc scanPackedComplex*[T; F: SomeFloat](output: ptr Complex[F]; input: ptr T;
       accumulateComplexScan(carry, value, multiply)
       destination[index] = Complex[F](re: F(carry.re), im: F(carry.im))
 
+template multiplyProductValue*(target, value: untyped) =
+  ## Keep component products rounded before combining them, without scan widening.
+  when typeof(target) is Complex:
+    let right = value
+    let rr = target.re * right.re
+    let ii = target.im * right.im
+    let ri = target.re * right.im
+    let ir = target.im * right.re
+    target.re = rr - ii
+    target.im = ri + ir
+  else:
+    target *= value
+
+template complexTruthBits(input, index: untyped): uint64 =
+  block:
+    let words = cast[ptr UncheckedArray[uint64]](input)
+    when sizeof(typeof(input[0])) == 8:
+      words[index] and 0x7fffffff7fffffff'u64
+    else:
+      (words[2'u * index] or words[2'u * index + 1'u]) and 0x7fffffffffffffff'u64
+
+proc reducePackedComplexTruth*[T: Complex](input: ptr UncheckedArray[T];
+                                           base, count: uint): bool =
+  ## Either signed zero is false; NaNs and infinities remain true components.
+  var anyZero = 0'u64
+  for index in 0'u ..< count:
+    anyZero = anyZero or uint64(ord(complexTruthBits(input, base + index) == 0))
+  anyZero == 0
+
+proc reduceComplexTruthColumns*[T: Complex](output: ptr bool; input: ptr T;
+    outer, length, inner: uint) =
+  ## Stream rows into the final boolean carries so truth tests can vectorize.
+  withCompilerOptimHints()
+  let source = cast[ptr UncheckedArray[T]](input)
+  let destination {.restrict.} = cast[ptr UncheckedArray[bool]](output)
+  for group in 0'u ..< outer:
+    let base = group * length * inner
+    let target = group * inner
+    for column in 0'u ..< inner: destination[target + column] = true
+    for row in 0'u ..< length:
+      let offset = base + row * inner
+      for column in 0'u ..< inner:
+        let truth = uint8(ord(complexTruthBits(source, offset + column) != 0))
+        destination[target + column] =
+          (uint8(ord(destination[target + column])) and truth) != 0
+
+when defined(macosx) and defined(arm64):
+  proc productPackedComplex32Span(input: ptr Complex[float32]; count: uint): Complex[float32]
+  proc productPackedComplexAxis[T, U: Complex](output: ptr U; input: ptr T;
+                                              outer, length, inner: uint)
+
+proc productComplexSpan*[T; U: Complex; I: SomeInteger](input: ptr UncheckedArray[T];
+    base: I; count: uint; stride: I; dtype: typedesc[U]): U {.inline.} =
+  ## Four native vectors fold before the scalar tail, with no conversion buffer.
+  when defined(macosx) and defined(arm64) and T is Complex[float32] and U is Complex[float32]:
+    if stride == 1:
+      return productPackedComplex32Span(cast[ptr Complex[float32]](unsafeAddr input[base]), count)
+  const vectorBytes = when defined(arm64): 16 else: 32
+  const width = vectorBytes div sizeof(U)
+  const lanes = 4 * width
+  result.re = 1
+  when T is bool:
+    for index in 0'u ..< count:
+      if not input[base + I(index) * stride]: return default(U)
+  else:
+    var index = 0'u
+    let bulk = count - count mod uint(lanes)
+    if bulk != 0:
+      var partials {.noinit.}: array[lanes, U]
+      for lane in 0'u ..< uint(lanes):
+        partials[lane] = convertedReductionValue(input[base + I(lane) * stride], U)
+      index = uint(lanes)
+      while index < bulk:
+        for lane in 0'u ..< uint(lanes):
+          multiplyProductValue(partials[lane],
+            convertedReductionValue(input[base + I(index + lane) * stride], U))
+        index += uint(lanes)
+      for lane in 0'u ..< uint(width):
+        multiplyProductValue(partials[lane], partials[lane + uint(width)])
+        multiplyProductValue(partials[lane + uint(2 * width)], partials[lane + uint(3 * width)])
+        multiplyProductValue(partials[lane], partials[lane + uint(2 * width)])
+      var folded = partials[0]
+      for lane in 1'u ..< uint(width):
+        multiplyProductValue(folded, partials[lane])
+      multiplyProductValue(result, folded)
+    while index < count:
+      multiplyProductValue(result,
+        convertedReductionValue(input[base + I(index) * stride], U))
+      inc index
+
+proc productComplexAxis*[T; U: Complex](output: ptr U; input: ptr T;
+    outer, length, inner: uint) =
+  ## Nonempty packed columns keep independent chains and a right-hand identity.
+  when defined(macosx) and defined(arm64) and
+      ((T is Complex[float32] and U is Complex[float32]) or T is Complex[float64]):
+    productPackedComplexAxis(output, input, outer, length, inner)
+  else:
+    withCompilerOptimHints()
+    let source = cast[ptr UncheckedArray[T]](input)
+    let destination {.restrict.} = cast[ptr UncheckedArray[U]](output)
+    const vectorBytes = when defined(arm64): 16 else: 32
+    const lanes = 4 * vectorBytes div sizeof(U)
+    var identity: U
+    identity.re = 1
+    for group in 0'u ..< outer:
+      let base = group * length * inner
+      let target = group * inner
+      if inner == 1:
+        destination[target] = productComplexSpan(source, base, length, 1'u, U)
+      else:
+        when T is bool:
+          for column in 0'u ..< inner:
+            var value = identity
+            for row in 0'u ..< length:
+              if not source[base + row * inner + column]:
+                value = default(U)
+                break
+            destination[target + column] = value
+        else:
+          var column = 0'u
+          while column + uint(lanes) <= inner:
+            var partials {.noinit.}: array[lanes, U]
+            for lane in 0'u ..< uint(lanes):
+              partials[lane] = convertedReductionValue(source[base + column + lane], U)
+            for row in 1'u ..< length:
+              let offset = base + row * inner + column
+              for lane in 0'u ..< uint(lanes):
+                multiplyProductValue(partials[lane], convertedReductionValue(source[offset + lane], U))
+            for lane in 0'u ..< uint(lanes):
+              multiplyProductValue(partials[lane], identity)
+              destination[target + column + lane] = partials[lane]
+            column += uint(lanes)
+          while column < inner:
+            var value = identity
+            for row in 0'u ..< length:
+              multiplyProductValue(value,
+                convertedReductionValue(source[base + row * inner + column], U))
+            destination[target + column] = value
+            inc column
+
 template finishCascadedReduction*(value: untyped; count: int;
                                   average: static[bool]): untyped =
   ## Means retain complex reciprocal rounding; sums keep the zero identity.
@@ -272,6 +412,14 @@ when defined(macosx):
       {.localPassC: "-mno-outline".}
     type Float32x4 {.importc: "float32x4_t", bycopy, header: "<arm_neon.h>".} = object
       raw: array[4, float32]
+    type Float32x4x2 {.importc: "float32x4x2_t", bycopy, header: "<arm_neon.h>".} = object
+      val: array[2, Float32x4]
+    proc vld2q_f32(input: ptr float32): Float32x4x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vst2q_f32(output: ptr float32; value: Float32x4x2)
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vsubq_f32(a, b: Float32x4): Float32x4
+      {.importc, nodecl, header: "<arm_neon.h>".}
     proc vld1q_f32(input: ptr float32): Float32x4
       {.importc, nodecl, header: "<arm_neon.h>".}
     proc vsqrtq_f32(input: Float32x4): Float32x4
@@ -292,6 +440,14 @@ when defined(macosx):
       raw: array[2, float32]
     type Float64x2 {.importc: "float64x2_t", bycopy, header: "<arm_neon.h>".} = object
       raw: array[2, float64]
+    type Float64x2x2 {.importc: "float64x2x2_t", bycopy, header: "<arm_neon.h>".} = object
+      val: array[2, Float64x2]
+    proc vld2q_f64(input: ptr float64): Float64x2x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vst2q_f64(output: ptr float64; value: Float64x2x2)
+      {.importc, nodecl, header: "<arm_neon.h>".}
+    proc vsubq_f64(a, b: Float64x2): Float64x2
+      {.importc, nodecl, header: "<arm_neon.h>".}
     proc vld1_f32(input: ptr float32): Float32x2
       {.importc, nodecl, header: "<arm_neon.h>".}
     proc vdup_n_f32(value: float32): Float32x2
@@ -422,6 +578,114 @@ when defined(macosx):
     proc vget_high_u16(value: UInt16x8): UInt16x4
       {.importc, nodecl, header: "<arm_neon.h>".}
 
+    template multiplyComplexProductVectors(target, value: untyped) =
+      let right = value
+      when typeof(target) is Float32x4x2:
+        let rr = vmulq_f32(target.val[0], right.val[0])
+        let ii = vmulq_f32(target.val[1], right.val[1])
+        let ri = vmulq_f32(target.val[0], right.val[1])
+        let ir = vmulq_f32(target.val[1], right.val[0])
+        target.val[0] = vsubq_f32(rr, ii)
+        target.val[1] = vaddq_f32(ri, ir)
+      else:
+        let rr = vmulq_f64(target.val[0], right.val[0])
+        let ii = vmulq_f64(target.val[1], right.val[1])
+        let ri = vmulq_f64(target.val[0], right.val[1])
+        let ir = vmulq_f64(target.val[1], right.val[0])
+        target.val[0] = vsubq_f64(rr, ii)
+        target.val[1] = vaddq_f64(ri, ir)
+
+    proc productPackedComplex32Span(input: ptr Complex[float32];
+                                    count: uint): Complex[float32] =
+      ## Deinterleaved vectors keep all eight logical partials independent.
+      let source = cast[ptr UncheckedArray[Complex[float32]]](input)
+      result.re = 1
+      var index = 0'u
+      let bulk = count and not 7'u
+      if bulk != 0:
+        var a = vld2q_f32(cast[ptr float32](addr source[0]))
+        var b = vld2q_f32(cast[ptr float32](addr source[4]))
+        index = 8
+        while index < bulk:
+          multiplyComplexProductVectors(a, vld2q_f32(cast[ptr float32](addr source[index])))
+          multiplyComplexProductVectors(b, vld2q_f32(cast[ptr float32](addr source[index + 4])))
+          index += 8
+        var partials {.noinit.}: array[8, Complex[float32]]
+        vst2q_f32(cast[ptr float32](addr partials[0]), a)
+        vst2q_f32(cast[ptr float32](addr partials[4]), b)
+        for lane in 0 ..< 2:
+          multiplyProductValue(partials[lane], partials[lane + 2])
+          multiplyProductValue(partials[lane + 4], partials[lane + 6])
+          multiplyProductValue(partials[lane], partials[lane + 4])
+        var folded = partials[0]
+        multiplyProductValue(folded, partials[1])
+        multiplyProductValue(result, folded)
+      while index < count:
+        multiplyProductValue(result, source[index])
+        inc index
+
+    proc loadComplexProductVectors[T, U: Complex](source: ptr UncheckedArray[T];
+        index: uint; dtype: typedesc[U]): auto {.inline.} =
+      when U is Complex[float32]:
+        when T is Complex[float32]:
+          vld2q_f32(cast[ptr float32](addr source[index]))
+        else:
+          let low = vld2q_f64(cast[ptr float64](addr source[index]))
+          let high = vld2q_f64(cast[ptr float64](addr source[index + 2]))
+          var converted: Float32x4x2
+          converted.val[0] = vcombine_f32(vcvt_f32_f64(low.val[0]), vcvt_f32_f64(high.val[0]))
+          converted.val[1] = vcombine_f32(vcvt_f32_f64(low.val[1]), vcvt_f32_f64(high.val[1]))
+          converted
+      else:
+        vld2q_f64(cast[ptr float64](addr source[index]))
+
+    proc productPackedComplexAxis[T, U: Complex](output: ptr U; input: ptr T;
+                                                outer, length, inner: uint) =
+      ## Deinterleaved columns share only loads, never arithmetic or output storage.
+      withCompilerOptimHints()
+      let source = cast[ptr UncheckedArray[T]](input)
+      let destination {.restrict.} = cast[ptr UncheckedArray[U]](output)
+      when U is Complex[float32]:
+        const width = 4'u
+        var identity: Float32x4x2
+        identity.val[0] = vdupq_n_f32(1)
+        identity.val[1] = vdupq_n_f32(0)
+        template store(index: uint; value: untyped) =
+          vst2q_f32(cast[ptr float32](addr destination[index]), value)
+      else:
+        const width = 2'u
+        var identity: Float64x2x2
+        identity.val[0] = vdupq_n_f64(1)
+        identity.val[1] = vdupq_n_f64(0)
+        template store(index: uint; value: untyped) =
+          vst2q_f64(cast[ptr float64](addr destination[index]), value)
+      for group in 0'u ..< outer:
+        let base = group * length * inner
+        let target = group * inner
+        if inner == 1:
+          destination[target] = productComplexSpan(source, base, length, 1'u, U)
+        else:
+          var column = 0'u
+          while column + 2'u * width <= inner:
+            var a = loadComplexProductVectors(source, base + column, U)
+            var b = loadComplexProductVectors(source, base + column + width, U)
+            for row in 1'u ..< length:
+              let offset = base + row * inner + column
+              multiplyComplexProductVectors(a, loadComplexProductVectors(source, offset, U))
+              multiplyComplexProductVectors(b, loadComplexProductVectors(source, offset + width, U))
+            multiplyComplexProductVectors(a, identity)
+            multiplyComplexProductVectors(b, identity)
+            store(target + column, a)
+            store(target + column + width, b)
+            column += 2'u * width
+          while column < inner:
+            var value: U
+            value.re = 1
+            for row in 0'u ..< length:
+              multiplyProductValue(value, convertedReductionValue(source[base + row * inner + column], U))
+            destination[target + column] = value
+            inc column
+
     proc loadSmallIntegerLanes[T](input: ptr UncheckedArray[T], index: uint;
                                     count: static[int]): auto {.inline.} =
       ## Exact-width copies become unaligned loads without aliasing or overreads.
@@ -477,6 +741,9 @@ when defined(macosx):
         vld1q_f64(unsafeAddr input[index])
       elif T is float32:
         vcvt_f64_f32(vld1_f32(unsafeAddr input[index]))
+      elif T is Complex:
+        vsetq_lane_f64(convertedReductionValue(input[index + 1], float64),
+          vdupq_n_f64(convertedReductionValue(input[index], float64)), 1)
       elif T is int8 or T is int16:
         vcvtq_f64_s64(vmovl_s32(vget_low_s32(loadSmallIntegerLanes(input, index, 2))))
       elif T is bool or T is uint8 or T is uint16:

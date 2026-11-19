@@ -2,6 +2,12 @@
 ## Measures allocating CPU reductions and scans with explicit output dtypes.
 import std/[algorithm, complex, json, math, monotimes, os, times]
 import arraymancer
+when defined(complexProducts) and (
+    defined(complexScans) or defined(complexScanDtypes) or
+    defined(complexMeans) or defined(complexSums)
+  ):
+  {.error: "complexProducts cannot be combined with another complex benchmark mode".}
+
 
 const floatCases = [
   "mean", "mean_rows", "mean_columns", "sum", "sum_rows", "sum_columns",
@@ -22,9 +28,24 @@ const complexMeanDefaultCases = [
 ]
 const complexSumCases = ["sum", "sum_rows", "sum_columns"]
 const complexSumDefaultCases = ["sum_default", "sum_rows_default", "sum_columns_default"]
+const complexProductCases = ["prod", "prod_rows", "prod_columns"]
+const complexProductDefaultCases = [
+  "prod_default", "prod_rows_default", "prod_columns_default",
+]
+
 
 iterator actionNames[InputT, OutputT](): string =
-  when defined(complexSums):
+  when defined(complexProducts):
+    when OutputT is Complex:
+      for name in complexProductCases:
+        yield name
+      when InputT is Complex and OutputT is InputT:
+        for name in complexProductDefaultCases:
+          yield name
+    elif InputT is Complex and (OutputT is SomeFloat or OutputT is SomeInteger or OutputT is bool):
+      for name in complexProductCases:
+        yield name
+  elif defined(complexSums):
     when OutputT is Complex:
       for name in complexSumCases:
         yield name
@@ -95,7 +116,25 @@ proc loadInput[T](manifest: JsonNode): Tensor[T] =
           data[index] = T(values[index].getFloat)
 
 proc execute[InputT, OutputT](name: string; input: Tensor[InputT]): Tensor[OutputT] =
-  when defined(complexSums):
+  when defined(complexProducts):
+    case name
+    of "prod": newTensorWith[OutputT]([], input.product(dtype = OutputT))
+    of "prod_rows": input.product(-1, dtype = OutputT)
+    of "prod_columns": input.product(-2, dtype = OutputT)
+    of "prod_default":
+      when InputT is Complex and OutputT is InputT:
+        newTensorWith[OutputT]([], input.product())
+      else: raise newException(ValueError, "Default complex product requires matching complex dtypes")
+    of "prod_rows_default":
+      when InputT is Complex and OutputT is InputT:
+        input.product(-1)
+      else: raise newException(ValueError, "Default complex product requires matching complex dtypes")
+    of "prod_columns_default":
+      when InputT is Complex and OutputT is InputT:
+        input.product(-2)
+      else: raise newException(ValueError, "Default complex product requires matching complex dtypes")
+    else: raise newException(ValueError, "Unknown complex product dtype action: " & name)
+  elif defined(complexSums):
     case name
     of "sum": newTensorWith[OutputT]([], input.sum(dtype = OutputT))
     of "sum_rows": input.sum(-1, dtype = OutputT)
@@ -225,18 +264,18 @@ proc run[InputT, OutputT](manifest: JsonNode): JsonNode =
   let repeats = manifest["repeats"].getInt
   let warmup = manifest["warmup"].getInt
   var report = newJObject()
-  when defined(complexSums):
+  when defined(complexSums) or defined(complexProducts):
     var expectedActions = newSeq[string]()
     for action in actionNames[InputT, OutputT]():
       expectedActions.add action
     if expectedActions.len == 0:
-      raise newException(ValueError, "Unsupported complex sum source/output dtype pair")
+      raise newException(ValueError, "Unsupported complex reduction source/output dtype pair")
     let suppliedActions = manifest["actions"]
     if suppliedActions.len != expectedActions.len:
-      raise newException(ValueError, "Complex sum action manifest does not match dtype mode")
+      raise newException(ValueError, "Complex reduction action manifest does not match dtype mode")
     for index, action in expectedActions:
       if suppliedActions[index].getStr != action:
-        raise newException(ValueError, "Complex sum action manifest does not match dtype mode")
+        raise newException(ValueError, "Complex reduction action manifest does not match dtype mode")
   for name in actionNames[InputT, OutputT]():
     let observation = observe(execute[InputT, OutputT](name, input), dtypeName[InputT]())
     for _ in 0 ..< warmup:
@@ -271,11 +310,11 @@ proc runForInput[InputT](manifest: JsonNode): JsonNode =
   of "float32": run[InputT, float32](manifest)
   of "float64": run[InputT, float64](manifest)
   of "complex64":
-    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums):
+    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums) or defined(complexProducts):
       run[InputT, Complex[float32]](manifest)
     else: raise newException(ValueError, "Unsupported reduction output dtype")
   of "complex128":
-    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums):
+    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums) or defined(complexProducts):
       run[InputT, Complex[float64]](manifest)
     else: raise newException(ValueError, "Unsupported reduction output dtype")
   else: raise newException(ValueError, "Unsupported reduction output dtype")
@@ -294,15 +333,14 @@ proc runForDtype(manifest: JsonNode): JsonNode =
   of "float32": runForInput[float32](manifest)
   of "float64": runForInput[float64](manifest)
   of "complex64":
-    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums):
+    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums) or defined(complexProducts):
       runForInput[Complex[float32]](manifest)
     else: raise newException(ValueError, "Unsupported reduction input dtype")
   of "complex128":
-    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums):
+    when defined(complexScanDtypes) or defined(complexMeans) or defined(complexSums) or defined(complexProducts):
       runForInput[Complex[float64]](manifest)
     else: raise newException(ValueError, "Unsupported reduction input dtype")
   else: raise newException(ValueError, "Unsupported reduction input dtype")
-
 when isMainModule:
   if paramCount() != 1:
     echo "Usage: reduction_dtype_runner INPUT.json"

@@ -1209,6 +1209,149 @@ proc complexSumDtype(inputs: JsonNode): JsonNode =
   for name, spec in inputs:
     result[name] = complexSumDtypeBySource(spec)
 
+proc complexProductDtypeScalar[T, U](source: Tensor[T], dtype: typedesc[U],
+                                     reject: bool, label: string): JsonNode =
+  if reject:
+    try:
+      discard source.product(dtype = dtype)
+    except ValueError as error:
+      if not complexSumUnsupported(error.msg): raise
+      return integerOutputUnsupported()
+    raise newException(ValueError, label & " unexpectedly accepted an unsupported output dtype")
+  result = complexScanDtypeObservation(
+    newTensorWith[U]([], source.product(dtype = dtype)))
+
+proc complexProductDtypeAxis[T, U](source: Tensor[T], axis: int,
+                                   dtype: typedesc[U], reject: bool,
+                                   label: string): JsonNode =
+  if reject:
+    try:
+      discard source.product(axis = axis, dtype = dtype)
+    except ValueError as error:
+      if not complexSumUnsupported(error.msg): raise
+      return integerOutputUnsupported()
+    raise newException(ValueError, label & " unexpectedly accepted an unsupported output dtype")
+  result = complexScanDtypeObservation(
+    source.product(axis = axis, dtype = dtype))
+
+proc complexProductInvalidAxis[T, U](source: Tensor[T], axis: int,
+                                     dtype: typedesc[U], label: string): JsonNode =
+  try:
+    discard source.product(axis = axis, dtype = dtype)
+  except ValueError as error:
+    if not complexSumInvalidAxisError(error.msg): raise
+    return %*{"error": "invalid_axis"}
+  except IndexDefect as error:
+    if not error.msg.toLowerAscii.contains("reduction axis out of bounds"): raise
+    return %*{"error": "invalid_axis"}
+  raise newException(ValueError, label & " unexpectedly accepted an invalid product axis")
+
+proc complexProductInvalidDefaultAxis[T](source: Tensor[T], axis: int,
+                                         label: string): JsonNode =
+  try:
+    discard source.product(axis = axis)
+  except ValueError as error:
+    if not complexSumInvalidAxisError(error.msg): raise
+    return %*{"error": "invalid_axis"}
+  except IndexDefect as error:
+    if not error.msg.toLowerAscii.contains("reduction axis out of bounds"): raise
+    return %*{"error": "invalid_axis"}
+  raise newException(ValueError, label & " unexpectedly accepted an invalid product axis")
+
+proc complexProductDefaultTarget[T](source: Tensor[T], spec: JsonNode): JsonNode =
+  result = newJObject()
+  result["all"] = complexScanDtypeObservation(newTensorWith[T]([], source.product))
+
+  var axes = newJObject()
+  for axisNode in spec["axes"]:
+    let axis = axisNode.getInt
+    axes[$axis] = complexScanDtypeObservation(
+      source.product(axis = axis))
+  result["axes"] = axes
+
+  var invalidAxes = newJObject()
+  for axisNode in spec["invalid_axes"]:
+    let axis = axisNode.getInt
+    invalidAxes[$axis] = complexProductInvalidDefaultAxis(
+      source, axis, "default.product.invalid_axis." & $axis)
+  result["invalid_axes"] = invalidAxes
+
+proc complexProductDtypeTarget[T, U](source: Tensor[T], spec: JsonNode,
+                                     dtype: typedesc[U], dtypeName: string): JsonNode =
+  let reject = dtypeName in ["uint16", "uint32", "uint64"] and source.size > 0
+  result = newJObject()
+  result["all"] = complexProductDtypeScalar(
+    source, dtype, reject, dtypeName & ".product.all")
+
+  var axes = newJObject()
+  for axisNode in spec["axes"]:
+    let axis = axisNode.getInt
+    axes[$axis] = complexProductDtypeAxis(
+      source, axis, dtype, reject, dtypeName & ".product." & $axis)
+  result["axes"] = axes
+
+  var invalidAxes = newJObject()
+  for axisNode in spec["invalid_axes"]:
+    let axis = axisNode.getInt
+    invalidAxes[$axis] = complexProductInvalidAxis(
+      source, axis, dtype, dtypeName & ".product.invalid_axis." & $axis)
+  result["invalid_axes"] = invalidAxes
+
+proc complexProductDtypeForOutput[T](source: Tensor[T], spec: JsonNode,
+                                    dtypeName: string): JsonNode =
+  case dtypeName
+  of "bool": complexProductDtypeTarget[T, bool](source, spec, bool, dtypeName)
+  of "uint8": complexProductDtypeTarget[T, uint8](source, spec, uint8, dtypeName)
+  of "int8": complexProductDtypeTarget[T, int8](source, spec, int8, dtypeName)
+  of "int16": complexProductDtypeTarget[T, int16](source, spec, int16, dtypeName)
+  of "int32": complexProductDtypeTarget[T, int32](source, spec, int32, dtypeName)
+  of "int64": complexProductDtypeTarget[T, int64](source, spec, int64, dtypeName)
+  of "uint16": complexProductDtypeTarget[T, uint16](source, spec, uint16, dtypeName)
+  of "uint32": complexProductDtypeTarget[T, uint32](source, spec, uint32, dtypeName)
+  of "uint64": complexProductDtypeTarget[T, uint64](source, spec, uint64, dtypeName)
+  of "float32": complexProductDtypeTarget[T, float32](source, spec, float32, dtypeName)
+  of "float64": complexProductDtypeTarget[T, float64](source, spec, float64, dtypeName)
+  of "complex64": complexProductDtypeTarget[T, Complex[float32]](
+    source, spec, Complex[float32], dtypeName)
+  of "complex128": complexProductDtypeTarget[T, Complex[float64]](
+    source, spec, Complex[float64], dtypeName)
+  else: raise newException(ValueError, "unsupported complex product output dtype: " & dtypeName)
+
+proc complexProductDtypeCase[T](spec: JsonNode): JsonNode =
+  let source = complexScanDtypeSource[T](spec)
+  result = newJObject()
+  for dtypeNode in spec["output_dtypes"]:
+    let dtypeName = dtypeNode.getStr
+    if dtypeName == "default":
+      when T is Complex[float32] or T is Complex[float64]:
+        result[dtypeName] = complexProductDefaultTarget(source, spec)
+      else:
+        raise newException(ValueError, "default complex product requires a complex input")
+    else:
+      result[dtypeName] = complexProductDtypeForOutput(source, spec, dtypeName)
+
+proc complexProductDtypeBySource(spec: JsonNode): JsonNode =
+  case spec["dtype"].getStr
+  of "bool": complexProductDtypeCase[bool](spec)
+  of "int8": complexProductDtypeCase[int8](spec)
+  of "int16": complexProductDtypeCase[int16](spec)
+  of "int32": complexProductDtypeCase[int32](spec)
+  of "int64": complexProductDtypeCase[int64](spec)
+  of "uint8": complexProductDtypeCase[uint8](spec)
+  of "uint16": complexProductDtypeCase[uint16](spec)
+  of "uint32": complexProductDtypeCase[uint32](spec)
+  of "uint64": complexProductDtypeCase[uint64](spec)
+  of "float32": complexProductDtypeCase[float32](spec)
+  of "float64": complexProductDtypeCase[float64](spec)
+  of "complex64": complexProductDtypeCase[Complex[float32]](spec)
+  of "complex128": complexProductDtypeCase[Complex[float64]](spec)
+  else: raise newException(ValueError, "unsupported complex product input dtype")
+
+proc complexProductDtype(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in inputs:
+    result[name] = complexProductDtypeBySource(spec)
+
 
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
@@ -1241,6 +1384,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = complexMeanDtype(inputs)
   of "tensor.complex_sum_dtype":
     result = complexSumDtype(inputs)
+  of "tensor.complex_prod_dtype":
+    result = complexProductDtype(inputs)
   of "tensor.transpose_alias":
     var base = getTensor(inputs["a"])
     var view = base.transpose

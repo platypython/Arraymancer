@@ -941,3 +941,87 @@ suite "Pinned PyTorch conformance foundation":
     malformed["cases"][index]["inputs"]["double_precision"]["values"].elems[0].elems[0] =
       %100000000000000000000.0
     expect ValueError: validateFixtureData(malformed, reference)
+
+  test "Complex products preserve defaults, casts, axes, and empty identities":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var productCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "tensor.complex_prod_dtype": productCase = caseData
+    doAssert productCase.kind == JObject
+    check productCase["area"].getStr == "api:torch"
+    check productCase["atol"].getFloat == 1e-6
+    check productCase["rtol"].getFloat == 1e-6
+    let actual = runCase(productCase)
+    check compareObservations(productCase["expected"], actual,
+      productCase["atol"].getFloat, productCase["rtol"].getFloat).len == 0
+    check productCase["inputs"].len == 31
+    check actual["complex64"]["default"]["all"]["dtype"].getStr == "complex64"
+    check actual["complex128"]["default"]["all"]["dtype"].getStr == "complex128"
+    check actual["complex64"]["default"]["axes"]["0"]["shape"] == %*[1, 3]
+    check not actual["float32"].hasKey("default")
+    check actual["scalar_imaginary"]["bool"]["all"]["values"] == %*[true]
+    check actual["complex64_cancellation"]["int32"]["all"]["values"] == %*[0]
+
+    let scalarDefault = actual["scalar_negative_zero"]["default"]
+    for scalarZero in [scalarDefault["all"], scalarDefault["axes"]["0"],
+        scalarDefault["axes"]["-1"]]:
+      check scalarZero["negative_zero"] == %*{"real": [], "imag": [0]}
+      check not isNegativeZero(scalarZero["values"][0]["real"])
+      check isNegativeZero(scalarZero["values"][0]["imag"])
+
+    check actual["scalar"]["uint16"]["all"] ==
+      %*{"error": "unsupported_output_dtype"}
+    check actual["scalar"]["uint16"]["invalid_axes"]["1"] ==
+      %*{"error": "invalid_axis"}
+    check actual["complex64"]["uint16"]["all"] ==
+      %*{"error": "unsupported_output_dtype"}
+    check actual["complex64"]["uint16"]["invalid_axes"]["2"] ==
+      %*{"error": "invalid_axis"}
+
+    let emptyUnsigned = actual["empty"]["uint16"]
+    check emptyUnsigned["all"]["shape"] == %*[]
+    check emptyUnsigned["all"]["values"] == %*[1]
+    check emptyUnsigned["axes"]["1"]["shape"] == %*[2, 1, 3]
+    check emptyUnsigned["axes"]["1"]["values"] == %*[1, 1, 1, 1, 1, 1]
+
+  test "Reject malformed complex product dtype schemas and observations":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "tensor.complex_prod_dtype":
+        index = candidate
+    doAssert index >= 0
+
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["missing_source"] = newJNull()
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["complex_negative"]["values"].elems[1].elems[0] =
+      newJFloat(-129.9)
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex64"]["default"]["all"]["dtype"] =
+      %"complex128"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex64"]["uint16"]["all"]["error"] =
+      %"invalid_axis"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex64"]["uint16"]["invalid_axes"]["2"]["error"] =
+      %"unsupported_output_dtype"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["empty"]["uint16"]["axes"]["1"] =
+      %*{"error": "unsupported_output_dtype"}
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex_negative"]["int8"]["all"]["values"].elems[0] =
+      %128
+    expect ValueError: validateFixtureData(malformed, reference)
