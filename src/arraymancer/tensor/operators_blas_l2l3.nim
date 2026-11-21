@@ -86,20 +86,8 @@ proc gemm*[T: SomeNumber](
   C: var Tensor[T]) {.deprecated: "Use explicit gemm(1, A, B, 0, C) instead".}=
   gemm(1.T, A, B, 0.T, C)
 
-proc matmulImpl[T](alpha: T, a, b: Tensor[T], beta: T): Tensor[T] {.noinit.} =
-  ## Allocate once; promote vectors only when batch planning is needed.
-  if a.rank < 1 or b.rank < 1:
-    raise newException(ValueError, "Matrix multiplication requires operands of rank >= 1")
-  if a.rank == 2 and b.rank == 2:
-    let M = a.shape[0]
-    let K = a.shape[1]
-    let N = b.shape[1]
-    if K != b.shape[0]:
-      raise newException(ValueError, "Matrix inner dimensions must agree for multiplication")
-    result = if K == 0: zeros[T](M, N) else: newTensorUninit[T](M, N)
-    if M != 0 and N != 0 and K != 0:
-      gemm(alpha, a, b, beta, result)
-    return
+proc matmulFallback[T](alpha: T, a, b: Tensor[T], beta: T, result: var Tensor[T]) =
+  ## Keep vector and batch ownership roots off the dense matrix return path.
   if a.rank == 1 and b.rank == 2 and a.strides[0] == 1 and b.isContiguous:
     let K = a.shape[0]
     let N = b.shape[1]
@@ -184,6 +172,22 @@ proc matmulImpl[T](alpha: T, a, b: Tensor[T], beta: T): Tensor[T] {.noinit.} =
   if b.rank == 1:
     result.shape.delete(result.rank - 1)
     result.strides.delete(result.strides.len - 1)
+
+proc matmulImpl[T](alpha: T, a, b: Tensor[T], beta: T): Tensor[T] {.noinit.} =
+  ## Allocate once; promote vectors only when batch planning is needed.
+  if a.rank < 1 or b.rank < 1:
+    raise newException(ValueError, "Matrix multiplication requires operands of rank >= 1")
+  if a.rank == 2 and b.rank == 2:
+    let M = a.shape[0]
+    let K = a.shape[1]
+    let N = b.shape[1]
+    if K != b.shape[0]:
+      raise newException(ValueError, "Matrix inner dimensions must agree for multiplication")
+    result = if K == 0: zeros[T](M, N) else: newTensorUninit[T](M, N)
+    if M != 0 and N != 0 and K != 0:
+      gemm(alpha, a, b, beta, result)
+    return
+  matmulFallback(alpha, a, b, beta, result)
 
 proc `*`*[T: SomeNumber](a, b: Tensor[T]): Tensor[T] {.noinit.} =
   ## Matrix product with trailing-axis batch broadcasting.

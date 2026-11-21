@@ -1,7 +1,8 @@
 Arraymancer v0.7.x
 =====================================================
 
-- Keep fallback tensor temporaries off contiguous CPU GEMM.
+- Keep fallback tensor temporaries off contiguous CPU GEMM and dense CPU
+  matrix dispatch.
 - Keep fallback tensor temporaries off C/F-contiguous CPU GEMV and skip
   vector-promotion metadata for matrix-vector products.
 - Skip span planning for contiguous CPU elementwise inputs and hoist invariant
