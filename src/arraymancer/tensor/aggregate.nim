@@ -274,6 +274,20 @@ proc reduceCascadedTotal[T, U](arg: Tensor[T]; dtype: typedesc[U];
 proc reduceCascadedTensorAxis[T, U](arg: Tensor[T], axis: int;
     dtype: typedesc[U]; average: static[bool]): Tensor[U]
 
+proc reduceScalarSum[T: SomeFloat](arg: Tensor[T]; count: int): T {.inline.} =
+  ## Reuse the caller's element count across the empty and packed paths.
+  if count == 0: return default(T)
+  when T is float64:
+    if arg.is_C_contiguous:
+      reducePackedFloat64(addr result, arg.get_offset_ptr, uint(count), false)
+      return
+  elif defined(macosx) and T is float32:
+    if arg.is_C_contiguous:
+      vDSP_sve(arg.get_offset_ptr, 1.clong, addr result, count.culong)
+      return
+  arg.reduce_inline():
+    x+=y
+
 proc sum*[T](arg: Tensor[T]): sumProductElement(T) =
   ## Compute the sum of all elements.
   ## Integers and booleans promote to int64 before modulo-2^64 arithmetic.
@@ -282,18 +296,13 @@ proc sum*[T](arg: Tensor[T]): sumProductElement(T) =
   elif T is Complex:
     reduceCascadedTotal(arg, T, false)
   else:
-    when T is float64:
-      if arg.size == 0: return 0.0
-      if arg.is_C_contiguous:
-        reducePackedFloat64(addr result, arg.get_offset_ptr, uint(arg.size), false)
-        return
-    elif defined(macosx) and T is float32:
-      if arg.size == 0: return 0'f32
-      if arg.is_C_contiguous:
-        vDSP_sve(arg.get_offset_ptr, 1.clong, addr result, arg.size.culong)
-        return
-    arg.reduce_inline():
-      x+=y
+    when T is SomeFloat:
+      let count = arg.size
+      reduceScalarSum(arg, count)
+    else:
+      arg.reduce_inline():
+        x+=y
+
 proc sum*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noinit.} =
   ## Sum along a positive or negative axis, retaining its dimension.
   ## Empty reductions produce zeros; scalar results are independent.
@@ -305,6 +314,7 @@ proc sum*[T](arg: Tensor[T], axis: int): Tensor[sumProductElement(T)] {.noinit.}
     reduceCascadedTensorAxis(arg, axis, T, false)
   else:
     sumAlongAxis(arg, axis)
+
 
 proc reduceComplexProductTotal[T, U](arg: Tensor[T]; dtype: typedesc[U]): U
 proc reduceComplexProductTensorAxis[T, U](arg: Tensor[T], axis: int;
@@ -368,10 +378,10 @@ proc mean*[T: SomeInteger or bool](arg: Tensor[T], axis: int): Tensor[T] =
   ## Dtype rejection precedes axis validation, including for empty inputs.
   raise newException(ValueError, "Mean requires a floating-point or complex dtype")
 
-proc mean*[T: SomeFloat](arg: Tensor[T]): T {.inline.}=
-  ## Compute the mean of all elements
-  arg.sum / arg.size.T
-
+proc mean*[T: SomeFloat](arg: Tensor[T]): T {.inline.} =
+  ## Compute the mean of all elements.
+  let count = arg.size
+  reduceScalarSum(arg, count) / T(count)
 
 proc mean*[T: SomeFloat](arg: Tensor[T], axis: int): Tensor[T] {.noinit,inline.}=
   ## Mean along a positive or negative axis, retaining its dimension.

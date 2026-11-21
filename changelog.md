@@ -3,6 +3,8 @@ Arraymancer v0.7.x
 
 - Keep fallback tensor temporaries off contiguous CPU GEMM and dense CPU
   matrix dispatch, and avoid matmul return-forwarding Tensor temporaries.
+- Reuse scalar floating reduction counts and bypass packing wrappers for
+  column-major GEMM inputs and destinations.
 - Keep fallback tensor temporaries off C/F-contiguous CPU GEMV and skip
   vector-promotion metadata for matrix-vector products.
 - Skip span planning for contiguous CPU elementwise inputs and hoist invariant

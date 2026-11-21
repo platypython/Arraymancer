@@ -242,6 +242,45 @@ proc main() =
 
       check: d * e == transpose(dt) * e
 
+    test "GEMM preserves column-major offsets and scaled destinations":
+      template checkScaledColumnGemm(T: typedesc; alpha, beta: untyped) =
+        block:
+          var leftOwner = [[99.0, 99], [1.0, 4], [2.0, 5],
+                           [3.0, 6], [99.0, 99]].toTensor.asType(T)
+          var rightOwner = [[99.0, 99, 99], [7.0, 9, 11],
+                            [8.0, 10, 12], [99.0, 99, 99]].toTensor.asType(T)
+          var outputOwner = [[99.0, 99], [5.0, 6],
+                             [7.0, 8], [99.0, 99]].toTensor.asType(T)
+          when T is Complex:
+            leftOwner[1, 0] = leftOwner[1, 0] + T(re: 0, im: 2)
+            rightOwner[1, 1] = rightOwner[1, 1] + T(re: 0, im: -1)
+            outputOwner[2, 1] = outputOwner[2, 1] + T(re: 0, im: 3)
+          let left = leftOwner[1..3, _].transpose
+          let right = rightOwner[1..2, _].transpose
+          var output = outputOwner[1..2, _].transpose
+          let storage = output.storage
+          let leftBefore = leftOwner.clone
+          let rightBefore = rightOwner.clone
+          var expected = output.clone
+          var expectedOwner = outputOwner.clone
+          for row in 0..<2:
+            for column in 0..<2:
+              var product: T
+              for inner in 0..<3:
+                product += left[row, inner] * right[inner, column]
+              expected[row, column] = alpha * product + beta * expected[row, column]
+              expectedOwner[column + 1, row] = expected[row, column]
+          gemm(alpha, left, right, beta, output)
+          check output.storage == storage
+          check output == expected
+          check outputOwner == expectedOwner
+          check leftOwner == leftBefore
+          check rightOwner == rightBefore
+      checkScaledColumnGemm(float32, 2'f32, -1'f32)
+      checkScaledColumnGemm(float64, 2.0, -1.0)
+      checkScaledColumnGemm(Complex[float32], complex(2'f32, 1'f32), complex(-1'f32, 2'f32))
+      checkScaledColumnGemm(Complex[float64], complex(2.0, 1.0), complex(-1.0, 2.0))
+
     test "GEMM with sliced matrices in column-major order":
       # http://www.cs.otago.ac.nz/cosc453/student_tutorials/principal_components.pdf
 

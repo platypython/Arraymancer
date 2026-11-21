@@ -243,6 +243,19 @@ func blasIsCContiguousRank2[T](t: Tensor[T]): bool {.inline.} =
              (rows == 1 or t.strides.data[0] == columns)
 
   t.is_C_contiguous
+## Fortran-contiguity specialized for rank-two operands handled by BLAS.
+func blasIsFContiguousRank2[T](t: Tensor[T]): bool {.inline.} =
+  when LASER_MAXRANK >= 2:
+    if t.shape.len == 2:
+      let
+        rows = t.shape.data[0]
+        columns = t.shape.data[1]
+
+      return (rows == 1 or t.strides.data[0] == 1) and
+             (columns == 1 or t.strides.data[1] == rows)
+
+  t.is_F_contiguous
+
 
 proc blasMM_C_eq_aAB_p_bC*[T: SomeFloat|Complex[float32]|Complex[float64]](
   alpha: T, a, b: Tensor[T],
@@ -268,5 +281,20 @@ proc blasMM_C_eq_aAB_p_bC*[T: SomeFloat|Complex[float32]|Complex[float64]](
                   b.get_offset_ptr, N,
            beta, c.get_offset_ptr, N)
     return
+  if blasIsFContiguousRank2(a) and
+     blasIsFContiguousRank2(b) and
+     blasIsFContiguousRank2(c):
+    when T is Complex:
+      gemm(colMajor, noTranspose, noTranspose, M, N, K,
+           unsafeAddr(alpha), a.get_offset_ptr, M,
+                              b.get_offset_ptr, K,
+           unsafeAddr(beta), c.get_offset_ptr, M)
+    else:
+      gemm(colMajor, noTranspose, noTranspose, M, N, K,
+           alpha, a.get_offset_ptr, M,
+                  b.get_offset_ptr, K,
+           beta, c.get_offset_ptr, M)
+    return
+
 
   blasMM_C_eq_aAB_p_bC_fallback(M, N, K, alpha, a, b, beta, c)
