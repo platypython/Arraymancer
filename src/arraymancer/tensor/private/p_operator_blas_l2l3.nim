@@ -160,29 +160,10 @@ proc fallbackMM_C_eq_aAB_p_bC*[T: SomeInteger](
                c.get_offset_ptr(),
                c.strides[0], c.strides[1])
 
-proc blasMM_C_eq_aAB_p_bC*[T: SomeFloat|Complex[float32]|Complex[float64]](
-  alpha: T, a, b: Tensor[T],
+## Keeps fallback Tensor temporaries and cleanup off the contiguous CBLAS path.
+proc blasMM_C_eq_aAB_p_bC_fallback[T: SomeFloat|Complex[float32]|Complex[float64]](
+  M, N, K: int, alpha: T, a, b: Tensor[T],
   beta: T, c: var Tensor[T]) =
-  # Matrix: C = alpha A matmul B + beta C
-
-  let
-    M = a.shape[0]
-    K = a.shape[1] # b.shape[0]
-    N = b.shape[1]
-
-  if a.is_C_contiguous and b.is_C_contiguous and c.is_C_contiguous:
-    when T is Complex:
-      gemm(rowMajor, noTranspose, noTranspose, M, N, K,
-           unsafeAddr(alpha), a.get_offset_ptr, K,
-                              b.get_offset_ptr, N,
-           unsafeAddr(beta), c.get_offset_ptr, N)
-    else:
-      gemm(rowMajor, noTranspose, noTranspose, M, N, K,
-           alpha, a.get_offset_ptr, K,
-                  b.get_offset_ptr, N,
-           beta, c.get_offset_ptr, N)
-    return
-
   let
     A = a.asContiguous()
     B = b.asContiguous()
@@ -249,3 +230,43 @@ proc blasMM_C_eq_aAB_p_bC*[T: SomeFloat|Complex[float32]|Complex[float64]](
            alpha, A.get_offset_ptr, lda,
                   B.get_offset_ptr, ldb,
            beta,  c.get_offset_ptr, M)
+
+## C-contiguity specialized for the rank-two operands handled by BLAS.
+func blasIsCContiguousRank2[T](t: Tensor[T]): bool {.inline.} =
+  when LASER_MAXRANK >= 2:
+    if t.shape.len == 2:
+      let
+        rows = t.shape.data[0]
+        columns = t.shape.data[1]
+
+      return (columns == 1 or t.strides.data[1] == 1) and
+             (rows == 1 or t.strides.data[0] == columns)
+
+  t.is_C_contiguous
+
+proc blasMM_C_eq_aAB_p_bC*[T: SomeFloat|Complex[float32]|Complex[float64]](
+  alpha: T, a, b: Tensor[T],
+  beta: T, c: var Tensor[T]) =
+  # Matrix: C = alpha A matmul B + beta C
+
+  let
+    M = a.shape[0]
+    K = a.shape[1] # b.shape[0]
+    N = b.shape[1]
+
+  if blasIsCContiguousRank2(a) and
+     blasIsCContiguousRank2(b) and
+     blasIsCContiguousRank2(c):
+    when T is Complex:
+      gemm(rowMajor, noTranspose, noTranspose, M, N, K,
+           unsafeAddr(alpha), a.get_offset_ptr, K,
+                              b.get_offset_ptr, N,
+           unsafeAddr(beta), c.get_offset_ptr, N)
+    else:
+      gemm(rowMajor, noTranspose, noTranspose, M, N, K,
+           alpha, a.get_offset_ptr, K,
+                  b.get_offset_ptr, N,
+           beta, c.get_offset_ptr, N)
+    return
+
+  blasMM_C_eq_aAB_p_bC_fallback(M, N, K, alpha, a, b, beta, c)
