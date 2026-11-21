@@ -524,17 +524,31 @@ kernel void math_vector_matrix_packed(
     uint simdWidth [[threads_per_simdgroup]]) {
   constant PackedVectorMatrixTask &task = tasks[group.z];
   const uint columns = task.columns / 4u;
-  const uint columnLanes = min(4u, simdWidth);
-  const uint column = group.x * columnLanes + simdLane % columnLanes;
+  const uint blocksPerGroup = simdWidth / 4u;
+  const uint block = group.x * blocksPerGroup + simdLane % blocksPerGroup;
   float4 value = 0.0f;
-  // Adjacent lanes load adjacent column blocks; the remaining lanes split K.
-  if (column < columns) {
-    for (uint index = simdLane / columnLanes; index < task.inner; index += simdWidth / columnLanes)
-      value = fma(float4(task.a[index]), task.b[index * columns + column], value);
+  float4 alternate = 0.0f;
+  // Two K chains expose instruction parallelism before the SIMD reduction.
+  if (block < columns) {
+    const uint partition = simdLane / blocksPerGroup;
+    const uint terms = task.inner > partition
+        ? 1u + (task.inner - 1u - partition) / 4u : 0u;
+    uint pair = 0;
+    for (; pair < terms / 2u; ++pair) {
+      const uint index = partition + pair * 8u;
+      value = fma(float4(task.a[index]), task.b[index * columns + block], value);
+      alternate = fma(float4(task.a[index + 4u]),
+          task.b[(index + 4u) * columns + block], alternate);
+    }
+    if (terms & 1u) {
+      const uint index = partition + pair * 8u;
+      value = fma(float4(task.a[index]), task.b[index * columns + block], value);
+    }
   }
-  for (uint delta = columnLanes; delta < simdWidth; delta *= 2u)
-    value += simd_shuffle_xor(value, delta);
-  if (simdLane < columnLanes && column < columns) task.output[column] = value;
+  value += alternate;
+  value += simd_shuffle_xor(value, ushort(blocksPerGroup));
+  value += simd_shuffle_xor(value, ushort(2u * blocksPerGroup));
+  if (simdLane < blocksPerGroup && block < columns) task.output[block] = value;
 }
 
 struct VectorMatrixParameters {

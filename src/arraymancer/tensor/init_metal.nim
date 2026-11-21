@@ -1,6 +1,7 @@
 # Copyright 2026 Arraymancer contributors. Apache-2.0.
 ## Provides explicit float32 native allocation and logical CPU transfers.
 import ./[metal_types, data_structure, init_cpu, shapeshifting]
+import ./private/p_init_metal
 export metal_types
 
 proc metalDeviceCount*(): int =
@@ -23,16 +24,8 @@ proc requireMetalDtype[T]() =
 
 proc newMetalTensorUninit*[T: KnownSupportsCopyMem](shape: Metadata; device: MetalDevice = nil): MetalTensor[T] =
   ## Allocate shared native storage. Empty shape is scalar; zero dimensions are empty.
-  requireMetalDtype[T]()
-  let count = checkedMetalSize(shape)
-  if count > high(int) div sizeof(T): raise newException(MetalError, "Metal byte size overflow")
-  let dev = if device == nil: metalDevice() else: device
-  let bytes = uint64(count * sizeof(T))
-  var handle: pointer
-  checkMetal metalApi().buffer(dev.owner.handle, bytes, addr handle)
-  result.storage = MetalStorage(owner: ownMetal(handle), device: dev, capacity: bytes)
-  result.shape = shape
-  shape_to_strides(shape, rowMajor, result.strides)
+  initMetalTensorUninit[T](result, shape,
+    (if device == nil: metalDevice() else: device))
 
 proc newMetalTensorUninit*[T: KnownSupportsCopyMem](shape: varargs[int]; device: MetalDevice): MetalTensor[T] =
   if shape.len > min(LASER_MAXRANK, 8): raise newException(MetalError, "Excessive Metal rank")
@@ -44,7 +37,7 @@ proc newMetalTensorUninit*[T: KnownSupportsCopyMem](shape: varargs[int]; device:
 proc newMetalTensorUninit*[T: KnownSupportsCopyMem](shape: varargs[int]): MetalTensor[T] =
   newMetalTensorUninit[T](shape, nil)
 
-proc descriptor*[T](t: MetalTensor[T]): AMDescriptor =
+proc descriptor*[T](t: MetalTensor[T]): AMDescriptor {.inline.} =
   result.rank = int32(t.rank)
   result.dtype = metalDtype[T]()
   result.capacity = t.storage.capacity

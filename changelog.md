@@ -5,6 +5,21 @@ Arraymancer v0.7.x
   matrix dispatch, and avoid matmul return-forwarding Tensor temporaries.
 - Reuse scalar floating reduction counts and bypass packing wrappers for
   column-major GEMM inputs and destinations.
+- Reduce Metal math wrapper work with cached native device identities,
+  direct matrix/vector descriptors, isolated batched ownership and single-queue
+  synchronization dispatch. Construct allocating arithmetic outputs directly in
+  their result slots and inline dtype, rank and descriptor helpers. Omit runtime
+  wrapper checks for statically known float32 arithmetic. Keep cached allocation
+  evidence coherent with retiring producers and avoid repeated completion metadata
+  copies. Avoid temporary arrays for native borrow conflicts and empty lease snapshots.
+  Reuse aggregation deadline timers, retire captured completion groups on
+  explicit waiters, and reclaim completed unowned storage on allocator misses.
+  Coalesce packed row-vector reads with independent float32 accumulation chains
+  and bounded inner-dimension tails.
+- Historical PyTorch performance acceptance remains open: the latest three
+  paired rounds passed all medians and validation, but missed four p95
+  comparisons (Metal exp, preallocated ln, vector-matrix, and CPU preallocated
+  sqrt). Parity API work continues without claiming universal speed parity.
 - Keep fallback tensor temporaries off C/F-contiguous CPU GEMV and skip
   vector-promotion metadata for matrix-vector products.
 - Skip span planning for contiguous CPU elementwise inputs and hoist invariant

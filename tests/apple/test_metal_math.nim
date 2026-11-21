@@ -129,6 +129,27 @@ suite "Native Metal float32 math":
     check outputOwner.cpu == expected
     check (newMetalTensorUninit[float32](0) *
       newMetalTensorUninit[float32](0, 36)).cpu == zeros[float32](36)
+
+  test "Packed row-vector products cover K and column tails":
+    for inner in [1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 37]:
+      for columns in [4, 36]:
+        var vectorData = newTensorUninit[float32](inner)
+        var matrixData = newTensorUninit[float32](inner * columns)
+        for index in 0 ..< inner:
+          vectorData[index] = float32(index mod 5 - 2)
+        for index in 0 ..< matrixData.size:
+          matrixData[index] = float32(index mod 7 - 3)
+        let vector = vectorData.metal.metalView(
+          [1, inner].toMetadata, [inner, 1].toMetadata, 0)
+        let matrix = matrixData.metal.metalView(
+          [inner, columns].toMetadata, [columns, 1].toMetadata, 0)
+        var expected = zeros[float32](1, columns)
+        for column in 0 ..< columns:
+          for k in 0 ..< inner:
+            expected[0, column] += vectorData[k] * matrixData[k * columns + column]
+        let actual = (vector * matrix).cpu
+        check actual.shape == [1, columns].toMetadata
+        check actual == expected
   test "Queued row products keep task addresses and dependent contractions distinct":
     let vectors = [newTensorWith[float32]([5], 1'f32).metal,
                    newTensorWith[float32]([9], 2'f32).metal]
@@ -241,7 +262,11 @@ suite "Native Metal float32 math":
       check input.prod.cpu == newTensorWith[float32]([], -6'f32)
     let zero = [2'f32, -0'f32].toTensor.metal.prod.cpu
     check cast[ptr float32](zero.get_offset_ptr)[].signbit
-    for data in [[NaN.float32, 1'f32], [Inf.float32, 0'f32]]:
+    # Runtime assignments avoid Nim's double INF in C++ aggregate initializers.
+    var nonfinite = [[0'f32, 1'f32], [0'f32, 0'f32]]
+    nonfinite[0][0] = NaN.float32
+    nonfinite[1][0] = Inf.float32
+    for data in nonfinite:
       let actual = data.toTensor.metal.prod.cpu
       check cast[ptr float32](actual.get_offset_ptr)[].classify == fcNan
     var wideData = ones[float32](2, 5001)
@@ -405,3 +430,54 @@ suite "Native Metal float32 math":
     check (8'f32 -. x).cpu == [6'f32, 4].toTensor
     check (-x).cpu == [-2'f32, -4].toTensor
     expect MetalDtypeError: discard [1'i32, 2].toTensor.metal + 1'f32
+  test "Public vector matmul returns independent outputs in exact result shapes":
+    let vector = [1'f32, 2, 3].toTensor.metal
+    let row = [[1'f32, 2, 3]].toTensor.metal
+    let column = [[1'f32, 2], [3'f32, 4], [5'f32, 6]].toTensor.metal
+    let dot = vector * vector
+    let rowVector = row * vector
+    let columnVector = vector * column
+    check dot.storage.device.registryId == vector.storage.device.registryId
+    check rowVector.storage.device.registryId == row.storage.device.registryId
+    check columnVector.storage.device.registryId == column.storage.device.registryId
+    check dot.storage != vector.storage
+    check rowVector.storage != row.storage
+    check rowVector.storage != vector.storage
+    check columnVector.storage != column.storage
+    check columnVector.storage != vector.storage
+    check dot.rank == 0
+    check dot.cpu == newTensorWith[float32]([], 14'f32)
+    check rowVector.shape == [1].toMetadata
+    check rowVector.cpu == [14'f32].toTensor
+    check columnVector.shape == [2].toMetadata
+    check columnVector.cpu == [22'f32, 28].toTensor
+    let emptyOutput = ([[1'f32, 2, 3], [4'f32, 5, 6]].toTensor.metal *
+      newMetalTensorUninit[float32](3, 0))
+    check emptyOutput.shape == [2, 0].toMetadata
+    check emptyOutput.size == 0
+
+  test "Allocating results preserve operand aliases across reassignment and errors":
+    var unary = [1'f32, 4, 9, 16].toTensor.metal
+    let originalUnary = unary
+    unary = unary.sqrt
+    check unary.storage != originalUnary.storage
+    check unary.cpu == [1'f32, 2, 3, 4].toTensor
+    check originalUnary.cpu == [1'f32, 4, 9, 16].toTensor
+    let validUnary = unary
+    expect MetalError:
+      unary = sqrt(default(MetalTensor[float32]))
+    # refc may use unary as the failed return slot; its surviving alias must stay valid.
+    check validUnary.cpu == [1'f32, 2, 3, 4].toTensor
+
+    var left = [[1'f32, 2], [3'f32, 4]].toTensor.metal
+    let originalLeft = left
+    let right = [[2'f32, 0], [1'f32, 3]].toTensor.metal
+    left = left * right
+    check left.storage != originalLeft.storage
+    check left.cpu == [[4'f32, 6], [10'f32, 12]].toTensor
+    check originalLeft.cpu == [[1'f32, 2], [3'f32, 4]].toTensor
+    check right.cpu == [[2'f32, 0], [1'f32, 3]].toTensor
+    let validLeft = left
+    expect MetalError:
+      left = left * [1'f32, 2, 3].toTensor.metal
+    check validLeft.cpu == [[4'f32, 6], [10'f32, 12]].toTensor

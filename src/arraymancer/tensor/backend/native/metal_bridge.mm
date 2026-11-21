@@ -26,6 +26,8 @@
 __attribute__((objc_direct_members))
 @interface AMBuffer : NSObject
 @property(nonatomic, strong) id<MTLBuffer> buffer;
+// Buffer reuse preserves this immutable physical-device binding.
+@property(nonatomic) uint64_t registryID;
 @property(nonatomic) uint64_t gpuAddress;
 @property(nonatomic, strong) id<MTLCommandBuffer> producer;
 @property(nonatomic) uint64_t producerInvocation;
@@ -89,10 +91,11 @@ __attribute__((objc_direct_members))
   std::vector<AMBuffer *__unsafe_unretained> writes;
 }
 @property(nonatomic, weak) AMStream *stream;
-// Eager commands use one record; batches retain their complete record array.
+// Batches keep mutable admission records weakly and sealed groups strongly.
 @property(nonatomic, weak) AMPendingCommand *record;
 @property(nonatomic, strong) id<MTLCommandBuffer> command;
 @property(nonatomic, weak) NSArray<AMPendingCommand *> *records;
+@property(nonatomic, strong) NSArray<AMPendingCommand *> *sealedRecords;
 @end
 @implementation AMPendingUse
 @end
@@ -145,6 +148,8 @@ __attribute__((objc_direct_members))
   // Slots preserve admission order, including holes from out-of-order completion.
   std::deque<AMPendingCommand *__strong> pending;
   uint64_t pendingBase;
+  // Explicit snapshot waits publish the boundary before waiting for callbacks.
+  std::atomic<uint64_t> completionHandoffSequence;
   AMPackedMathTask packedTasks[32];
   NSUInteger packedTaskCount;
   bool packedRows;
@@ -155,6 +160,7 @@ __attribute__((objc_direct_members))
   NSUInteger matrixDescriptorCursor;
 }
 @property(nonatomic, weak) AMDeviceState *state;
+@property(nonatomic) uint64_t registryID;
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLCommandQueue> queue;
 // Driver allocation may wait for completion callbacks; keep their monitor free.
@@ -181,12 +187,14 @@ __attribute__((objc_direct_members))
 @property(nonatomic, strong) AMPendingCommand *batchLeaseRecord;
 @property(nonatomic) uint64_t batchBytes;
 @property(nonatomic) uint64_t batchStarted;
+@property(nonatomic, strong) dispatch_source_t batchDeadline;
 @property(nonatomic) uint64_t batchGeneration;
 @end
 @implementation AMStream
 - (void)dealloc {
   if (_encoderReads) CFRelease(_encoderReads);
   if (_encoderWrites) CFRelease(_encoderWrites);
+  if (_batchDeadline) dispatch_source_cancel(_batchDeadline);
 }
 @end
 __attribute__((objc_direct_members))
@@ -214,6 +222,7 @@ __attribute__((objc_direct_members))
 
 __attribute__((objc_direct_members))
 @interface AMEvent : NSObject
+@property(nonatomic) uint64_t registryID;
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLSharedEvent> shared;
 @property(nonatomic) uint64_t lastScheduledValue;
@@ -225,6 +234,7 @@ __attribute__((objc_direct_members))
 __attribute__((objc_direct_members))
 @interface AMDeviceState : NSObject
 @property(nonatomic, strong) id<MTLDevice> device;
+@property(nonatomic) uint64_t registryID;
 @property(nonatomic, strong) AMGenerator *defaultGenerator;
 @property(nonatomic, strong) AMStream *defaultStream;
 @property(nonatomic, strong) NSHashTable<AMStream *> *streams;
@@ -276,6 +286,8 @@ static AMStatus ok();
 static std::atomic<uint64_t> nextInvocation{1};
 static AMStatus ok() { return {0, nullptr}; }
 static AMStatus flushMathBatch(AMStream *stream);
+static uint64_t monotonicNanoseconds();
+static void mathBatchDeadlineFired(AMStream *stream);
 static AMStatus flushDeviceMathBatches(id<MTLDevice> device);
 static AMStatus flushOwnerMathBatches(AMBuffer *owner);
 static uint64_t saturatedAdd(uint64_t left, uint64_t right) {
@@ -309,7 +321,8 @@ static BOOL removeCachedOwnerLocked(AMDeviceState *state, AMBuffer *owner,
 static void cacheOwnerLocked(AMDeviceState *state, AMBuffer *owner) {
   if (owner.cached || owner.externalReferences || owner.inFlightLeases ||
       !owner.buffer) return;
-  NSNumber *key = @(owner.buffer.length);
+  const NSUInteger nativeLength = owner.buffer.length;
+  NSNumber *key = @(nativeLength);
   NSMutableArray<AMBuffer *> *bin = state.bufferCache[key];
   if (!bin) {
     bin = [NSMutableArray new];
@@ -317,7 +330,7 @@ static void cacheOwnerLocked(AMDeviceState *state, AMBuffer *owner) {
   }
   owner.cached = YES;
   [bin addObject:owner];
-  state.cachedBytes = saturatedAdd(state.cachedBytes, owner.buffer.length);
+  state.cachedBytes = saturatedAdd(state.cachedBytes, nativeLength);
 }
 
 static BOOL releaseEmptyHeapsLocked(AMDeviceState *state) {
@@ -456,14 +469,32 @@ struct AMThreadState {
 // Selection and immutable compiled objects keep ownership until thread exit.
 static thread_local AMThreadState threadState;
 
-static AMStream *newStream(AMDeviceState *state, id<MTLCommandQueue> queue) {
+static AMStream *newStream(AMDeviceState *state, id<MTLCommandQueue> queue,
+                           bool aggregateMath = false) {
   if (!state || !state.device || !queue) return nil;
   AMStream *stream = [AMStream new];
   stream.device = state.device;
+  stream.registryID = state.registryID;
   stream.state = state;
   stream.queue = queue;
   stream.encodingLock = [NSObject new];
   stream.identity = (uint64_t)(uintptr_t)(__bridge void *)queue;
+  stream.aggregateMath = aggregateMath;
+  stream->completionHandoffSequence.store(0, std::memory_order_relaxed);
+  if (aggregateMath) {
+    stream.batchDeadline = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    if (stream.batchDeadline) {
+      __weak AMStream *weakStream = stream;
+      dispatch_source_set_event_handler(stream.batchDeadline, ^{
+        AMStream *current = weakStream;
+        if (current) mathBatchDeadlineFired(current);
+      });
+      dispatch_source_set_timer(stream.batchDeadline, DISPATCH_TIME_FOREVER,
+                                DISPATCH_TIME_FOREVER, 0);
+      dispatch_resume(stream.batchDeadline);
+    }
+  }
   stream->pendingBase = 1;
   stream.failures = [NSMutableDictionary new];
   stream.matrixKernels = [NSMutableDictionary new];
@@ -500,13 +531,13 @@ static AMDeviceState *deviceState(id<MTLDevice> device, NSError **error) {
     }
     state = [AMDeviceState new];
     state.device = device;
+    state.registryID = device.registryID;
     state.supportsSharedHeaps = device.hasUnifiedMemory && [device supportsFamily:MTLGPUFamilyApple1];
     state.supportsIndirectMath = device.argumentBuffersSupport == MTLArgumentBuffersTier2;
     state.streams = [NSHashTable weakObjectsHashTable];
     state.bufferCache = [NSMutableDictionary new];
     state.memoryFraction = 1.0;
-    state.defaultStream = newStream(state, queue);
-    state.defaultStream.aggregateMath = YES;
+    state.defaultStream = newStream(state, queue, true);
     [state.streams addObject:state.defaultStream];
     states[key] = state;
     threadState.deviceState = state;
@@ -518,7 +549,7 @@ static AMStatus selectedStream(id<MTLDevice> device, AMDeviceState *state,
                                AMStream *__strong *result) {
   if (!device || !state || !result) return failure(2, "invalid Metal stream request");
   AMStream *selected = threadState.stream;
-  if (selected && selected.device.registryID != device.registryID)
+  if (selected && selected.registryID != device.registryID)
     return failure(2, "selected Metal stream belongs to a different device");
   *result = selected ?: state.defaultStream;
   return *result ? ok() : failure(1, "Metal command queue unavailable");
@@ -615,11 +646,8 @@ static void prepareBufferProducer(AMBuffer *owner, id<MTLCommandBuffer> command,
 
 static void ensureCustomLeaseLock(void);
 static void finishStreamCommand(AMStream *stream, AMPendingCommand *record,
-                                NSString *submissionError) {
-  id<MTLCommandBuffer> command = record.command;
+                                NSString *message) {
   const uint64_t sequence = record.sequence;
-  NSString *message = submissionError ?: (command.status == MTLCommandBufferStatusError
-      ? (command.error.localizedDescription ?: @"Metal command failed") : nil);
   @synchronized(stream) {
     if (sequence > stream.completedSequence) stream.completedSequence = sequence;
     if (sequence >= stream->pendingBase) {
@@ -641,78 +669,95 @@ static void finishStreamCommand(AMStream *stream, AMPendingCommand *record,
 }
 
 static void finishBufferProducer(AMBuffer *owner, uint64_t invocation,
-                                 id<MTLCommandBuffer> command, NSString *submissionError) {
-  NSString *message = submissionError ?: (command.status == MTLCommandBufferStatusError
-      ? (command.error.localizedDescription ?: @"Metal command failed") : nil);
+                                 NSString *message) {
   @synchronized(owner) {
     if (owner.producerInvocation == invocation) {
       owner.producer = nil;
       owner.producerError = message;
     }
-    if (owner.evidence.invocation_id == invocation && owner.evidence.kind == 2) {
-      AMEvidence evidence = owner.evidence;
+    AMEvidence evidence = owner.evidence;
+    if (evidence.invocation_id == invocation && evidence.kind == 2) {
       evidence.completed = message ? 0 : 1;
       owner.evidence = evidence;
     }
   }
 }
 
-static void finalizeSingleCommand(AMStream *stream, AMPendingCommand *record) {
-  NSString *submissionError = nil;
+static void finalizeSingleCommand(
+    AMStream *stream, AMPendingCommand *record,
+    id<MTLCommandBuffer> knownCommand = nil,
+    MTLCommandBufferStatus knownStatus = MTLCommandBufferStatusNotEnqueued,
+    NSString *knownError = nil, bool hasKnownStatus = false) {
+  NSString *message = nil;
   @synchronized(record) {
-    id<MTLCommandBuffer> command = record.command;
-    submissionError = record.submissionError;
-    if (record.finalized ||
-        (command.status != MTLCommandBufferStatusCompleted &&
-         command.status != MTLCommandBufferStatusError &&
-         !(submissionError && command.status == MTLCommandBufferStatusNotEnqueued))) return;
+    if (record.finalized) return;
+    id<MTLCommandBuffer> command = knownCommand ?: record.command;
+    const MTLCommandBufferStatus status =
+        hasKnownStatus ? knownStatus : command.status;
+    NSString *submissionError = record.submissionError;
+    if (status != MTLCommandBufferStatusCompleted &&
+        status != MTLCommandBufferStatusError &&
+        !(submissionError && status == MTLCommandBufferStatusNotEnqueued)) return;
     record.finalized = YES;
+    NSString *commandError = nil;
+    if (status == MTLCommandBufferStatusError) {
+      commandError = hasKnownStatus ? knownError :
+          (command.error.localizedDescription ?: @"Metal command failed");
+    }
+    message = submissionError ?: commandError;
+    const uint64_t invocation = record.invocation;
+    const uint64_t materializationBytes = record.materializationBytes;
+    NSSet<AMBuffer *> *bufferLeases = record.bufferLeases;
+    NSArray<AMCustomLease *> *customLeases = record.customLeases;
+    AMPendingUse *pendingUse = record.pendingUse;
     AMBuffer *singleOutput = record.singleOutput;
     NSArray<AMBuffer *> *outputs = record.outputs;
     const NSUInteger outputCount = singleOutput ? 1 : outputs.count;
     auto outputAt = [&](NSUInteger index) -> AMBuffer * {
       return singleOutput ?: outputs[index];
     };
-    if (command.status == MTLCommandBufferStatusCompleted &&
-        record.materializationBytes) {
+    if (status == MTLCommandBufferStatusCompleted && materializationBytes) {
       for (NSUInteger index = 0; index < outputCount; ++index) {
         AMBuffer *output = outputAt(index);
         @synchronized(output) {
-          if (output.evidence.invocation_id == record.invocation) {
-            AMEvidence evidence = output.evidence;
-            evidence.materialization_bytes = record.materializationBytes;
+          AMEvidence evidence = output.evidence;
+          if (evidence.invocation_id == invocation) {
+            evidence.materialization_bytes = materializationBytes;
             output.evidence = evidence;
           }
         }
       }
     }
 
-    AMDeviceState *state = record.bufferLeases.count || record.materializationBytes
+    AMDeviceState *state = bufferLeases.count || materializationBytes
         ? stream.state : nil;
-    if (record.pendingUse || record.customLeases.count || state) {
+    if (pendingUse || customLeases.count || state) {
       ensureCustomLeaseLock();
       @synchronized(customLeaseLock) {
-        for (AMCustomLease *lease in record.customLeases) {
+        for (AMCustomLease *lease in customLeases) {
           AMBuffer *owner = lease.owner;
           [owner.customLeases removeObjectIdenticalTo:lease];
         }
-        for (AMBuffer *owner in record.bufferLeases)
-          [owner.pendingUses removeObjectIdenticalTo:record.pendingUse];
+        for (AMBuffer *owner in bufferLeases)
+          [owner.pendingUses removeObjectIdenticalTo:pendingUse];
         record.pendingUse = nil;
         record.customLeases = @[];
         if (state) {
           @synchronized(state) {
-            for (AMBuffer *owner in record.bufferLeases) {
-              if (!owner.inFlightLeases) continue;
-              --owner.inFlightLeases;
-              if (!owner.inFlightLeases) state.inFlightBytes -= owner.capacity;
-              if (!owner.externalReferences && !owner.inFlightLeases)
-                cacheOwnerLocked(state, owner);
+            for (AMBuffer *owner in bufferLeases) {
+              const uint64_t leaseCount = owner.inFlightLeases;
+              if (!leaseCount) continue;
+              const uint64_t remainingLeases = leaseCount - 1;
+              owner.inFlightLeases = remainingLeases;
+              if (!remainingLeases) {
+                state.inFlightBytes -= owner.capacity;
+                if (!owner.externalReferences) cacheOwnerLocked(state, owner);
+              }
             }
-            if (command.status == MTLCommandBufferStatusCompleted &&
-                record.materializationBytes)
+            if (status == MTLCommandBufferStatusCompleted &&
+                materializationBytes)
               state.materializationBytes = saturatedAdd(
-                  state.materializationBytes, record.materializationBytes);
+                  state.materializationBytes, materializationBytes);
           }
         }
       }
@@ -720,9 +765,9 @@ static void finalizeSingleCommand(AMStream *stream, AMPendingCommand *record) {
     // A read lease must find either its producer or fully retired ownership.
     for (NSUInteger index = 0; index < outputCount; ++index) {
       AMBuffer *output = outputAt(index);
-      finishBufferProducer(output, record.invocation, command, submissionError);
+      finishBufferProducer(output, invocation, message);
     }
-    finishStreamCommand(stream, record, submissionError);
+    finishStreamCommand(stream, record, message);
     record.command = nil;
     record.retainedHandles = @[];
     record.builtinPipeline = nil;
@@ -733,33 +778,77 @@ static void finalizeSingleCommand(AMStream *stream, AMPendingCommand *record) {
   }
 }
 
-static void finalizeCommand(AMStream *stream, AMPendingCommand *record) {
+// Caller holds the use monitor; release only after every member publishes.
+static void releaseSealedCompletionGroupLocked(
+    AMPendingUse *use, NSArray<AMPendingCommand *> *records) {
+  for (AMPendingCommand *member in records)
+    if (!member->completionPublished.load(std::memory_order_acquire)) return;
+  use->completionPublished.store(true, std::memory_order_release);
+  for (AMPendingCommand *member in records)
+    if (member.completionUse == use) member.completionUse = nil;
+  use.sealedRecords = nil;
+}
+
+static void finalizeCommand(
+    AMStream *stream, AMPendingCommand *record,
+    id<MTLCommandBuffer> knownCommand = nil,
+    MTLCommandBufferStatus knownStatus = MTLCommandBufferStatusNotEnqueued,
+    bool hasKnownStatus = false) {
   if (record->completionPublished.load(std::memory_order_acquire)) return;
   AMPendingUse *use = record.completionUse;
   if (!use) {
-    finalizeSingleCommand(stream, record);
+    if (hasKnownStatus) {
+      NSString *commandError = knownStatus == MTLCommandBufferStatusError
+          ? (knownCommand.error.localizedDescription ?: @"Metal command failed") : nil;
+      finalizeSingleCommand(stream, record, knownCommand, knownStatus, commandError, true);
+    } else {
+      finalizeSingleCommand(stream, record);
+    }
     return;
   }
   if (use->completionPublished.load(std::memory_order_acquire)) return;
-  id<MTLCommandBuffer> command = record.command;
-  const MTLCommandBufferStatus status = command.status;
+  id<MTLCommandBuffer> command = knownCommand ?: record.command;
+  const MTLCommandBufferStatus status =
+      hasKnownStatus ? knownStatus : command.status;
   if (status != MTLCommandBufferStatusCompleted && status != MTLCommandBufferStatusError) {
-    // Uncommitted submission failures still publish one record at a time.
+    // Recheck under the record lock in case completion raced this observation.
     finalizeSingleCommand(stream, record);
     return;
   }
+  // Terminal status cannot change while the shared batch's member records retire.
+  NSString *commandError = status == MTLCommandBufferStatusError
+      ? (command.error.localizedDescription ?: @"Metal command failed") : nil;
   @synchronized(use) {
     if (use->completionPublished.load(std::memory_order_relaxed)) return;
-    // The callback owns this array until every member has published.
-    NSArray<AMPendingCommand *> *records = use.records;
-    for (AMPendingCommand *member in records) finalizeSingleCommand(stream, member);
-    use->completionPublished.store(true, std::memory_order_release);
+    // The sealed group owns its array until all members publish, including
+    // when an explicit waiter takes retirement away from the callback.
+    NSArray<AMPendingCommand *> *records = use.sealedRecords ?: use.records;
+    for (AMPendingCommand *member in records)
+      finalizeSingleCommand(stream, member, command, status, commandError, true);
+    releaseSealedCompletionGroupLocked(use, records);
   }
 }
 
 static uint64_t monotonicNanoseconds() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+static void mathBatchDeadlineFired(AMStream *stream) {
+  @autoreleasepool {
+    @synchronized(stream.encodingLock) {
+      if (!stream.batchCommand) return;
+      constexpr uint64_t deadlineNanoseconds = 100000;
+      const uint64_t elapsed = monotonicNanoseconds() - stream.batchStarted;
+      if (elapsed < deadlineNanoseconds) {
+        dispatch_source_set_timer(stream.batchDeadline,
+            dispatch_time(DISPATCH_TIME_NOW, deadlineNanoseconds - elapsed),
+            DISPATCH_TIME_FOREVER, 0);
+        return;
+      }
+      AMStatus status = flushMathBatch(stream);
+      if (status.message) free(status.message);
+    }
+  }
 }
 
 static void clearMathAccess(AMStream *stream) {
@@ -817,6 +906,9 @@ static AMStatus flushMathBatch(AMStream *stream) {
   @synchronized(stream.encodingLock) {
     id<MTLCommandBuffer> command = stream.batchCommand;
     if (!command) return ok();
+    if (stream.batchDeadline)
+      dispatch_source_set_timer(stream.batchDeadline, DISPATCH_TIME_FOREVER,
+                                DISPATCH_TIME_FOREVER, 0);
     id<MTLComputeCommandEncoder> encoder = stream.batchEncoder;
     NSArray<AMPendingCommand *> *records = stream.batchRecords;
     AMPendingCommand *leaseRecord = stream.batchLeaseRecord;
@@ -830,9 +922,16 @@ static AMStatus flushMathBatch(AMStream *stream) {
     }
     AMPendingUse *completionUse = lastRecord.pendingUse;
     for (AMPendingCommand *record in records) record.completionUse = completionUse;
+    const bool hasSharedCompletion = completionUse != nil;
+    const uint64_t lastSequence = lastRecord.sequence;
     stream.batchEncoder = nil;
     stream.batchCommand = nil;
     stream.batchRecords = nil;
+    if (completionUse) {
+      @synchronized(completionUse) {
+        completionUse.sealedRecords = records;
+      }
+    }
     stream.batchLeaseRecord = nil;
     stream.batchBytes = 0;
     @try {
@@ -843,8 +942,11 @@ static AMStatus flushMathBatch(AMStream *stream) {
       [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
         @autoreleasepool {
           (void)completed;
-          for (AMPendingCommand *record in records) finalizeCommand(stream, record);
-          for (AMPendingCommand *record in records) record.completionUse = nil;
+          if (lastSequence <= stream->completionHandoffSequence.load(
+                  std::memory_order_acquire)) return;
+          if (hasSharedCompletion) finalizeCommand(stream, records.lastObject);
+          else
+            for (AMPendingCommand *record in records) finalizeCommand(stream, record);
         }
       }];
       [command commit];
@@ -860,7 +962,11 @@ static AMStatus flushMathBatch(AMStream *stream) {
             stream.failures[@(record.sequence)] = message;
         }
       }
-      for (AMPendingCommand *record in records) record.completionUse = nil;
+      if (hasSharedCompletion) {
+        @synchronized(completionUse) {
+          releaseSealedCompletionGroupLocked(completionUse, records);
+        }
+      }
       @synchronized(stream) {
         stream.lastAcceptedFailed = YES;
         stream.lastAcceptedError = message;
@@ -889,25 +995,29 @@ static AMStatus finishMathEncoding(AMStream *stream) {
   if (!stream.aggregateMath || count >= 32 || stream.batchBytes >= 4 * 1024 * 1024)
     return flushMathBatch(stream);
   constexpr uint64_t deadlineNanoseconds = 100000;
-  if (monotonicNanoseconds() - stream.batchStarted >= deadlineNanoseconds)
-    return flushMathBatch(stream);
+  const uint64_t elapsed = monotonicNanoseconds() - stream.batchStarted;
+  if (elapsed >= deadlineNanoseconds) return flushMathBatch(stream);
   if (count == 1) {
     const uint64_t generation = stream.batchGeneration;
-    const uint64_t elapsed = monotonicNanoseconds() - stream.batchStarted;
-    const int64_t delay = elapsed < deadlineNanoseconds ? deadlineNanoseconds - elapsed : 0;
-    __weak AMStream *weakStream = stream;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay),
-        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-      @autoreleasepool {
-        AMStream *current = weakStream;
-        @synchronized(current.encodingLock) {
-          if (current.batchGeneration == generation) {
-            AMStatus status = flushMathBatch(current);
-            if (status.message) free(status.message);
+    const int64_t delay = static_cast<int64_t>(deadlineNanoseconds - elapsed);
+    if (stream.batchDeadline) {
+      dispatch_source_set_timer(stream.batchDeadline,
+          dispatch_time(DISPATCH_TIME_NOW, delay), DISPATCH_TIME_FOREVER, 0);
+    } else {
+      __weak AMStream *weakStream = stream;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay),
+          dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+          AMStream *current = weakStream;
+          @synchronized(current.encodingLock) {
+            if (current.batchGeneration == generation) {
+              AMStatus status = flushMathBatch(current);
+              if (status.message) free(status.message);
+            }
           }
         }
-      }
-    });
+      });
+    }
   }
   return ok();
 }
@@ -1103,7 +1213,7 @@ static AMStatus submitCommandDetailed(
   record.materializationBytes = materializationBytes;
 
   ensureCustomLeaseLock();
-  @synchronized(stream.encodingLock) {
+  auto submitRecord = [&]() -> AMStatus {
     if (!deferred) {
       AMStatus status = flushMathBatch(stream);
       if (status.code) return status;
@@ -1127,7 +1237,7 @@ static AMStatus submitCommandDetailed(
         const BOOL writes = owner == singleOutput || [retainedOutputs containsObject:owner];
         const int32_t access = writes ? 1 : 0;
         if (owner.nativeLeases.count) {
-          for (AMBufferLease *active in owner.nativeLeases.allObjects) {
+          for (AMBufferLease *active in owner.nativeLeases) {
             if (!active.active || (active.access == 0 && access == 0))
               continue;
             return failure(10, "Metal buffer has a conflicting Core AI borrow lease");
@@ -1215,18 +1325,26 @@ static AMStatus submitCommandDetailed(
         if (!stream.batchRecords.count) stream.batchStarted = monotonicNanoseconds();
         [stream.batchRecords addObject:record];
       } else {
+        // Owned locals keep the callback independent of this stack-bound lambda.
+        AMStream *completionStream = stream;
+        AMPendingCommand *completionRecord = record;
         [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
           @autoreleasepool {
             (void)completed;
-            finalizeCommand(stream, record);
+            finalizeCommand(completionStream, completionRecord);
           }
         }];
         [command commit];
       }
       if (submittedSequence) *submittedSequence = sequence;
     }
+    return ok();
+  };
+  // Deferred math admission is inside the caller's encoding transaction.
+  if (deferred) return submitRecord();
+  @synchronized(stream.encodingLock) {
+    return submitRecord();
   }
-  return ok();
 }
 
 static AMStatus admitMathCommand(AMStream *stream, id<MTLCommandBuffer> command,
@@ -1326,8 +1444,22 @@ static NSArray<AMPendingCommand *> *pendingThrough(AMStream *stream,
   return snapshot;
 }
 
+static void publishCompletionHandoff(AMStream *stream, uint64_t sequence) {
+  uint64_t current =
+      stream->completionHandoffSequence.load(std::memory_order_relaxed);
+  while (current < sequence &&
+         !stream->completionHandoffSequence.compare_exchange_weak(
+             current, sequence, std::memory_order_release,
+             std::memory_order_relaxed)) {}
+}
+
+// Limit handoff to records retained by this captured snapshot.
 static void waitAndFinalize(AMStream *stream,
-                            NSArray<AMPendingCommand *> *snapshot) {
+                            NSArray<AMPendingCommand *> *snapshot,
+                            uint64_t capturedSequence) {
+  const uint64_t handoffSequence = snapshot.count
+      ? std::min(snapshot.lastObject.sequence, capturedSequence) : 0;
+  if (handoffSequence) publishCompletionHandoff(stream, handoffSequence);
   AMStatus status = flushMathBatch(stream);
   if (status.message) free(status.message);
   for (AMPendingCommand *record in snapshot) {
@@ -1336,7 +1468,6 @@ static void waitAndFinalize(AMStream *stream,
     finalizeCommand(stream, record);
   }
 }
-
 static bool bufferAccessConflicts(int32_t left, int32_t right) {
   return left != 0 || right != 0;
 }
@@ -1362,11 +1493,11 @@ static AMStatus beginBufferLease(AMBuffer *owner, int32_t access,
     }
     if (!owner.nativeLeases)
       owner.nativeLeases = [NSHashTable weakObjectsHashTable];
-    for (AMBufferLease *active in owner.nativeLeases.allObjects)
+    for (AMBufferLease *active in owner.nativeLeases)
       if (active.active && bufferAccessConflicts(access, active.access))
         return failure(10, "Metal buffer has a conflicting active borrow lease");
 
-    NSMutableArray<AMPendingUse *> *snapshot = [NSMutableArray new];
+    NSArray<AMPendingUse *> *snapshot = nil;
     NSString *savedError = nil;
     @synchronized(owner) {
       savedError = owner.producerError;
@@ -1375,13 +1506,13 @@ static AMStatus beginBufferLease(AMBuffer *owner, int32_t access,
         if (producer) {
           for (AMPendingUse *use in owner.pendingUses) {
             if (use.command == producer) {
-              [snapshot addObject:use];
+              snapshot = @[use];
               break;
             }
           }
         }
       } else {
-        [snapshot addObjectsFromArray:owner.pendingUses];
+        snapshot = [owner.pendingUses copy];
       }
     }
 
@@ -1397,7 +1528,7 @@ static AMStatus beginBufferLease(AMBuffer *owner, int32_t access,
     lease.owner = owner;
     lease.access = access;
     lease.savedError = savedError;
-    lease.uses = [snapshot copy];
+    lease.uses = snapshot ?: @[];
     uint64_t producerCount = 0;
     for (AMPendingUse *use in lease.uses) {
       if (access == 0)
@@ -1577,7 +1708,7 @@ AMStatus am_stream_fence_wait(void *fenceHandle) {
     @synchronized(fence) {
       if (!fence.completed) {
         @try {
-          waitAndFinalize(fence.stream, fence.snapshot);
+          waitAndFinalize(fence.stream, fence.snapshot, fence.sequence);
           AMStatus status = streamFailureThrough(fence.stream, fence.sequence);
           fence.resultCode = status.code;
           if (status.message) {
@@ -1664,7 +1795,7 @@ AMStatus am_stream_sync(void *streamHandle) {
     if (status.code) return status;
     // Finalize every captured record, including handlers still publishing leases.
     NSArray<AMPendingCommand *> *snapshot = pendingThrough(stream, sequence);
-    waitAndFinalize(stream, snapshot);
+    waitAndFinalize(stream, snapshot, sequence);
     return streamFailureThrough(stream, sequence);
   }
 }
@@ -1680,6 +1811,9 @@ AMStatus am_device_sync(void *deviceHandle) {
 
     NSArray<AMStream *> *streams = nil;
     @synchronized(state) { streams = state.streams.allObjects; }
+    if (streams.count == 1)
+      return am_stream_sync((__bridge void *)streams.firstObject);
+
     NSMutableArray<NSNumber *> *sequences = [NSMutableArray new];
     for (AMStream *stream in streams) {
       uint64_t sequence = 0;
@@ -1694,7 +1828,8 @@ AMStatus am_device_sync(void *deviceHandle) {
       [snapshots addObject:pendingThrough(
           streams[index], sequences[index].unsignedLongLongValue)];
     for (NSUInteger index = 0; index < streams.count; ++index)
-      waitAndFinalize(streams[index], snapshots[index]);
+      waitAndFinalize(streams[index], snapshots[index],
+                      sequences[index].unsignedLongLongValue);
 
     AMStatus first = ok();
     for (NSUInteger index = 0; index < streams.count; ++index) {
@@ -1743,6 +1878,7 @@ AMStatus am_event(void *deviceHandle, void **out) {
     id<MTLSharedEvent> shared = [device newSharedEvent];
     if (!shared) return failure(1, "Metal shared events are unavailable");
     AMEvent *event = [AMEvent new];
+    event.registryID = device.registryID;
     event.device = device;
     event.shared = shared;
     *out = (__bridge_retained void *)event;
@@ -1757,7 +1893,7 @@ AMStatus am_event_record(void *eventHandle, void *streamHandle,
       return failure(2, "null Metal event record argument");
     AMEvent *event = (__bridge AMEvent *)eventHandle;
     AMStream *stream = (__bridge AMStream *)streamHandle;
-    if (event.device.registryID != stream.device.registryID)
+    if (event.registryID != stream.registryID)
       return failure(2, "Metal event and stream use different devices");
 
     uint64_t value = 0;
@@ -1787,7 +1923,7 @@ AMStatus am_event_wait(void *streamHandle, void *eventHandle, uint64_t value,
       return failure(2, "invalid Metal event wait argument");
     AMStream *stream = (__bridge AMStream *)streamHandle;
     AMEvent *event = (__bridge AMEvent *)eventHandle;
-    if (event.device.registryID != stream.device.registryID)
+    if (event.registryID != stream.registryID)
       return failure(2, "Metal event and stream use different devices");
     uint64_t target = value;
     if (!explicitValue) {
@@ -1834,11 +1970,14 @@ static AMBuffer *cachedOwnerForRequestLocked(AMDeviceState *state,
 // Cached storage keeps its containers, but every allocation gets fresh evidence.
 static void initializeBufferOwnerLocked(AMDeviceState *state, AMBuffer *owner) {
   owner.externalReferences = 1;
-  owner.producer = nil;
-  [owner.nativeLeases removeAllObjects];
-  owner.producerInvocation = 0;
-  owner.producerError = nil;
-  owner.evidence = {nextInvocation.fetch_add(1), state.device.registryID, 0, 0, 0, 1, 1};
+  // A cached owner can still be observed by its retiring producer.
+  @synchronized(owner) {
+    owner.producer = nil;
+    [owner.nativeLeases removeAllObjects];
+    owner.producerInvocation = 0;
+    owner.producerError = nil;
+    owner.evidence = {nextInvocation.fetch_add(1), state.registryID, 0, 0, 0, 1, 1};
+  }
   state.liveBytes = saturatedAdd(state.liveBytes, owner.capacity);
 }
 
@@ -1858,11 +1997,57 @@ static AMBuffer *newBufferOwnerLocked(AMDeviceState *state, id<MTLBuffer> native
                                       uint64_t bytes) {
   AMBuffer *owner = [AMBuffer new];
   owner.buffer = native;
+  owner.registryID = native.device.registryID;
   owner.gpuAddress = state.supportsIndirectMath ? native.gpuAddress : 0;
   owner.state = state;
   owner.capacity = bytes;
   initializeBufferOwnerLocked(state, owner);
   return owner;
+}
+static void retireCompletedCacheOwners(AMDeviceState *state, uint64_t bytes) {
+  NSArray<AMStream *> *streams = nil;
+  @synchronized(state) { streams = state.streams.allObjects; }
+  for (AMStream *stream in streams) {
+    NSArray<AMPendingCommand *> *pending = pendingThrough(stream, UINT64_MAX);
+    for (AMPendingCommand *record in pending) {
+      if (record->completionPublished.load(std::memory_order_acquire)) continue;
+      id<MTLCommandBuffer> command = record.command;
+      const MTLCommandBufferStatus status = command.status;
+      if (status != MTLCommandBufferStatusCompleted &&
+          status != MTLCommandBufferStatusError) continue;
+
+      // Terminal status seals admission, so the lease set can no longer grow.
+      NSMutableArray<AMBuffer *> *matchingOwners = nil;
+      @synchronized(record) {
+        if (!record.finalized) {
+          for (AMBuffer *owner in record.bufferLeases) {
+            if (owner.capacity != bytes) continue;
+            if (!matchingOwners) matchingOwners = [NSMutableArray new];
+            [matchingOwners addObject:owner];
+          }
+        }
+      }
+      if (!matchingOwners) continue;
+
+      BOOL cacheable = NO;
+      @synchronized(state) {
+        for (AMBuffer *owner in matchingOwners) {
+          if (!owner.externalReferences && owner.inFlightLeases && !owner.cached) {
+            cacheable = YES;
+            break;
+          }
+        }
+      }
+      if (!cacheable) continue;
+
+      // Reuse the observed terminal status; never wait for GPU completion.
+      finalizeCommand(stream, record, command, status, true);
+      @synchronized(state) {
+        for (AMBuffer *owner in matchingOwners)
+          if (owner.cached) return;
+      }
+    }
+  }
 }
 
 AMStatus am_buffer(void *deviceHandle, uint64_t bytes, void **buffer) {
@@ -1882,6 +2067,8 @@ AMStatus am_buffer(void *deviceHandle, uint64_t bytes, void **buffer) {
     const BOOL pooled = requestedLength <= 1024 * 1024 && state.supportsSharedHeaps;
     MTLSizeAndAlign layout = {requestedLength, 1};
     BOOL pressure = NO;
+    BOOL inFlightAtMiss = NO;
+    BOOL cacheMiss = NO;
     AMBuffer *owner = nil;
     @synchronized(state) {
       const uint64_t limit = memoryLimitBytes(state);
@@ -1893,6 +2080,7 @@ AMStatus am_buffer(void *deviceHandle, uint64_t bytes, void **buffer) {
           *buffer = (__bridge_retained void *)owner;
           return ok();
         }
+        cacheMiss = YES;
       }
       if (pooled) {
         layout = [dev heapBufferSizeAndAlignWithLength:requestedLength
@@ -1908,11 +2096,14 @@ AMStatus am_buffer(void *deviceHandle, uint64_t bytes, void **buffer) {
         }
       }
       pressure = wouldExceed(state.reservedBytes, layout.size, limit);
+      inFlightAtMiss = state.inFlightBytes != 0;
     }
     if (pressure) {
       AMStatus status = flushDeviceMathBatches(dev);
       if (status.code) return status;
     }
+    if (cacheMiss && (inFlightAtMiss || pressure))
+      retireCompletedCacheOwners(state, bytes);
     @synchronized(state) {
       const uint64_t limit = memoryLimitBytes(state);
       if (requestedLength > limit)
@@ -2086,7 +2277,7 @@ static AMStatus validateFloatTensor(AMBuffer *owner, AMTensorDescriptor d,
 }
 
 static bool sameDevice(AMBuffer *left, AMBuffer *right) {
-  return left && right && left.buffer.device.registryID == right.buffer.device.registryID;
+  return left && right && left.registryID == right.registryID;
 }
 
 static bool sameShape(AMTensorDescriptor left, AMTensorDescriptor right) {
@@ -2222,7 +2413,7 @@ static AMStatus runMathCommand(AMCompute *context,
         dot || packedMath);
     if (!encoder) return failure(5, "cannot create Metal math encoder");
     const uint64_t invocation = nextInvocation.fetch_add(1);
-    AMEvidence evidence = {invocation, output.buffer.device.registryID,
+    AMEvidence evidence = {invocation, output.registryID,
                            0, 0, 0, 0, 2, 100 + operation};
     AMBuffer *__unsafe_unretained leases[3];
     NSUInteger leaseCount = 0;
@@ -2404,7 +2595,7 @@ static AMStatus runMpsMatmul(AMCompute *context, AMBuffer *a, AMBuffer *b,
   if (status.code) return status;
   const NSUInteger rows = ad.shape[0], inner = ad.shape[1], columns = bd.shape[1];
   const uint64_t invocation = nextInvocation.fetch_add(1);
-  AMEvidence evidence = {invocation, output.buffer.device.registryID,
+  AMEvidence evidence = {invocation, output.registryID,
                          0, 0, 0, 0, 2, 120};
   // MPS wrappers keep GPU objects; the shared lease union keeps canonical owners.
   AMBuffer *__unsafe_unretained buffers[3];
@@ -2514,7 +2705,7 @@ AMStatus am_rand(void *generatorHandle, void *outputHandle,
     if (!state || !state.device)
       return failure(1, "Metal random generator has no device");
     if (output.state != state ||
-        output.buffer.device.registryID != state.device.registryID)
+        output.registryID != state.registryID)
       return failure(2, "Metal RNG generator and output use different devices");
 
     uint64_t count = 0;
@@ -2571,7 +2762,7 @@ AMStatus am_rand(void *generatorHandle, void *outputHandle,
 
       memcpy(generator->rng.counter, nextCounter, sizeof(nextCounter));
       const uint64_t invocation = nextInvocation.fetch_add(1);
-      AMEvidence evidence = {invocation, state.device.registryID,
+      AMEvidence evidence = {invocation, state.registryID,
                              0, 0, 0, 0, 2, 200};
       status = submitCommand(stream, command, @[generator, output, pipeline],
                              output, invocation, evidence, 0, nullptr);
@@ -2856,9 +3047,11 @@ AMStatus am_math(void *aHandle, AMTensorDescriptor ad,
       const NSUInteger simdWidth = pipeline.threadExecutionWidth;
       if (!simdWidth || 256 % simdWidth)
         return failure(7, "row-vector pipeline has an unsupported SIMD width");
+      if (packedVectorMatrix && (simdWidth < 4 || simdWidth % 4))
+        return failure(7, "packed row-vector pipeline needs four K lanes per block");
       if (packedVectorMatrix) threads.width = simdWidth;
-      const uint64_t columnsPerGroup = 4 *
-          (packedVectorMatrix ? MIN((NSUInteger)4, simdWidth) : 256 / simdWidth);
+      const uint64_t columnsPerGroup =
+          packedVectorMatrix ? simdWidth : 4 * (256 / simdWidth);
       groups.width = (od.shape[od.rank - 1] + columnsPerGroup - 1) / columnsPerGroup;
     }
     if (elementwise) {
@@ -2983,7 +3176,7 @@ AMStatus am_cumsum(void *inputHandle, AMTensorDescriptor inputDescriptor,
         return failure(5, "cannot create Metal cumulative-sum encoder");
 
       const uint64_t invocation = nextInvocation.fetch_add(1);
-      AMEvidence evidence = {invocation, output.buffer.device.registryID,
+      AMEvidence evidence = {invocation, output.registryID,
           0, 0, 0, 0, 2, reverse ? 132 : 131};
       AMBuffer *__unsafe_unretained mathBuffers[2] = {input, output};
       flushPackedMath(stream, encoder);
@@ -3127,7 +3320,7 @@ AMStatus am_cumprod(void *inputHandle, AMTensorDescriptor inputDescriptor,
         return failure(5, "cannot create Metal cumulative-product encoder");
 
       const uint64_t invocation = nextInvocation.fetch_add(1);
-      AMEvidence evidence = {invocation, output.buffer.device.registryID,
+      AMEvidence evidence = {invocation, output.registryID,
           0, 0, 0, 0, 2, 133};
       AMBuffer *__unsafe_unretained mathBuffers[2] = {input, output};
       if (!packedScan || (stream->packedTaskCount &&
@@ -3295,7 +3488,7 @@ AMStatus am_cumprod_gradient(
         return failure(5, "cannot create Metal cumulative-product-gradient encoder");
 
       const uint64_t invocation = nextInvocation.fetch_add(1);
-      AMEvidence evidence = {invocation, output.buffer.device.registryID,
+      AMEvidence evidence = {invocation, output.registryID,
           0, 0, 0, 0, 2, 134};
       AMBuffer *__unsafe_unretained mathBuffers[4];
       NSUInteger mathBufferCount = 0;
@@ -3513,7 +3706,7 @@ AMStatus am_product_gradient(void *inputHandle, AMTensorDescriptor inputDescript
         return failure(5, "cannot create Metal product-gradient encoder");
 
       const uint64_t invocation = nextInvocation.fetch_add(1);
-      AMEvidence evidence = {invocation, output.buffer.device.registryID,
+      AMEvidence evidence = {invocation, output.registryID,
                              0, 0, 0, 0, 2, 128};
       AMBuffer *__unsafe_unretained mathBuffers[4];
       NSUInteger mathBufferCount = 0;
@@ -3692,7 +3885,7 @@ AMStatus am_mse_backward(void *upstreamHandle, AMTensorDescriptor ud,
       id<MTLComputeCommandEncoder> encoder = mathComputeEncoder(stream, command, output, false);
       if (!encoder) return failure(5, "cannot create Metal MSE backward encoder");
       const uint64_t invocation = nextInvocation.fetch_add(1);
-      AMEvidence evidence = {invocation, output.buffer.device.registryID,
+      AMEvidence evidence = {invocation, output.registryID,
                              0, 0, 0, 0, 2, 124};
       AMBuffer *__unsafe_unretained leases[4];
       NSUInteger leaseCount = 0;
@@ -3787,7 +3980,7 @@ AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
     if (!source || !destination || !directory) return failure(2, "null copy argument");
     AMBuffer *src = (__bridge AMBuffer *)source;
     AMBuffer *dst = (__bridge AMBuffer *)destination;
-    if (src == dst || src.buffer.device.registryID != dst.buffer.device.registryID ||
+    if (src == dst || src.registryID != dst.registryID ||
         input.dtype != output.dtype) return failure(2, "copy requires distinct same-device buffers and dtype");
     uint64_t count, outCount;
     AMStatus status = validate(src, input, count);
@@ -3811,7 +4004,7 @@ AMStatus am_copy(void *source, AMTensorDescriptor input, void *destination,
       id<MTLComputeCommandEncoder> encoder = mathComputeEncoder(stream, command, dst, false);
       if (!encoder) return failure(5, "cannot create Metal copy encoder");
       const uint64_t invocation = nextInvocation.fetch_add(1);
-      AMEvidence evidence = {invocation, dst.buffer.device.registryID, 0,
+      AMEvidence evidence = {invocation, dst.registryID, 0,
         0, 0, 0, 2, (int32_t)(dtypeWidth(input.dtype) * 8)};
       AMBuffer *__unsafe_unretained leases[] = {src, dst};
       status = admitMathCommand(stream, command, nil, dst, evidence, pipeline,
@@ -3866,7 +4059,7 @@ AMStatus am_set_element(void *destination, AMTensorDescriptor output,
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
     const uint64_t invocation = nextInvocation.fetch_add(1);
-    AMEvidence evidence = {invocation, dst.buffer.device.registryID,
+    AMEvidence evidence = {invocation, dst.registryID,
                            0, 0, 0, 0, 2, -(int32_t)(dtypeWidth(output.dtype) * 8)};
     status = submitCommand(stream, command, @[dst, pipeline], dst,
                            invocation, evidence, 0, nullptr);
@@ -4130,8 +4323,8 @@ static AMStatus validateCustomBinding(const AMKernelBinding &binding,
     return failure(2, "invalid custom Metal buffer handle");
   AMBuffer *owner = (AMBuffer *)object;
   if (!owner.buffer || !owner.state ||
-      owner.buffer.device.registryID != device.registryID ||
-      owner.state.device.registryID != device.registryID)
+      owner.registryID != device.registryID ||
+      owner.state.registryID != device.registryID)
     return failure(2, "custom Metal buffer belongs to a different device");
 
   uint64_t count = 0;
@@ -4241,7 +4434,7 @@ AMStatus am_dispatch(void *kernelHandle, const AMKernelBinding *bindings,
       if (![streamObject isKindOfClass:AMStream.class])
         return failure(2, "invalid explicit Metal stream handle");
       stream = (AMStream *)streamObject;
-      if (stream.device.registryID != device.registryID)
+      if (stream.registryID != device.registryID)
         return failure(2, "custom Metal stream belongs to a different device");
     } else {
       AMStatus status = selectedStream(device, state, &stream);
@@ -4323,7 +4516,7 @@ AMStatus am_dispatch(void *kernelHandle, const AMKernelBinding *bindings,
     }
 
     const uint64_t invocation = nextInvocation.fetch_add(1);
-    AMEvidence evidence = {invocation, device.registryID, 0, 0, 0, 0, 2, 300};
+    AMEvidence evidence = {invocation, state.registryID, 0, 0, 0, 0, 2, 300};
     status = submitCommandDetailed(stream, command, retainedHandles, outputs,
                                    customLeases, invocation, evidence, 0, nullptr);
     return status;

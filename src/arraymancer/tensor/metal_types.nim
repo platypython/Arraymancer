@@ -79,9 +79,9 @@ func checkedMetalSize*(shape: Metadata): int =
     if dim != 0 and prefix > high(int) div dim:
       raise newException(MetalError, "Metal shape overflow")
     prefix *= dim
-  shape.shapeProduct
+  prefix
 
-func rank*[T](t: MetalTensor[T]): int = t.shape.len
+func rank*[T](t: MetalTensor[T]): int {.inline.} = t.shape.len
 func size*[T](t: MetalTensor[T]): int =
   if t.storage == nil: 0 else: checkedMetalSize(t.shape)
 func is_C_contiguous*[T](t: MetalTensor[T]): bool =
@@ -96,7 +96,7 @@ func fromBits*(typ: typedesc[MetalBFloat16]; bits: uint16): MetalBFloat16 = Meta
 func toBits*(value: MetalFloat16): uint16 = uint16(value)
 func toBits*(value: MetalBFloat16): uint16 = uint16(value)
 
-proc metalDtype*[T](): int32 =
+proc metalDtype*[T](): int32 {.inline.} =
   ## Native storage tags are distinct from Torch's complex total-bit-width names.
   when T is float32: 1
   elif T is MetalFloat16: 2
