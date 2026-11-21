@@ -2,12 +2,13 @@ Arraymancer v0.7.x
 =====================================================
 
 - Keep fallback tensor temporaries off contiguous CPU GEMM and dense CPU
-  matrix dispatch.
+  matrix dispatch, and avoid matmul return-forwarding Tensor temporaries.
 - Keep fallback tensor temporaries off C/F-contiguous CPU GEMV and skip
   vector-promotion metadata for matrix-vector products.
 - Skip span planning for contiguous CPU elementwise inputs and hoist invariant
-  broadcast stride dispatch. Unroll float32 hardware square roots without
-  changing strided/alias fallbacks or offset and vector-tail behavior.
+  broadcast stride dispatch. Merge float32 unary contiguity checks into one
+  stride walk and unroll hardware square roots without changing strided/alias
+  fallbacks or offset and vector-tail behavior.
 - Add CPU float32/64 seeded ``cummin`` and ``cummax`` gradients with ordered,
   input-precision scatter-add into independent dense storage. Preserve latest
   tie/NaN destinations, inactive positive zeros, signed/broadcast views,

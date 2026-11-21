@@ -173,8 +173,8 @@ proc matmulFallback[T](alpha: T, a, b: Tensor[T], beta: T, result: var Tensor[T]
     result.shape.delete(result.rank - 1)
     result.strides.delete(result.strides.len - 1)
 
-proc matmulImpl[T](alpha: T, a, b: Tensor[T], beta: T): Tensor[T] {.noinit.} =
-  ## Allocate once; promote vectors only when batch planning is needed.
+template matmulImpl[T](alpha: T, a, b: Tensor[T], beta: T, result: var Tensor[T]): untyped =
+  ## Construct in the caller's return slot; cold promotions stay in their helper.
   if a.rank < 1 or b.rank < 1:
     raise newException(ValueError, "Matrix multiplication requires operands of rank >= 1")
   if a.rank == 2 and b.rank == 2:
@@ -195,11 +195,11 @@ proc `*`*[T: SomeNumber](a, b: Tensor[T]): Tensor[T] {.noinit.} =
   ## axes are removed from the result. Two vectors therefore return a rank-zero
   ## dot product. Scalars and incompatible inner/batch dimensions raise ValueError.
   ## Empty contractions produce zeros. The output owns one new allocation.
-  matmulImpl(1.T, a, b, 0.T)
+  matmulImpl(1.T, a, b, 0.T, result)
 
 proc `*`*[T: Complex[float32] or Complex[float64]](
       a, b: Tensor[T]): Tensor[T] {.noinit.} =
   ## Complex matrix product with the same vector and batch rules as real tensors.
   ## Products do not conjugate either operand.
   type F = T.T
-  matmulImpl(complex(1.F, 0.F), a, b, complex(0.F, 0.F))
+  matmulImpl(complex(1.F, 0.F), a, b, complex(0.F, 0.F), result)

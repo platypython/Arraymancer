@@ -171,6 +171,27 @@ proc main() =
       expect ValueError:
         output.applyUnary(newTensor[float32](2, 2), unaryLn)
 
+    test "Unary spans ignore singleton strides but preserve destination gaps":
+      let sourceOwner = [99'f32, 1, 4, 9, 16, 99].toTensor
+      var source = sourceOwner[1..4].reshape(2, 1, 2)
+      source.strides[1] = -37
+      var packedOwner = newTensorWith[float32](6, -99'f32)
+      var packed = packedOwner[1..4].reshape(2, 1, 2)
+      packed.strides[1] = 41
+      packed.applyUnary(source, unarySqrt)
+      check packedOwner == [-99'f32, 1, 2, 3, 4, -99].toTensor
+      check sourceOwner == [99'f32, 1, 4, 9, 16, 99].toTensor
+      var gapOwner = newTensorWith[float32](10, -99'f32)
+      var gaps = gapOwner[1..7|2]
+      gaps.applyUnary(sourceOwner[1..4], unarySqrt)
+      check gapOwner == [-99'f32, 1, -99, 2, -99, 3, -99, 4, -99, -99].toTensor
+      let scalar = newTensorWith[float32]([], 9'f32)
+      var scalarOutput = newTensorWith[float32]([], -99'f32)
+      scalarOutput.applyUnary(scalar, unarySqrt)
+      check scalarOutput.shape == []
+      check scalarOutput.item == 3'f32
+      check scalar.item == 9'f32
+
     test "As type with empty tensor returns empty tensor":
       let a = newTensor[int](0)
       let b = a.asType(float)

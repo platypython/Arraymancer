@@ -40,6 +40,43 @@ proc main() =
       check a * b == [[19'f32, 22], [43'f32, 50]].toTensor
       check zeros[float32](2, 0) * zeros[float32](0, 3) == zeros[float32](2, 3)
 
+    test "Matrix product assignments preserve input aliases and failed destinations":
+      template checkAssignedProduct(T: typedesc) =
+        block:
+          let original = [[1, 2], [3, 4]].toTensor.asType(T)
+          let right = [[2, 0], [1, 3]].toTensor.asType(T)
+          let expected = [[4, 6], [10, 12]].toTensor.asType(T)
+          var left = original.clone
+          let leftAlias = left
+          left = left * right
+          check left == expected
+          check leftAlias == original
+          var replacedRight = right.clone
+          let rightAlias = replacedRight
+          replacedRight = original * replacedRight
+          check replacedRight == expected
+          check rightAlias == right
+          var vector = [1, 2].toTensor.asType(T)
+          let vectorAlias = vector
+          vector = vector * right
+          check vector == [4, 6].toTensor.asType(T)
+          check vectorAlias == [1, 2].toTensor.asType(T)
+          let batchInput = [[[1, 2], [3, 4]], [[2, 1], [0, 3]]].toTensor.asType(T)
+          var batch = batchInput.clone
+          let batchAlias = batch
+          batch = batch * right
+          check batch == [[[4, 6], [10, 12]], [[5, 3], [3, 9]]].toTensor.asType(T)
+          check batchAlias == batchInput
+          expect ValueError:
+            left = left * zeros[T](3, 2)
+          check left == expected
+          check leftAlias == original
+      checkAssignedProduct(int)
+      checkAssignedProduct(float32)
+      checkAssignedProduct(float64)
+      checkAssignedProduct(Complex[float32])
+      checkAssignedProduct(Complex[float64])
+
     test "GEMM - General Matrix to Matrix Multiplication":
       ## TODO: test with slices
       let a = [[1.0,2,3],

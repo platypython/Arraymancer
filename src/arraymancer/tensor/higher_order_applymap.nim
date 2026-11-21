@@ -146,6 +146,16 @@ template apply3_inline*[T: KnownSupportsCopyMem;U,V](dest: var Tensor[T],
 type UnaryMathOp* = enum
   unaryExp, unaryLn, unarySqrt
 
+func bothCContiguous(dest, src: Tensor[float32]): bool {.inline.} =
+  ## Check equal-shaped operands in one row-major stride walk.
+  var expectedStride = 1
+  for axis in countdown(src.rank - 1, 0):
+    if src.shape[axis] != 1 and
+        (dest.strides[axis] != expectedStride or src.strides[axis] != expectedStride):
+      return false
+    expectedStride *= src.shape[axis]
+  true
+
 proc applyUnary*(dest: var Tensor[float32]; src: Tensor[float32];
                  operation: static[UnaryMathOp]) =
   ## Write elementwise exp, ln or sqrt into an equally shaped destination.
@@ -156,7 +166,7 @@ proc applyUnary*(dest: var Tensor[float32]; src: Tensor[float32];
   let count = src.size
   if count == 0: return
   when defined(macosx):
-    if dest.is_C_contiguous and src.is_C_contiguous and disjointOwnedStorage(dest, src):
+    if bothCContiguous(dest, src) and disjointOwnedStorage(dest, src):
       when operation == unarySqrt:
         sqrtFloat32(addr dest.storage.raw_buffer[dest.offset],
             addr src.storage.raw_buffer[src.offset], count)
