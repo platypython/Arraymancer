@@ -18,7 +18,9 @@ import  ../private/ast_utils,
         ./private/p_extrema_gradient,
         ./private/p_logsumexp_gradient,
         ./private/p_logcumsumexp_gradient,
+        ./private/p_cumulative_extrema_gradient,
         std/[complex, sequtils]
+from ../tensor/private/p_extrema import normalizedExtremaAxis
 when defined(macosx) and defined(arm64):
   import ../tensor/private/p_accelerate
 
@@ -891,3 +893,63 @@ proc logcumsumexp*[T: SomeFloat or Complex](a: Variable[Tensor[T]];
     result.grad = zeros_like(result.value)
     result.requires_grad = true
     register_node("Logcumsumexp", gate, logcumsumexp_backward_ag[T], result, a)
+
+type CumulativeExtremaGate[T] {.final.} = ref object of Gate[Tensor[T]]
+  cachedIndices: Tensor[int64]
+  inputShape: Metadata
+  axis: int
+
+proc cumulative_extrema_backward_ag[T: SomeFloat](self: Gate[Tensor[T]];
+    payload: Payload[Tensor[T]]): SmallDiffs[Tensor[T]] =
+  let gate = CumulativeExtremaGate[T](self)
+  result = newDiffs[Tensor[T]](1)
+  result[0] = cpuCumulativeExtremaGradient(gate.cachedIndices,
+    payload.variable.grad, gate.inputShape, gate.axis)
+
+proc cumulativeExtremaVariable[T: SomeFloat or Complex](a: Variable[Tensor[T]];
+    axis: int; maximum: static[bool]):
+    tuple[values: Variable[Tensor[T]], indices: Tensor[int64]] =
+  ## Complex differentiation rejects only after forward axis/dtype validation.
+  when T is Complex:
+    if a.is_grad_needed:
+      discard normalizedExtremaAxis(a.value.rank, axis)
+      if a.value.rank > 0 and a.value.size > 0:
+        raise newException(ValueError, "cumulative extrema unsupported CPU dtype")
+      let operation = when maximum: "cummax" else: "cummin"
+      raise newException(ValueError, operation &
+        " does not support automatic differentiation for outputs with complex dtype")
+  let output =
+    when maximum: a.value.cummax(axis)
+    else: a.value.cummin(axis)
+  new result.values
+  result.values.context = a.context
+  result.values.value = output.values
+  result.indices = output.indices
+  when T is SomeFloat:
+    if a.is_grad_needed:
+      var gate: CumulativeExtremaGate[T]
+      new gate
+      gate.cachedIndices = result.indices
+      gate.inputShape = a.value.shape
+      gate.axis = if axis < 0: axis + max(a.value.rank, 1) else: axis
+      result.values.grad = zeros_like(output.values)
+      result.values.requires_grad = true
+      when maximum:
+        register_node("Cummax", gate, cumulative_extrema_backward_ag[T], result.values, a)
+      else:
+        register_node("Cummin", gate, cumulative_extrema_backward_ag[T], result.values, a)
+
+proc cummin*[T: SomeFloat or Complex](a: Variable[Tensor[T]];
+    axis: int = 0): tuple[values: Variable[Tensor[T]], indices: Tensor[int64]] =
+  ## Real CPU prefix minima route each seed to its saved latest selected index.
+  ## Backward adds in axis order into independent dense +0 storage, without masks
+  ## or widened carries. Saved indices must remain unmodified before backward.
+  ## Complex differentiation rejects; nontracking scalar/empty forwards still work.
+  cumulativeExtremaVariable(a, axis, false)
+
+proc cummax*[T: SomeFloat or Complex](a: Variable[Tensor[T]];
+    axis: int = 0): tuple[values: Variable[Tensor[T]], indices: Tensor[int64]] =
+  ## Real CPU prefix maxima use the same ordered seeded scatter rules as cummin.
+  ## Latest equal values and each new NaN select a new gradient destination.
+  ## Scalar -0 seeds become +0; inactive positions stay +0 even for NaN seeds.
+  cumulativeExtremaVariable(a, axis, true)

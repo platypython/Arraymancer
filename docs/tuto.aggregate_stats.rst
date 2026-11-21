@@ -334,7 +334,30 @@ float32/64. Scalars and empty tensors additionally support uint16/32/64
 and complex64/128. Scalars accept axes 0 and -1; empty scanned dimensions
 remain empty rather than raising an empty-reduction error. Invalid axes
 reject before unsupported dtypes. Signed, offset, transposed, permuted and
-broadcast views are read directly, without an input copy. Autograd,
-output-buffer, named-axis, half/bfloat16 and Metal overloads are not yet
-supported.
+broadcast views are read directly, without an input copy. Output-buffer,
+named-axis, half/bfloat16 and Metal overloads are not yet supported.
+
+CPU float32/64 variables provide seeded first-order gradients:
+
+.. code-block:: nim
+
+  let ctx = newContext Tensor[float64]
+  let x = ctx.variable([3.0, 1.0, 1.0, 2.0].toTensor, requires_grad = true)
+  let prefixes = x.cummin()
+  prefixes.values.backprop([1.0, 2.0, 3.0, 4.0].toTensor)
+  echo x.grad  # [1.0, 2.0, 7.0, 0.0]
+
+Every prefix contributes its seed to the saved selected index, including latest
+ties and NaNs. Contributions add in axis order at the input dtype's precision
+into independent dense positive-zero storage. Inactive positions stay positive
+zero even with nonfinite seeds; a scalar negative-zero seed adds to positive
+zero rather than being copied. Signed, offset and broadcast inputs and strided
+seeds need no conversion tensors. Retained graphs accumulate normally, and a
+wrong-shaped seed rejects before consuming the graph.
+
+Indices are nondifferentiable and their saved storage must remain unmodified
+before backward. Complex differentiation rejects after forward axis/dtype
+validation; complex scalar/empty forwards remain available in no-grad mode
+or when the input does not require gradients. Higher-order and forward-mode
+differentiation, integer/bool gradients and Metal remain unsupported.
 

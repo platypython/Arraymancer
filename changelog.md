@@ -1,6 +1,11 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add CPU float32/64 seeded ``cummin`` and ``cummax`` gradients with ordered,
+  input-precision scatter-add into independent dense storage. Preserve latest
+  tie/NaN destinations, inactive positive zeros, signed/broadcast views,
+  strided seeds, retained graphs and scalar/empty differentiation contracts
+  without mask or prefix-gradient tensors.
 - Add CPU ``cummin`` and ``cummax`` with independent dtype-preserving values
   and int64 prefix indices. Select latest ties and NaN payloads, preserve
   signed/broadcast views, and support pinned scalar/empty complex and wider

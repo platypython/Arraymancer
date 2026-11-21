@@ -64,7 +64,8 @@ const
     "tensor.complex_scan_dtype", "tensor.complex_mean_dtype", "tensor.complex_sum_dtype",
     "tensor.complex_prod_dtype", "tensor.extrema", "autograd.extrema", "tensor.indexed_extrema",
     "tensor.paired_extrema", "autograd.paired_extrema", "tensor.aminmax", "tensor.logsumexp",
-    "autograd.logsumexp", "tensor.logcumsumexp", "autograd.logcumsumexp", "tensor.cumulative_extrema"]
+    "autograd.logsumexp", "tensor.logcumsumexp", "autograd.logcumsumexp", "tensor.cumulative_extrema",
+    "autograd.cumulative_extrema"]
   RequiredCaseAreas: array[RequiredCaseIds.len, string] = [
     "api:tensor_view", "api:tensors", "api:tensors", "api:torch", "api:torch",
     "api:torch", "api:autograd", "api:nn.functional", "api:autograd", "api:autograd",
@@ -76,7 +77,8 @@ const
     "api:autograd", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:torch", "api:torch",
     "api:torch", "api:torch", "api:torch", "api:autograd", "api:torch", "api:torch",
-    "api:autograd", "api:torch", "api:torch", "api:autograd", "api:torch", "api:autograd", "api:torch"]
+    "api:autograd", "api:torch", "api:torch", "api:autograd", "api:torch", "api:autograd", "api:torch",
+    "api:autograd"]
   MetalIds = ["apple.metal.device_dispatch", "apple.metal.dtypes", "apple.metal.tensor_views",
     "apple.metal.tensor_math", "apple.metal.autograd", "apple.metal.optimizer_sgd",
     "apple.metal.queue_lifetime", "apple.metal.memory_profiling", "apple.metal.rng",
@@ -3815,6 +3817,201 @@ proc expectCumulativeExtremaExpected(expected, inputs: JsonNode) =
   require(successfulPairs == 1108 and axisRejections == 820 and dtypeRejections == 344,
     "cumulative extrema pair/rejection totals do not match the pinned probe")
 
+
+const CumulativeExtremaGradientDtypeNames = [
+  "float32", "float64", "complex64", "complex128"]
+
+
+proc cumulativeExtremaGradientSeedKinds(dtype: string): seq[string] =
+  result = @["finite", "mixed", "zero", "negative_zero", "nan", "infinity",
+    "negative_infinity", "strided"]
+  if dtype in ["float32", "float64"]:
+    result.add "rounding"
+  if dtype in ["complex64", "complex128"]:
+    result.add "imaginary_infinity"
+
+
+proc expectCumulativeExtremaRoundingSeed(
+    seed: JsonNode, shape: seq[int], dtype, label: string
+) =
+  expectExtremaGradientTensor(seed, shape, dtype, label, true)
+  let boundary = if dtype == "float32": 16777216.0 else: 9007199254740992.0
+  var expectedValues = newJArray()
+  var count = 1
+  for dimension in shape:
+    if dimension == 0: count = 0
+    elif count != 0: count *= dimension
+  if shape.len == 0:
+    expectedValues.add newJFloat(boundary)
+  elif count > 0:
+    let rowWidth = shape[^1]
+    for index in 0 ..< count:
+      case (index mod rowWidth) mod 4
+      of 0: expectedValues.add newJFloat(boundary)
+      of 1: expectedValues.add newJFloat(1.0)
+      of 2: expectedValues.add newJFloat(-boundary)
+      else: expectedValues.add newJFloat(1.0)
+  require(field(seed, "values") == expectedValues,
+    label & " values do not match the dtype-specific rounding pattern")
+  require(field(seed, "negative_zero_indices") == newJArray(),
+    label & " rounding seed must contain no negative zero")
+
+
+proc cumulativeExtremaGradientInputSpec(dtype, profile: string): JsonNode =
+  result = cumulativeExtremaInputSpec(dtype, profile)
+  result["seed_kinds"] = newJArray()
+  for kind in cumulativeExtremaGradientSeedKinds(dtype):
+    result["seed_kinds"].add %kind
+  result["invalid_seed"] = %*{"kind": "shape_mismatch"}
+
+
+proc expectCumulativeExtremaGradientInputs(inputs: JsonNode) =
+  expectExtremaFields(inputs, CumulativeExtremaGradientDtypeNames,
+    "cumulative extrema gradient dtype groups")
+  var profileCount = 0
+  for dtype in CumulativeExtremaGradientDtypeNames:
+    let profiles = field(inputs, dtype)
+    let profileNames = cumulativeExtremaProfileNames(dtype)
+    profileCount += profileNames.len
+    expectExtremaFields(profiles, profileNames,
+      "cumulative extrema gradient profiles for " & dtype)
+    for profile in profileNames:
+      let spec = field(profiles, profile)
+      let payloadKey = cumulativeExtremaPayloadKey(dtype, profile)
+      expectExtremaFields(spec,
+        ["shape", "layout", payloadKey, "axes", "seed_kinds", "invalid_seed"],
+        "cumulative extrema gradient input " & dtype & "." & profile)
+      require(spec == cumulativeExtremaGradientInputSpec(dtype, profile),
+        "cumulative extrema gradient input does not match the pinned probe: " &
+        dtype & "." & profile)
+  require(profileCount == 70,
+    "cumulative extrema gradient must include exactly 70 profiles")
+
+
+proc cumulativeExtremaGradientExpectedError(
+    dtype: string, shape: seq[int], axis: int
+): string =
+  let axisLimit = max(shape.len, 1)
+  if axis < -axisLimit or axis >= axisLimit:
+    return "axis_out_of_range"
+  if dtype in ["complex64", "complex128"]:
+    if shape.len > 0 and extremaNumel(shape) > 0:
+      return "unsupported_dtype"
+    return "unsupported_differentiation"
+
+
+proc expectCumulativeExtremaGradientExpected(expected, inputs: JsonNode) =
+  expectExtremaFields(expected, CumulativeExtremaGradientDtypeNames,
+    "cumulative extrema gradient expected dtype groups")
+  var gradients = 0
+  var axisRejections = 0
+  var dtypeRejections = 0
+  var differentiationRejections = 0
+  var seedShapeMismatches = 0
+  var roundingGradients = 0
+  var roundingAxisRejections = 0
+  var profileCount = 0
+  for dtype in CumulativeExtremaGradientDtypeNames:
+    let inputProfiles = field(inputs, dtype)
+    let profileNames = cumulativeExtremaProfileNames(dtype)
+    let expectedProfiles = field(expected, dtype)
+    profileCount += profileNames.len
+    expectExtremaFields(expectedProfiles, profileNames,
+      "cumulative extrema gradient expected profiles for " & dtype)
+    for profile in profileNames:
+      let spec = field(inputProfiles, profile)
+      let shape = indexedExtremaLogicalShape(
+        cumulativeExtremaInputShape(dtype, profile),
+        cumulativeExtremaInputLayout(dtype, profile))
+      let axes = field(spec, "axes")
+      let seedKinds = field(spec, "seed_kinds")
+      require(axes.kind == JArray and seedKinds.kind == JArray,
+        "cumulative extrema gradient axes and seed kinds must be arrays")
+      let byRequest = field(expectedProfiles, profile)
+      var requestNames: seq[string]
+      for axisIndex in 0 ..< axes.len:
+        let axisNode = axes[axisIndex]
+        require(axisNode.kind == JInt,
+          "cumulative extrema gradient axis must be an integer")
+        let axis = axisNode.getInt
+        let expectedError = cumulativeExtremaGradientExpectedError(
+          dtype, shape, axis)
+        for operation in ["cummin", "cummax"]:
+          for seedIndex in 0 ..< seedKinds.len:
+            let seedKind = text(seedKinds[seedIndex],
+              "cumulative extrema gradient seed kind")
+            let requestId = operation & "_axis_" & $axis &
+              "_seed_" & seedKind
+            let label = "cumulative extrema gradient " & dtype & "." &
+              profile & "." & requestId
+            requestNames.add requestId
+            let observed = field(byRequest, requestId)
+            if expectedError.len > 0:
+              expectExtremaFields(observed, ["error"], label)
+              require(text(field(observed, "error"), label & " error") ==
+                expectedError, label & " error precedence mismatch")
+              if seedKind == "rounding" and expectedError == "axis_out_of_range":
+                inc roundingAxisRejections
+              case expectedError
+              of "axis_out_of_range": inc axisRejections
+              of "unsupported_dtype": inc dtypeRejections
+              of "unsupported_differentiation": inc differentiationRejections
+              else: invalid("unknown cumulative extrema gradient error " &
+                expectedError)
+              continue
+
+            require(dtype in ["float32", "float64"],
+              "complex cumulative extrema differentiation unexpectedly succeeded")
+            expectExtremaFields(observed, ["output", "seed", "gradient"], label)
+            let output = field(observed, "output")
+            expectExtremaFields(output, ["values", "indices"],
+              label & " output")
+            expectCumulativeExtremaRealTensor(field(output, "values"),
+              shape, dtype, label & " output values")
+            let indices = field(output, "indices")
+            expectIntegerOutputTensor(indices, shape, "int64")
+            let indexValues = field(indices, "values")
+            let axisSize = if shape.len == 0: 1
+              else: shape[if axis < 0: axis + shape.len else: axis]
+            for flatIndex in 0 ..< indexValues.len:
+              let index = indexValues[flatIndex].getBiggestInt
+              let scanPosition = cumulativeExtremaPrefixPosition(
+                shape, axis, flatIndex)
+              require(index >= 0 and index < axisSize.int64 and
+                index <= scanPosition.int64,
+                label & " output index is outside its cumulative prefix")
+            let seed = field(observed, "seed")
+            if seedKind == "rounding":
+              expectCumulativeExtremaRoundingSeed(seed, shape, dtype,
+                label & " seed")
+              inc roundingGradients
+            else:
+              expectExtremaGradientTensor(seed, shape, dtype,
+                label & " seed", true)
+            expectExtremaGradientTensor(field(observed, "gradient"), shape,
+              dtype, label & " gradient", true)
+            inc gradients
+
+          if expectedError.len == 0:
+            let requestId = operation & "_axis_" & $axis & "_invalid_seed"
+            let label = "cumulative extrema gradient " & dtype & "." &
+              profile & "." & requestId
+            requestNames.add requestId
+            let observed = field(byRequest, requestId)
+            expectExtremaFields(observed, ["error"], label)
+            require(text(field(observed, "error"), label & " error") ==
+              "seed_shape_mismatch", label & " error mismatch")
+            inc seedShapeMismatches
+      expectExtremaFields(byRequest, requestNames,
+        "cumulative extrema gradient requests for " & dtype & "." & profile)
+  require(profileCount == 70 and gradients == 2376 and
+    axisRejections == 2520 and dtypeRejections == 1152 and
+    differentiationRejections == 792 and seedShapeMismatches == 264 and
+    roundingGradients == 264 and roundingAxisRejections == 152,
+    "cumulative extrema gradient observation/error totals do not match the pinned probe")
+
+
+
 const PairedExtremaGradientInputNames = [
   "ties", "transpose", "reverse", "broadcast", "nan_first", "zero_ties",
   "scalar", "empty", "cube", "offset", "infinities"]
@@ -4655,6 +4852,10 @@ proc validateFixtureData*(data, reference: JsonNode) =
       require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
         "cumulative extrema fixtures require exact-value tolerances")
       expectCumulativeExtremaInputs(inputs)
+    of "autograd.cumulative_extrema":
+      require(c["atol"].getFloat == 0 and c["rtol"].getFloat == 0,
+        "cumulative extrema gradient fixtures require exact-value tolerances")
+      expectCumulativeExtremaGradientInputs(inputs)
     of "autograd.logsumexp":
       require(c["atol"].getFloat == 1e-6 and c["rtol"].getFloat == 1e-6,
         "logsumexp gradient fixtures require 1e-6 tolerances")
@@ -4827,6 +5028,8 @@ proc validateFixtureData*(data, reference: JsonNode) =
       expectLogcumsumexpExpected(expected, inputs)
     of "tensor.cumulative_extrema":
       expectCumulativeExtremaExpected(expected, inputs)
+    of "autograd.cumulative_extrema":
+      expectCumulativeExtremaGradientExpected(expected, inputs)
     of "autograd.logsumexp":
       expectLogsumexpGradientExpected(expected, inputs)
     of "autograd.logcumsumexp":

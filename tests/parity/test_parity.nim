@@ -2048,3 +2048,139 @@ suite "Pinned PyTorch conformance foundation":
     malformed["cases"][index]["expected"]["float32"]["nan_payloads"]["cummax_axis_0"]["values"]["bits"] =
       %*["0x3f800000", "0x3f800000", "0x7fc12345", "0x7fc54321", "0x7fc54321"]
     expect ValueError: validateFixtureData(malformed, reference)
+
+  test "CPU cumulative-extrema VJPs preserve ordered scatter and tracked rejection precedence":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var scanCase = newJNull()
+    for caseData in fixtures["cases"]:
+      if caseData["id"].getStr == "autograd.cumulative_extrema": scanCase = caseData
+    doAssert scanCase.kind == JObject
+    let actual = runCase(scanCase)
+    check compareObservations(scanCase["expected"], actual, 0.0, 0.0).len == 0
+    var outputs, invalidAxes, unsupported, differentiation, invalidSeeds: int
+    var roundingGradients, roundingAxisRejections: int
+    for _, profiles in actual:
+      for _, requests in profiles:
+        for _, observation in requests:
+          if not observation.hasKey("error"):
+            inc outputs
+          else:
+            case observation["error"].getStr
+            of "axis_out_of_range": inc invalidAxes
+            of "unsupported_dtype": inc unsupported
+            of "unsupported_differentiation": inc differentiation
+            of "seed_shape_mismatch": inc invalidSeeds
+            else: check false
+    for dtype in ["float32", "float64"]:
+      for _, spec in scanCase["inputs"][dtype]:
+        let axisLimit = max(spec["shape"].len, 1)
+        for axisNode in spec["axes"]:
+          let axis = axisNode.getInt
+          if axis < -axisLimit or axis >= axisLimit:
+            roundingAxisRejections += 2
+          else:
+            roundingGradients += 2
+    check [outputs, invalidAxes, unsupported, differentiation, invalidSeeds] ==
+      [2376, 2520, 1152, 792, 264]
+    check roundingGradients == 264 and roundingAxisRejections == 152
+    for dtype in ["float32", "float64"]:
+      let rounding = actual[dtype]["ties"]["cummin_axis_1_seed_rounding"]
+      let boundary: float64 = if dtype == "float32": 16777216.0 else: 9007199254740992.0
+      let negativeBoundary = -boundary
+      check rounding["seed"]["shape"] == %*[2, 3]
+      check rounding["seed"]["dtype"] == %dtype
+      check rounding["seed"]["values"] ==
+        %*[boundary, 1.0, negativeBoundary, boundary, 1.0, negativeBoundary]
+      check rounding["gradient"]["shape"] == %*[2, 3]
+      check rounding["gradient"]["dtype"] == %dtype
+      check rounding["gradient"]["values"] ==
+        %*[boundary, negativeBoundary + 1.0, 0.0, 0.0, 0.0, 0.0]
+      check rounding["gradient"]["negative_zero_indices"] == %*[]
+      check rounding["gradient"]["values"][3] == %0.0
+    for dtype in ["float32", "float64"]:
+      for operation in ["cummin", "cummax"]:
+        let scalar = actual[dtype]["scalar_negative_zero"][
+          operation & "_axis_0_seed_negative_zero"]
+        check scalar["seed"]["negative_zero_indices"] == %*[0]
+        check scalar["gradient"]["negative_zero_indices"] == %*[]
+        check scalar["gradient"]["shape"] == %*[]
+        let ties = actual[dtype]["zero_ties"][operation & "_axis_1_seed_mixed"]
+        check ties["gradient"]["values"] == ties["seed"]["values"]
+        let empty = actual[dtype]["empty_reduced"][operation & "_axis_1_seed_strided"]
+        check empty["gradient"]["shape"] == %*[2, 0]
+        check empty["gradient"]["values"] == %*[]
+    for dtype in ["complex64", "complex128"]:
+      check actual[dtype]["singleton"]["cummin_axis_1_seed_finite"] ==
+        %*{"error": "axis_out_of_range"}
+      check actual[dtype]["singleton"]["cummin_axis_0_seed_finite"] ==
+        %*{"error": "unsupported_dtype"}
+      check actual[dtype]["scalar_phase"]["cummax_axis_0_seed_finite"] ==
+        %*{"error": "unsupported_differentiation"}
+
+  test "Reject malformed cumulative-extrema seed, bit, prefix-index and differentiation evidence":
+    let fixtures = loadFixtures(parityRoot & "fixtures.json")
+    var index = -1
+    for candidate in 0 ..< fixtures["cases"].len:
+      if fixtures["cases"][candidate]["id"].getStr == "autograd.cumulative_extrema":
+        index = candidate
+    doAssert index >= 0
+    var malformed = duplicate(fixtures)
+    malformed["cases"][index]["inputs"]["float32"]["ties"].delete("seed_kinds")
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["ties"].delete(
+      "cummin_axis_1_seed_rounding")
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    let roundingSeed = malformed["cases"][index]["expected"][
+      "float64"]["ties"]["cummin_axis_1_seed_rounding"]["seed"]
+    let roundingSeedValues = roundingSeed["values"]
+    var corruptedSeedValues = newJArray()
+    for valueIndex in 0 ..< roundingSeedValues.len:
+      corruptedSeedValues.add(
+        if valueIndex == 0: %1.0 else: roundingSeedValues[valueIndex])
+    roundingSeed["values"] = corruptedSeedValues
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["ties"][
+      "cummin_axis_1_seed_finite"]["output"]["values"]["bits"] = %*["0x40000000"]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float64"]["ties"][
+      "cummax_axis_1_seed_finite"]["output"]["indices"]["values"] =
+      %*[1, 0, 2, 0, 1, 2]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["scalar_negative_zero"][
+      "cummin_axis_0_seed_negative_zero"]["gradient"]["negative_zero_indices"] = %*[0]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float64"]["ties"][
+      "cummin_axis_1_seed_mixed"]["seed"]["shape"] = %*[6]
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex128"]["scalar_phase"][
+      "cummax_axis_0_seed_finite"]["error"] = %"unsupported_dtype"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["complex64"]["singleton"][
+      "cummin_axis_1_seed_finite"]["error"] = %"unsupported_differentiation"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float64"]["empty_reduced"][
+      "cummax_axis_1_seed_strided"]["gradient"]["dtype"] = %"float32"
+    expect ValueError: validateFixtureData(malformed, reference)
+
+    malformed = duplicate(fixtures)
+    malformed["cases"][index]["expected"]["float32"]["ties"][
+      "cummin_axis_1_seed_finite"]["gradient"]["extra"] = %true
+    expect ValueError: validateFixtureData(malformed, reference)

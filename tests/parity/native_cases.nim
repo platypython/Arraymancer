@@ -2631,6 +2631,105 @@ proc cumulativeExtrema(inputs: JsonNode): JsonNode =
       of "complex128": cumulativeExtremaDtype[Complex[float64]](profiles)
       else: raise newException(ValueError, "unknown cumulative extrema input dtype")
 
+
+proc cumulativeExtremaGradientSeed[T: SomeFloat or Complex](
+    shape: Metadata; kind: string): Tensor[T] =
+  ## Keep this precision-sensitive pattern local to cumulative-extrema VJPs.
+  if kind != "rounding":
+    return logcumsumexpGradientSeed[T](shape, kind)
+  when T is SomeFloat:
+    let boundary =
+      when T is float32: T(16777216)
+      else: T(9007199254740992)
+    var count = 1
+    for dimension in shape: count *= dimension
+    result = newTensorUninit[T](shape)
+    if shape.len == 0:
+      result.unsafe_raw_offset[0] = boundary
+      return
+    let rowWidth = shape[^1]
+    if rowWidth == 0: return
+    for index in 0 ..< count:
+      let patternIndex = (index mod rowWidth) mod 4
+      result.unsafe_raw_offset[index] =
+        if patternIndex == 0 or patternIndex == 2: boundary * (if patternIndex == 0: T(1) else: T(-1))
+        else: T(1)
+  else:
+    raise newException(ValueError, "rounding cumulative-extrema seed requires real dtype")
+
+proc cumulativeExtremaGradientObservation[T: SomeFloat or Complex](
+    source: Tensor[T]; operation: string; axis: int; seedKind: string;
+    invalidSeed = false): JsonNode =
+  ## Each request owns a fresh tape; unexpected failures remain failures.
+  let context = newContext Tensor[T]
+  let input = context.variable(source, requires_grad = true)
+  var output: tuple[values: Variable[Tensor[T]], indices: Tensor[int64]]
+  try:
+    output = case operation
+      of "cummin": input.cummin(axis)
+      of "cummax": input.cummax(axis)
+      else: raise newException(ValueError, "unknown cumulative extrema gradient operation")
+  except IndexDefect as error:
+    let code = pairedExtremaErrorCode(error.msg)
+    if code != "axis_out_of_range": raise
+    return %*{"error": code}
+  except ValueError as error:
+    if error.msg == "cumulative extrema unsupported CPU dtype":
+      return %*{"error": "unsupported_dtype"}
+    when T is Complex:
+      if error.msg == operation &
+          " does not support automatic differentiation for outputs with complex dtype":
+        return %*{"error": "unsupported_differentiation"}
+    raise
+  if invalidSeed:
+    try:
+      output.values.backprop(logsumexpGradientInvalidSeed[T](output.values.value.shape))
+    except ValueError as error:
+      if error.msg != "backprop gradient shape must match the output shape": raise
+      return %*{"error": "seed_shape_mismatch"}
+    raise newException(ValueError, "cumulative extrema accepted a mismatched gradient seed shape")
+  let seed = cumulativeExtremaGradientSeed[T](output.values.value.shape, seedKind)
+  output.values.backprop(seed)
+  %*{
+    "output": {
+      "values": cumulativeExtremaValues(output.values.value),
+      "indices": tensorObservation(output.indices),
+    },
+    "seed": logsumexpGradientTensorObservation(seed),
+    "gradient": logsumexpGradientTensorObservation(input.grad),
+  }
+
+proc cumulativeExtremaGradientDtype[T: SomeFloat or Complex](
+    profiles: JsonNode): JsonNode =
+  result = newJObject()
+  for name, spec in profiles:
+    if spec["invalid_seed"]["kind"].getStr != "shape_mismatch":
+      raise newException(ValueError, "unknown cumulative extrema invalid seed kind")
+    let source = cumulativeExtremaInput[T](spec)
+    var observations = newJObject()
+    for operation in ["cummin", "cummax"]:
+      for axisNode in spec["axes"]:
+        let axis = axisNode.getInt
+        let id = operation & "_axis_" & $axis
+        for kind in spec["seed_kinds"]:
+          let seedKind = kind.getStr
+          observations[id & "_seed_" & seedKind] =
+            cumulativeExtremaGradientObservation(source, operation, axis, seedKind)
+        when T is SomeFloat:
+          let axisLimit = max(1, source.rank)
+          if axis >= -axisLimit and axis < axisLimit:
+            observations[id & "_invalid_seed"] =
+              cumulativeExtremaGradientObservation(source, operation, axis, "",
+                invalidSeed = true)
+    result[name] = observations
+
+proc cumulativeExtremaGradient(inputs: JsonNode): JsonNode =
+  result = newJObject()
+  result["float32"] = cumulativeExtremaGradientDtype[float32](inputs["float32"])
+  result["float64"] = cumulativeExtremaGradientDtype[float64](inputs["float64"])
+  result["complex64"] = cumulativeExtremaGradientDtype[Complex[float32]](inputs["complex64"])
+  result["complex128"] = cumulativeExtremaGradientDtype[Complex[float64]](inputs["complex128"])
+
 proc runCase*(caseData: JsonNode): JsonNode =
   let id = caseData["id"].getStr
   let inputs = caseData["inputs"]
@@ -2712,6 +2811,8 @@ proc runCase*(caseData: JsonNode): JsonNode =
     result = logsumexpGradient(inputs)
   of "autograd.logcumsumexp":
     result = logcumsumexpGradient(inputs)
+  of "autograd.cumulative_extrema":
+    result = cumulativeExtremaGradient(inputs)
   of "autograd.product_gradient":
     for name, spec in inputs:
       var source = getTensor(spec["x"])

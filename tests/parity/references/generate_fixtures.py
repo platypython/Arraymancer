@@ -3227,6 +3227,207 @@ def cumulative_extrema(torch: Any) -> dict[str, Any]:
     return _case("tensor.cumulative_extrema", "api:torch", inputs, expected, tolerance=0.0)
 
 
+_CUMULATIVE_EXTREMA_GRADIENT_DTYPES = (
+    "float32", "float64", "complex64", "complex128",
+)
+_CUMULATIVE_EXTREMA_GRADIENT_SEED_KINDS = (
+    "finite", "mixed", "zero", "negative_zero", "nan", "infinity",
+    "negative_infinity", "strided",
+)
+
+
+def _cumulative_extrema_gradient_seed(
+    torch: Any, output: Any, dtype_name: str, kind: str
+) -> Any:
+    """Build a cumulative-extrema-only rounded cancellation seed."""
+    if kind != "rounding":
+        return _logcumsumexp_gradient_seed(torch, output, dtype_name, kind)
+    boundary = 2**24 if dtype_name == "float32" else 2**53
+    count = output.numel()
+    if output.ndim == 0:
+        values = [boundary]
+    else:
+        row_width = output.shape[-1]
+        values = (
+            [(boundary, 1, -boundary, 1)[(index % row_width) % 4] for index in range(count)]
+            if row_width
+            else []
+        )
+    return torch.tensor(values, dtype=getattr(torch, dtype_name), device="cpu").reshape(
+        output.shape
+    )
+
+
+def _cumulative_extrema_gradient_inputs(
+    torch: Any,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Extend the forward corpus without changing its original fixture schema."""
+    forward_inputs = _cumulative_extrema_inputs(torch)
+    inputs: dict[str, dict[str, dict[str, Any]]] = {}
+    for dtype_name in _CUMULATIVE_EXTREMA_GRADIENT_DTYPES:
+        seed_kinds: list[str] = list(_CUMULATIVE_EXTREMA_GRADIENT_SEED_KINDS)
+        if dtype_name in ("float32", "float64"):
+            seed_kinds.append("rounding")
+        if dtype_name in ("complex64", "complex128"):
+            seed_kinds.append("imaginary_infinity")
+        inputs[dtype_name] = {
+            profile: {
+                **spec,
+                "seed_kinds": seed_kinds,
+                "invalid_seed": {"kind": "shape_mismatch"},
+            }
+            for profile, spec in forward_inputs[dtype_name].items()
+        }
+    return inputs
+
+
+def _cumulative_extrema_gradient_expected_error(
+    dtype_name: str, source: Any, axis: int
+) -> str | None:
+    axis_limit = max(source.ndim, 1)
+    if axis < -axis_limit or axis >= axis_limit:
+        return "axis_out_of_range"
+    if dtype_name in ("complex64", "complex128"):
+        if source.ndim > 0 and source.numel() > 0:
+            return "unsupported_dtype"
+        return "unsupported_differentiation"
+    return None
+
+
+def _cumulative_extrema_gradient_error_code(
+    error: Exception, axis: int, axis_limit: int
+) -> str | None:
+    if isinstance(error, IndexError) and (axis < -axis_limit or axis >= axis_limit):
+        return "axis_out_of_range"
+    if "does not support automatic differentiation for outputs with complex dtype" in str(error):
+        return "unsupported_differentiation"
+    return _indexed_extrema_error_code(error)
+
+
+def cumulative_extrema_gradient(torch: Any) -> dict[str, Any]:
+    """Observe actual CPU cumulative-extrema outputs and seeded first-order VJPs."""
+    inputs = _cumulative_extrema_gradient_inputs(torch)
+    expected: dict[str, dict[str, dict[str, Any]]] = {}
+    counts = {
+        "gradients": 0,
+        "axis_out_of_range": 0,
+        "unsupported_dtype": 0,
+        "unsupported_differentiation": 0,
+        "seed_shape_mismatch": 0,
+    }
+    profile_count = 0
+    for dtype_name, profiles in inputs.items():
+        expected[dtype_name] = {}
+        profile_count += len(profiles)
+        for profile, spec in profiles.items():
+            source = _cumulative_extrema_source(torch, dtype_name, spec)
+            observations: dict[str, Any] = {}
+            expected[dtype_name][profile] = observations
+            axis_limit = max(source.ndim, 1)
+            for operation in ("cummin", "cummax"):
+                for axis in spec["axes"]:
+                    expected_error = _cumulative_extrema_gradient_expected_error(
+                        dtype_name, source, axis
+                    )
+                    for seed_kind in spec["seed_kinds"]:
+                        request_id = f"{operation}_axis_{axis}_seed_{seed_kind}"
+                        label = f"{dtype_name}.{profile}.{request_id}"
+                        leaf = source.detach().requires_grad_(True)
+                        try:
+                            output = getattr(torch, operation)(leaf, dim=axis)
+                        except (IndexError, NotImplementedError, RuntimeError, TypeError) as error:
+                            code = _cumulative_extrema_gradient_error_code(
+                                error, axis, axis_limit
+                            )
+                            if (
+                                code is None
+                                or code != expected_error
+                                or code not in counts
+                            ):
+                                raise ValueError(
+                                    f"unexpected cumulative {operation} rejection for "
+                                    f"{label}: expected {expected_error}, observed {code} "
+                                    f"({error})"
+                                ) from error
+                            observations[request_id] = {"error": code}
+                            counts[code] += 1
+                            continue
+
+                        if expected_error is not None:
+                            raise ValueError(
+                                f"cumulative {operation} unexpectedly accepted {label}; "
+                                f"expected {expected_error}"
+                            )
+                        seed = _cumulative_extrema_gradient_seed(
+                            torch, output.values, dtype_name, seed_kind
+                        )
+                        try:
+                            gradient, = torch.autograd.grad(output.values, leaf, seed)
+                        except (IndexError, NotImplementedError, RuntimeError, TypeError) as error:
+                            raise ValueError(
+                                f"cumulative {operation} unexpectedly rejected the "
+                                f"seeded VJP for {label}: {error}"
+                            ) from error
+                        observations[request_id] = {
+                            "output": {
+                                "values": _observe_cumulative_extrema_values(
+                                    torch, output.values
+                                ),
+                                "indices": _observe_integer_output(output.indices),
+                            },
+                            "seed": _observe_logsumexp_gradient_tensor(seed),
+                            "gradient": _observe_logsumexp_gradient_tensor(gradient),
+                        }
+                        counts["gradients"] += 1
+
+                    if expected_error is None:
+                        request_id = f"{operation}_axis_{axis}_invalid_seed"
+                        label = f"{dtype_name}.{profile}.{request_id}"
+                        leaf = source.detach().requires_grad_(True)
+                        output = getattr(torch, operation)(leaf, dim=axis)
+                        invalid_seed = torch.zeros(
+                            output.values.numel() + 1,
+                            dtype=getattr(torch, dtype_name),
+                            device="cpu",
+                        )
+                        try:
+                            torch.autograd.grad(output.values, leaf, invalid_seed)
+                        except (IndexError, NotImplementedError, RuntimeError, TypeError) as error:
+                            if not isinstance(error, RuntimeError) or "Mismatch in shape" not in str(error):
+                                raise ValueError(
+                                    f"unexpected invalid-seed rejection for {label}: {error}"
+                                ) from error
+                            observations[request_id] = {"error": "seed_shape_mismatch"}
+                            counts["seed_shape_mismatch"] += 1
+                        else:
+                            raise ValueError(
+                                f"PyTorch accepted a mismatched cumulative-extrema seed "
+                                f"for {label}"
+                            )
+
+    expected_counts = {
+        "gradients": 2376,
+        "axis_out_of_range": 2520,
+        "unsupported_dtype": 1152,
+        "unsupported_differentiation": 792,
+        "seed_shape_mismatch": 264,
+    }
+    if len(inputs) != 4 or profile_count != 70 or counts != expected_counts:
+        raise ValueError(
+            "cumulative-extrema gradient corpus mismatch: "
+            f"dtypes={len(inputs)}, profiles={profile_count}, counts={counts}"
+        )
+    return _case(
+        "autograd.cumulative_extrema",
+        "api:autograd",
+        inputs,
+        expected,
+        tolerance=0.0,
+    )
+
+
+
+
 
 
 def _aminmax_request_id(dim: int | None, keepdim: bool) -> str:
@@ -4657,6 +4858,7 @@ CASE_BUILDERS: tuple[Callable[[Any], dict[str, Any]], ...] = (
     integer_output_dtype, complex_scans, complex_scan_dtype, complex_mean_dtype, complex_sum_dtype,
     complex_prod_dtype, indexed_extrema, paired_extrema, paired_extrema_gradient, aminmax,
     logsumexp, logsumexp_gradient, logcumsumexp, logcumsumexp_gradient, cumulative_extrema,
+    cumulative_extrema_gradient,
 )
 
 
