@@ -16,7 +16,8 @@
 import std/[json, math, unittest]
 import ./[parity_support, native_cases, run_parity]
 
-proc duplicate(node: JsonNode): JsonNode = parseJson($node)
+# Malformed-case probes need independent trees, not a serialized corpus.
+proc duplicate(node: JsonNode): JsonNode = node.copy
 
 proc withoutFirst(node: JsonNode): JsonNode =
   result = newJArray()
