@@ -953,3 +953,19 @@ proc cummax*[T: SomeFloat or Complex](a: Variable[Tensor[T]];
   ## Latest equal values and each new NaN select a new gradient destination.
   ## Scalar -0 seeds become +0; inactive positions stay +0 even for NaN seeds.
   cumulativeExtremaVariable(a, axis, true)
+
+proc cummin*[T: SomeFloat or Complex](a: Variable[Tensor[T]]; axis: int;
+    values: var Tensor[T]; indices: var Tensor[int64]) =
+  ## Plain Tensor destinations cannot carry an output differentiation gate.
+  ## Active tracking rejects before axis/dtype validation or output mutation.
+  if a.is_grad_needed:
+    raise newException(ValueError, "cummin out does not support automatic differentiation")
+  a.value.cummin(axis, values, indices)
+
+proc cummax*[T: SomeFloat or Complex](a: Variable[Tensor[T]]; axis: int;
+    values: var Tensor[T]; indices: var Tensor[int64]) =
+  ## Nontracking/no-grad calls write directly without creating a tape node.
+  ## Active tracking rejects before axis/dtype validation or output mutation.
+  if a.is_grad_needed:
+    raise newException(ValueError, "cummax out does not support automatic differentiation")
+  a.value.cummax(axis, values, indices)

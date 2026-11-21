@@ -334,8 +334,37 @@ float32/64. Scalars and empty tensors additionally support uint16/32/64
 and complex64/128. Scalars accept axes 0 and -1; empty scanned dimensions
 remain empty rather than raising an empty-reduction error. Invalid axes
 reject before unsupported dtypes. Signed, offset, transposed, permuted and
-broadcast views are read directly, without an input copy. Output-buffer,
-named-axis, half/bfloat16 and Metal overloads are not yet supported.
+broadcast views are read directly, without an input copy. Named-axis,
+half/bfloat16 and Metal overloads are not yet supported.
+
+To reuse CPU output buffers, pass both destinations explicitly:
+
+.. code-block:: nim
+
+  var keptValues = newTensor[float64](2, 3)
+  var keptIndices = newTensor[int64](2, 3)
+  scores.cummax(1, keptValues, keptIndices)
+
+These overloads return no tuple. Correctly shaped outputs retain their storage,
+strides and offset, including transposed, stepped and negative-stride views.
+Wrong-shaped outputs resize while retaining the offset; sufficient retained
+capacity is reused. Growing internal storage detaches only that destination,
+so existing aliases keep their old allocation. Fixed external buffers cannot
+grow, and writable external capacity must be known.
+
+Both outputs are checked before either changes. Internally overlapping outputs,
+overlap between outputs and partial source/output overlap reject. Proven
+byte-disjoint views may share an owner; safe exact source/value or same-width
+source/index maps are accepted. A complex scalar may share its leading bytes
+with the index output because its value is copied before writing. Exotic
+layouts whose safety cannot be proved within the
+bounded overlap search reject without mutation. These conservative rejections
+deliberately differ from PyTorch calls that can corrupt overlapping outputs or
+partially resize a fixed buffer before failing.
+
+Variable calls with caller-owned outputs reject active tracking before axis
+or dtype validation. Nontracking and ``no_grad_mode`` calls write directly
+without creating a differentiation gate.
 
 CPU float32/64 variables provide seeded first-order gradients:
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-## Exercises ordered cumulative-extrema VJPs, source independence and tape edges.
+## Exercises cumulative-extrema VJPs, caller-owned outputs and tape isolation.
 import ../../src/arraymancer
 import std/[unittest, math, complex]
 
@@ -86,6 +86,120 @@ proc checkComplexTracking[F: SomeFloat]() =
   let inactive = context.variable(scalar.value, requires_grad = false).cummin(0)
   check not inactive.values.requires_grad
   check inactive.values.value.atContiguousIndex(0) == C(re: F(2), im: F(7))
+
+proc checkTrackedOutputRejection[T: SomeFloat or Complex](source: Tensor[T]) =
+  ## Tracking wins over invalid axes/dtypes without resizing either borrowed view.
+  let context = newContext Tensor[T]
+  let input = context.variable(source, requires_grad = true)
+  let sourceBefore = source.clone
+  let valueOwner = newTensorWith[T]([5], default(T))
+  let indexOwner = newTensorWith[int64]([7], -7'i64)
+  var values = valueOwner[1..3|2]
+  var indices = indexOwner[1..5|2]
+  let valueStorage = values.storage
+  let indexStorage = indices.storage
+  for maximum in [false, true]:
+    for axis in [-3, 0, 1, 9]:
+      try:
+        if maximum: input.cummax(axis, values, indices)
+        else: input.cummin(axis, values, indices)
+        check false
+      except ValueError as error:
+        let operation = if maximum: "cummax" else: "cummin"
+        check error.msg == operation & " out does not support automatic differentiation"
+      check values.storage == valueStorage
+      check indices.storage == indexStorage
+      check values.shape == [2]
+      check values.strides == [2]
+      check values.offset == 1
+      check indices.shape == [3]
+      check indices.strides == [2]
+      check indices.offset == 1
+      for value in valueOwner:
+        check value == default(T)
+      for index in indexOwner:
+        check index == -7'i64
+      check source == sourceBefore
+
+proc checkNoGradCallerOutputs[T: SomeFloat]() =
+  ## Mutating caller outputs must not disturb an earlier differentiable result.
+  let context = newContext Tensor[T]
+  let source = [[T(2), T(1), T(3)], [T(1), T(3), T(3)]].toTensor
+  let input = context.variable(source, requires_grad = true)
+  let saved = input.cummin(1)
+  let valueOwner = newTensorWith[T]([2, 7], T(-7))
+  let indexOwner = newTensorWith[int64]([7, 2], -9'i64)
+  var values = valueOwner[0..1, 1..5|2]
+  var indices = indexOwner[1..5|2, 0..1].transpose
+  let valuePointer = values.get_offset_ptr
+  let indexPointer = indices.get_offset_ptr
+  for maximum in [false, true]:
+    context.no_grad_mode:
+      check not input.is_grad_needed
+      if maximum: input.cummax(-1, values, indices)
+      else: input.cummin(-1, values, indices)
+    check input.is_grad_needed
+    let expected = if maximum: source.cummax(1) else: source.cummin(1)
+    check values == expected.values
+    check indices == expected.indices
+    check values.get_offset_ptr == valuePointer
+    check indices.get_offset_ptr == indexPointer
+    check values.strides == [7, 2]
+    check indices.strides == [1, 4]
+    for row in 0..<2:
+      for column in 0..<7:
+        if column notin [1, 3, 5]:
+          check valueOwner[row, column] == T(-7)
+    for row in [0, 2, 4, 6]:
+      for column in 0..<2:
+        check indexOwner[row, column] == -9'i64
+  let inactive = context.variable(source)
+  inactive.cummax(1, values, indices)
+  check inactive.grad.size == 0
+  check not inactive.requires_grad
+  check values == [[T(2), T(2), T(3)], [T(1), T(3), T(3)]].toTensor
+  values[0, 0] = T(-777)
+  indices[0, 0] = 99
+  check saved.indices == [[0'i64, 1, 1], [0'i64, 0, 0]].toTensor
+  saved.values.backprop(newTensorWith[T]([2, 3], T(2)))
+  check input.grad == [[T(2), T(4), T(0)], [T(6), T(0), T(0)]].toTensor
+  check source == [[T(2), T(1), T(3)], [T(1), T(3), T(3)]].toTensor
+
+proc checkComplexCallerOutputs[F: SomeFloat]() =
+  ## No-grad scalar/empty shortcuts retain complex support without a gate.
+  type C = Complex[F]
+  let context = newContext Tensor[C]
+  let value = C(re: F(1.25), im: F(-2.5))
+  let scalar = context.variable(newTensorWith[C]([], value), requires_grad = true)
+  var values: Tensor[C]
+  var indices: Tensor[int64]
+  context.no_grad_mode:
+    scalar.cummin(-1, values, indices)
+  check values.rank == 0
+  check values.atContiguousIndex(0) == value
+  check indices.rank == 0
+  check indices.atContiguousIndex(0) == 0
+  check scalar.is_grad_needed
+  let empty = context.variable(newTensor[C](2, 0, 3), requires_grad = true)
+  context.no_grad_mode:
+    empty.cummax(1, values, indices)
+  check values.shape == [2, 0, 3]
+  check indices.shape == [2, 0, 3]
+  let valueStorage = values.storage
+  let indexStorage = indices.storage
+  expect IndexDefect:
+    context.no_grad_mode:
+      empty.cummin(3, values, indices)
+  check empty.is_grad_needed
+  let matrix = context.variable(newTensorWith[C]([2, 3], value), requires_grad = true)
+  expect ValueError:
+    context.no_grad_mode:
+      matrix.cummax(1, values, indices)
+  check matrix.is_grad_needed
+  check values.storage == valueStorage
+  check indices.storage == indexStorage
+  check values.shape == [2, 0, 3]
+  check indices.shape == [2, 0, 3]
 
 suite "CPU cumulative extrema seeded gradients":
   test "Latest selected indices receive every prefix contribution":
@@ -176,3 +290,23 @@ suite "CPU cumulative extrema seeded gradients":
   test "Complex differentiation rejection preserves no-grad and nontracking forwards":
     checkComplexTracking[float32]()
     checkComplexTracking[float64]()
+
+suite "CPU cumulative extrema caller-owned Variable outputs":
+  test "Tracking rejects before axis or dispatch errors without touching either output":
+    checkTrackedOutputRejection([[2.0'f32, 1, 3], [1.0'f32, 3, 3]].toTensor)
+    checkTrackedOutputRejection([[2.0, 1, 3], [1.0, 3, 3]].toTensor)
+    checkTrackedOutputRejection(newTensorWith[Complex[float32]]([2, 3],
+      Complex[float32](re: 1, im: 2)))
+    checkTrackedOutputRejection(newTensorWith[Complex[float64]]([],
+      Complex[float64](re: 1, im: 2)))
+    checkTrackedOutputRejection(newTensor[Complex[float64]](2, 0, 3))
+
+  test "Float32 no-grad and nontracking outputs preserve views and an existing graph":
+    checkNoGradCallerOutputs[float32]()
+
+  test "Float64 no-grad and nontracking outputs preserve views and an existing graph":
+    checkNoGradCallerOutputs[float64]()
+
+  test "Complex no-grad scalar and empty outputs preserve dispatch and mode restoration":
+    checkComplexCallerOutputs[float32]()
+    checkComplexCallerOutputs[float64]()

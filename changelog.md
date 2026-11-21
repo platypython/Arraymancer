@@ -1,6 +1,10 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Add CPU ``cummin``/``cummax`` caller-owned value/index outputs with direct
+  signed-stride writes, capacity-aware atomic resizing and pre-mutation overlap
+  checks. Preserve safe exact aliases and disjoint shared storage; Variable
+  overloads reject active tracking and support direct no-grad execution.
 - Keep fallback tensor temporaries off contiguous CPU GEMM and dense CPU
   matrix dispatch, and avoid matmul return-forwarding Tensor temporaries.
 - Reuse scalar floating reduction counts and bypass packing wrappers for

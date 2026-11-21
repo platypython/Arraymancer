@@ -36,16 +36,18 @@ type
     offset*: int                         # 8 bytes
     storage*: CpuStorage[T]              # 8 bytes
 
-  CpuStorage*[T] {.shallow.} = ref CpuStorageObj[T] # Total heap: 25 bytes = 1 cache-line
+  CpuStorage*[T] {.shallow.} = ref CpuStorageObj[T] # Shared CPU tensor storage
   CpuStorageObj[T] {.shallow.} = object
+    capacityElems*: int # -1 means unknown; otherwise elements from raw_buffer[0]
+    isExternal*: bool   # wrapped caller-supplied storage cannot be resized automatically
     # Workaround supportsCopyMem in type section - https://github.com/nim-lang/Nim/issues/13193
     when T is KnownSupportsCopyMem:
-      raw_buffer*: ptr UncheckedArray[T]                               # 8 bytes
-      memalloc*: pointer                                               # 8 bytes
-      isMemOwner*: bool                                                # 1 byte
-      deleter*: proc(memalloc: pointer) {.noconv, gcsafe, raises: [].} # 8 bytes
+      raw_buffer*: ptr UncheckedArray[T]
+      memalloc*: pointer
+      isMemOwner*: bool
+      deleter*: proc(memalloc: pointer) {.noconv, gcsafe, raises: [].}
     else: # Tensors of strings, other ref types or non-trivial destructors
-      raw_buffer*: seq[T]                # 8 bytes (16 for seq v2 backed by destructors?)
+      raw_buffer*: seq[T]
 
 proc initMetadataArray*(len: int): Metadata {.inline.} =
   result.len = len
@@ -133,6 +135,8 @@ proc allocCpuStorage*[T](storage: var CpuStorage[T], size: int) =
       new(storage, finalizer[T])
     else:
       new(storage)
+    storage.capacityElems = size
+    storage.isExternal = false
     storage.memalloc = allocShared(sizeof(T) * size + LASER_MEM_ALIGN - 1)
     storage.isMemOwner = true
     storage.raw_buffer = align_raw_data(T, storage.memalloc)
@@ -140,6 +144,8 @@ proc allocCpuStorage*[T](storage: var CpuStorage[T], size: int) =
   else: # Always 0-initialize Tensors of seq, strings, ref types and types with non-trivial destructors
     new(storage)
     storage.raw_buffer.newSeq(size)
+    storage.capacityElems = size
+    storage.isExternal = false
 
 proc cpuStorageFromBuffer*[T: KnownSupportsCopyMem](
     storage: var CpuStorage[T],
@@ -154,6 +160,8 @@ proc cpuStorageFromBuffer*[T: KnownSupportsCopyMem](
     new(storage, finalizer[T])
   else:
     new(storage)
+  storage.capacityElems = size
+  storage.isExternal = true
   storage.memalloc = rawBuffer
   storage.isMemOwner = false
   storage.raw_buffer = cast[ptr UncheckedArray[T]](storage.memalloc)
@@ -172,10 +180,13 @@ proc cpuStorageFromBuffer*[T: KnownSupportsCopyMem](
     new(storage, finalizer[T])
   else:
     new(storage)
+  storage.capacityElems = -1
+  storage.isExternal = true
   storage.memalloc = memalloc
   storage.isMemOwner = true
   storage.raw_buffer = cast[ptr UncheckedArray[T]](rawBuffer)
   storage.deleter = deleter
+
 
 func is_C_contiguous*(t: Tensor): bool =
   ## Check if the tensor follows C convention / is row major

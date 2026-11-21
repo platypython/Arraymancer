@@ -18,6 +18,7 @@ import ../data_structure, ../init_cpu
 import ./p_extrema
 import ../../laser/compiler_optim_hints
 
+import ./p_cumulative_extrema_output
 when defined(macosx) and defined(arm64) and defined(clang):
   {.localPassC: "-mno-outline".}
 
@@ -239,7 +240,7 @@ proc cumulativeExtremaPacked[T](values: ptr UncheckedArray[T];
     return
   const Lanes = 32'u
   withCompilerOptimHints()
-  # Allocating entry points own disjoint value/index buffers and never mutate input.
+  # This packed route runs only after output/source disjointness is proven.
   let inputData {.restrict.} = source
   let valueOut {.restrict.} = values
   let indexOut {.restrict.} = indices
@@ -267,107 +268,211 @@ proc cumulativeExtremaPacked[T](values: ptr UncheckedArray[T];
           indexOut[position + lane] = selected[lane]
       column += width
 
-proc scanCumulativeExtrema*[T: SomeNumber or bool or Complex](arg: Tensor[T];
-    axis: int; maximum: static[bool]): tuple[values: Tensor[T], indices: Tensor[int64]] =
-  ## Scalar and empty dispatch precedes dtype rejection, but never axis validation.
-  let dimension = normalizedExtremaAxis(arg.rank, axis)
-  if arg.rank == 0 or arg.size == 0:
-    result.values = newTensorUninit[T](arg.shape)
-    result.indices = newTensorUninit[int64](arg.shape)
-    if arg.rank == 0:
-      result.values.storage.raw_buffer[0] = arg.storage.raw_buffer[arg.offset]
-      result.indices.storage.raw_buffer[0] = 0
+proc validateCumulativeExtrema[T: SomeNumber or bool or Complex](
+    arg: Tensor[T]; axis: int): int =
+  ## Axis errors precede dtype dispatch; scalar and empty inputs bypass it.
+  result = normalizedExtremaAxis(arg.rank, axis)
+  when T is Complex or (T is SomeUnsignedInt and sizeof(T) > 1):
+    if arg.rank > 0 and arg.size > 0:
+      raise newException(ValueError, "cumulative extrema unsupported CPU dtype")
+
+proc storeCumulativeExtremaIndex(indices: ptr UncheckedArray[int64];
+    address: int; selected: int64) {.inline.} =
+  ## Byte stores also make exact float64/source-index aliases well-defined.
+  var bytes = selected
+  copyMem(addr indices[address], addr bytes, sizeof(bytes))
+
+proc cumulativeExtremaSpanOut[T](values: ptr UncheckedArray[T];
+    indices: ptr UncheckedArray[int64]; source: ptr UncheckedArray[T];
+    valueBase, indexBase, inputBase: int; valueStep, indexStep,
+    inputStep, length: int; maximum: static[bool]) =
+  ## Independent signed steps; load each source element before either store.
+  var carried = source[inputBase]
+  var selected = 0'i64
+  values[valueBase] = carried
+  storeCumulativeExtremaIndex(indices, indexBase, selected)
+  for position in 1 ..< length:
+    let sourceValue = source[inputBase + position * inputStep]
+    cumulativeExtremaStep(sourceValue, int64(position), carried, selected, maximum)
+    values[valueBase + position * valueStep] = carried
+    storeCumulativeExtremaIndex(indices, indexBase + position * indexStep, selected)
+
+proc advanceCumulativeExtremaInputGroup(shape, strides: Metadata;
+    dimension: int; coordinates: var Metadata; inputBase: var int) {.inline.} =
+  ## Move only between valid group starts, never through an overflowing one-past address.
+  for axis in countdown(shape.len - 1, 0):
+    if axis == dimension:
+      continue
+    if coordinates[axis] < shape[axis] - 1:
+      inc coordinates[axis]
+      inputBase += strides[axis]
+      break
+    coordinates[axis] = 0
+    inputBase -= (shape[axis] - 1) * strides[axis]
+
+proc advanceCumulativeExtremaOutputGroup(shape, inputStrides, valueStrides,
+    indexStrides: Metadata; dimension: int; coordinates: var Metadata;
+    inputBase, valueBase, indexBase: var int) {.inline.} =
+  ## Advance all three independent physical maps in the same logical group order.
+  for axis in countdown(shape.len - 1, 0):
+    if axis == dimension:
+      continue
+    if coordinates[axis] < shape[axis] - 1:
+      inc coordinates[axis]
+      inputBase += inputStrides[axis]
+      valueBase += valueStrides[axis]
+      indexBase += indexStrides[axis]
+      break
+    coordinates[axis] = 0
+    inputBase -= (shape[axis] - 1) * inputStrides[axis]
+    valueBase -= (shape[axis] - 1) * valueStrides[axis]
+    indexBase -= (shape[axis] - 1) * indexStrides[axis]
+
+proc scanCumulativeExtremaInto[T: SomeNumber or bool or Complex](
+    arg: Tensor[T]; dimension: int; values: var Tensor[T];
+    indices: var Tensor[int64]; maximum: static[bool];
+    valuesExactInput: bool = false; indicesExactInput: bool = false) =
+  ## Shared non-raising worker for allocating and caller-owned output routes.
+  if arg.rank == 0:
+    # This copy must precede both stores: scalar complex indices may cover a component.
+    let sourceValue = arg.storage.raw_buffer[arg.offset]
+    values.storage.raw_buffer[values.offset] = sourceValue
+    storeCumulativeExtremaIndex(indices.storage.raw_buffer, indices.offset, 0)
+    return
+  let elementCount = arg.size
+  if elementCount == 0:
     return
   when T is Complex or (T is SomeUnsignedInt and sizeof(T) > 1):
-    raise newException(ValueError, "cumulative extrema unsupported CPU dtype")
+    discard # The validating entry point rejects nonempty inputs before mutation.
   else:
-    result.values = newTensorUninit[T](arg.shape)
-    result.indices = newTensorUninit[int64](arg.shape)
     let source = arg.storage.raw_buffer
-    let values = result.values.storage.raw_buffer
-    let indices = result.indices.storage.raw_buffer
     let length = uint(arg.shape[dimension])
     var inner = 1'u
-    for index in dimension + 1 ..< arg.rank: inner *= uint(arg.shape[index])
-    let groups = uint(arg.size) div length
-    let packed = arg.is_C_contiguous
-    if packed and length == 1:
-      copyMem(values, addr source[arg.offset], arg.size * sizeof(T))
-      zeroMem(indices, arg.size * sizeof(int64))
-      return
-    if packed:
-      cumulativeExtremaPacked(values, indices, source, uint(arg.offset),
-        groups, length, inner, maximum)
+    for index in dimension + 1 ..< arg.rank:
+      inner *= uint(arg.shape[index])
+    let groups = uint(elementCount) div length
+    let sourceAliasesOutput = valuesExactInput or indicesExactInput
+
+    if not sourceAliasesOutput and values.is_C_contiguous and
+        indices.is_C_contiguous:
+      let valueOut = cast[ptr UncheckedArray[T]](values.get_offset_ptr)
+      let indexOut = cast[ptr UncheckedArray[int64]](indices.get_offset_ptr)
+      if arg.is_C_contiguous:
+        if length == 1:
+          copyMem(valueOut, addr source[arg.offset], elementCount * sizeof(T))
+          zeroMem(indexOut, elementCount * sizeof(int64))
+          return
+        cumulativeExtremaPacked(valueOut, indexOut, source, uint(arg.offset),
+          groups, length, inner, maximum)
+        return
+
+      # C-order outputs use the existing vectorizable span kernels. They may
+      # reread the source, so this branch is restricted to proven disjoint maps.
+      var coordinates: Metadata
+      coordinates.len = arg.rank
+      var inputBase = arg.offset
+      let inputStride = arg.strides[dimension]
+      let inputStep = cast[uint](inputStride)
+      if inner == 1:
+        var group = 0'u
+        when T is SomeSignedInt or T is uint8:
+          if inputStride < -1 or inputStride > 1:
+            while group + 1 < groups:
+              let firstBase = uint(inputBase)
+              advanceCumulativeExtremaInputGroup(arg.shape, arg.strides,
+                dimension, coordinates, inputBase)
+              cumulativeExtremaTwoSpans(valueOut, indexOut, source,
+                group * length, firstBase, uint(inputBase), length,
+                inputStep, maximum)
+              group += 2
+              if group < groups:
+                advanceCumulativeExtremaInputGroup(arg.shape, arg.strides,
+                  dimension, coordinates, inputBase)
+        while group < groups:
+          cumulativeExtremaSpan(valueOut, indexOut, source, group * length,
+            uint(inputBase), length, inputStep, maximum)
+          inc group
+          if group < groups:
+            advanceCumulativeExtremaInputGroup(arg.shape, arg.strides,
+              dimension, coordinates, inputBase)
+        return
+
+      const Lanes = 32'u
+      var inputBases {.noinit.}: array[Lanes, uint]
+      var outputBases {.noinit.}: array[Lanes, uint]
+      var carried {.noinit.}: array[Lanes, T]
+      var selected {.noinit.}: array[Lanes, int64]
+      var groupStart = 0'u
+      while groupStart < groups:
+        let width = min(Lanes, groups - groupStart)
+        for lane in 0'u ..< width:
+          let group = groupStart + lane
+          let base = (group div inner) * length * inner + group mod inner
+          outputBases[lane] = base
+          inputBases[lane] = uint(inputBase)
+          if group + 1 < groups:
+            advanceCumulativeExtremaInputGroup(arg.shape, arg.strides,
+              dimension, coordinates, inputBase)
+          carried[lane] = source[inputBases[lane]]
+          selected[lane] = 0
+          valueOut[base] = carried[lane]
+          indexOut[base] = 0
+        if inputStride == 0:
+          # Broadcast prefixes select their latest logical position.
+          for index in 1'u ..< length:
+            for lane in 0'u ..< width:
+              let position = outputBases[lane] + index * inner
+              valueOut[position] = carried[lane]
+              indexOut[position] = cast[int64](index)
+        else:
+          for index in 1'u ..< length:
+            for lane in 0'u ..< width:
+              let position = outputBases[lane] + index * inner
+              cumulativeExtremaStep(source[inputBases[lane] + index * inputStep],
+                cast[int64](index), carried[lane], selected[lane], maximum)
+              valueOut[position] = carried[lane]
+              indexOut[position] = selected[lane]
+        groupStart += width
       return
 
+    # Aliases and arbitrary output strides use a sequential carry writer.
+    # Its bases are storage-relative and remain valid after every odometer step.
+    let valueOut = values.storage.raw_buffer
+    let indexOut = indices.storage.raw_buffer
     var coordinates: Metadata
     coordinates.len = arg.rank
     var inputBase = arg.offset
-    let inputStride = arg.strides[dimension]
-    let inputStep = cast[uint](inputStride)
-    if inner == 1:
-      template advanceBase() =
-        for coordinateAxis in countdown(arg.rank - 1, 0):
-          if coordinateAxis == dimension: continue
-          inc coordinates[coordinateAxis]
-          inputBase += arg.strides[coordinateAxis]
-          if coordinates[coordinateAxis] < arg.shape[coordinateAxis]: break
-          coordinates[coordinateAxis] = 0
-          inputBase -= arg.shape[coordinateAxis] * arg.strides[coordinateAxis]
-      var group = 0'u
-      when T is SomeSignedInt or T is uint8:
-        if inputStride < -1 or inputStride > 1:
-          while group + 1 < groups:
-            let firstBase = uint(inputBase)
-            advanceBase()
-            cumulativeExtremaTwoSpans(values, indices, source, group * length,
-              firstBase, uint(inputBase), length, inputStep, maximum)
-            group += 2
-            if group < groups: advanceBase()
-      while group < groups:
-        cumulativeExtremaSpan(values, indices, source, group * length,
-          uint(inputBase), length, inputStep, maximum)
-        inc group
-        if group < groups: advanceBase()
-      return
-    const Lanes = 32'u
-    var inputBases {.noinit.}: array[Lanes, uint]
-    var outputBases {.noinit.}: array[Lanes, uint]
-    var carried {.noinit.}: array[Lanes, T]
-    var selected {.noinit.}: array[Lanes, int64]
-    var groupStart = 0'u
-    while groupStart < groups:
-      let width = min(Lanes, groups - groupStart)
-      for lane in 0'u ..< width:
-        let group = groupStart + lane
-        let base = (group div inner) * length * inner + group mod inner
-        outputBases[lane] = base
-        inputBases[lane] = uint(inputBase)
-        if group + 1 < groups:
-          for index in countdown(arg.rank - 1, 0):
-            if index == dimension: continue
-            inc coordinates[index]
-            inputBase += arg.strides[index]
-            if coordinates[index] < arg.shape[index]: break
-            coordinates[index] = 0
-            inputBase -= arg.shape[index] * arg.strides[index]
-        carried[lane] = source[inputBases[lane]]
-        selected[lane] = 0
-        values[base] = carried[lane]
-        indices[base] = 0
-      if inputStride == 0:
-        # Broadcast prefixes always select their latest logically distinct index.
-        for index in 1'u ..< length:
-          for lane in 0'u ..< width:
-            let position = outputBases[lane] + index * inner
-            values[position] = carried[lane]
-            indices[position] = cast[int64](index)
-      else:
-        for index in 1'u ..< length:
-          for lane in 0'u ..< width:
-            let position = outputBases[lane] + index * inner
-            cumulativeExtremaStep(source[inputBases[lane] + index * inputStep],
-              cast[int64](index), carried[lane], selected[lane], maximum)
-            values[position] = carried[lane]
-            indices[position] = selected[lane]
-      groupStart += width
+    var valueBase = values.offset
+    var indexBase = indices.offset
+    let inputStep = arg.strides[dimension]
+    let valueStep = values.strides[dimension]
+    let indexStep = indices.strides[dimension]
+    let groupCount = int(groups)
+    for group in 0 ..< groupCount:
+      cumulativeExtremaSpanOut(valueOut, indexOut, source,
+        valueBase, indexBase, inputBase, valueStep, indexStep,
+        inputStep, arg.shape[dimension], maximum)
+      if group + 1 < groupCount:
+        advanceCumulativeExtremaOutputGroup(arg.shape, arg.strides,
+          values.strides, indices.strides, dimension, coordinates,
+          inputBase, valueBase, indexBase)
+
+proc scanCumulativeExtrema*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    axis: int; maximum: static[bool]): tuple[values: Tensor[T], indices: Tensor[int64]] =
+  ## Scalar and empty dispatch precedes dtype rejection, but never axis validation.
+  let dimension = validateCumulativeExtrema(arg, axis)
+  result.values = newTensorUninit[T](arg.shape)
+  result.indices = newTensorUninit[int64](arg.shape)
+  scanCumulativeExtremaInto(arg, dimension, result.values, result.indices, maximum)
+
+proc scanCumulativeExtremaOut*[T: SomeNumber or bool or Complex](arg: Tensor[T];
+    axis: int; values: var Tensor[T]; indices: var Tensor[int64];
+    maximum: static[bool]) =
+  ## Stage and validate both output headers before committing either one.
+  let dimension = validateCumulativeExtrema(arg, axis)
+  let input = arg
+  let outputs = prepareCumulativeExtremaOutputs(input, values, indices)
+  values = outputs.values
+  indices = outputs.indices
+  scanCumulativeExtremaInto(input, dimension, values, indices, maximum,
+    outputs.valuesExactInput, outputs.indicesExactInput)

@@ -1037,12 +1037,31 @@ proc cummin*[T: SomeNumber or bool or Complex](arg: Tensor[T];
   ## Signed, offset and broadcast views are read without copying their storage.
   scanCumulativeExtrema(arg, axis, false)
 
+proc cummin*[T: SomeNumber or bool or Complex](arg: Tensor[T]; axis: int;
+    values: var Tensor[T]; indices: var Tensor[int64]) =
+  ## Write inclusive minima and latest indices into caller-owned tensors.
+  ## Axis/dtype dispatch matches the allocating overload. Values retain dtype;
+  ## indices are int64. Same-shaped outputs keep storage, strides and offset.
+  ## Resizing retains the offset and reuses sufficient capacity; internal growth
+  ## detaches only the destination, leaving old aliases intact. External storage
+  ## needs known capacity and cannot grow. Both outputs are validated before
+  ## either changes, including internal/output overlap and partial source aliases.
+  ## Exact source/value maps, same-width source/index maps and a complex scalar's
+  ## leading index bytes are allowed when safe. Unproven exotic layouts reject.
+  scanCumulativeExtremaOut(arg, axis, values, indices, false)
+
 proc cummax*[T: SomeNumber or bool or Complex](arg: Tensor[T];
     axis: int = 0): tuple[values: Tensor[T], indices: Tensor[int64]] =
   ## Inclusive CPU maxima with the same shape, dtype and storage rules as cummin.
   ## Equal values and each new NaN select their latest source value and index.
   ## Axis validation precedes dtype rejection, including scalar/empty dispatch.
   scanCumulativeExtrema(arg, axis, true)
+
+proc cummax*[T: SomeNumber or bool or Complex](arg: Tensor[T]; axis: int;
+    values: var Tensor[T]; indices: var Tensor[int64]) =
+  ## Write inclusive maxima and latest indices into caller-owned tensors.
+  ## Capacity, resizing, aliasing and atomic validation follow destination cummin.
+  scanCumulativeExtremaOut(arg, axis, values, indices, true)
 
 proc logcumsumexp*[T: SomeNumber or bool or Complex](arg: Tensor[T];
     axis = 0): Tensor[T] =
