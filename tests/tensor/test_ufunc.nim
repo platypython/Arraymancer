@@ -95,7 +95,10 @@ proc main() =
       check abs(c) == [2.0,1,0,1,2].toTensor().asType(float64)
 
     test "Bulk unary operations preserve IEEE values and preallocated storage":
-      let source = [-Inf.float32, -4'f32, -0'f32, 0'f32, 1'f32, Inf.float32, NaN.float32].toTensor
+      # Nim's C++ backend emits double INF in static float32 arrays.
+      var source = [0'f32, -4'f32, -0'f32, 0'f32, 1'f32, 0'f32, NaN.float32].toTensor
+      source[0] = -Inf.float32
+      source[5] = Inf.float32
       template compareOperation(operation: static[UnaryMathOp]; reference: untyped) =
         block:
           var output = newTensor[float32](source.shape)
@@ -122,23 +125,25 @@ proc main() =
       let values = [cast[float32](1'u32), cast[float32](0x007fffff'u32),
         cast[float32](0x00800000'u32), -0'f32, 0'f32, NaN.float32,
         2'f32, Inf.float32, 9'f32]
-      var sourceOwner = newTensorWith[float32](values.len + 2, 99'f32)
-      var outputOwner = newTensorWith[float32](values.len + 2, -99'f32)
-      for index, value in values: sourceOwner[index + 1] = value
-      for count in 1 .. values.len:
+      const maxCount = 33
+      var sourceOwner = newTensorWith[float32](maxCount + 2, 99'f32)
+      var outputOwner = newTensorWith[float32](maxCount + 2, -99'f32)
+      for index in 0 ..< maxCount:
+        sourceOwner[index + 1] = values[index mod values.len]
+      for count in 1 .. maxCount:
         let source = sourceOwner[1..count]
         var output = outputOwner[1..count]
         output.applyUnary(source, unarySqrt)
         check outputOwner[0] == -99'f32
         check outputOwner[count + 1] == -99'f32
         for index in 0 ..< count:
-          let wanted = math.sqrt(values[index])
+          let wanted = math.sqrt(values[index mod values.len])
           let actual = output[index]
           if wanted != wanted:
             check actual != actual
           else:
             check cast[uint32](actual) == cast[uint32](wanted)
-          check cast[uint32](source[index]) == cast[uint32](values[index])
+          check cast[uint32](source[index]) == cast[uint32](values[index mod values.len])
 
     test "Bulk unary operations preserve views, aliases and scalar/empty shapes":
       let owner = [99'f32, 1, 4, 9, 16, 99].toTensor

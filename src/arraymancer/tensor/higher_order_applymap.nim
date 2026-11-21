@@ -239,9 +239,6 @@ template map2_inline*[T, U](t1: Tensor[T], t2: Tensor[U], op:untyped): untyped =
     # Fresh output storage cannot alias either input, even when the inputs overlap.
     let data {.restrict.} = dest.storage.raw_buffer
     when T is KnownSupportsCopyMem and U is KnownSupportsCopyMem:
-      let strides = [z1.strides, z2.strides]
-      let span = innerSpan(z1.shape, strides)
-      let origins = [z1.offset, z2.offset]
       let source1 = z1.storage.raw_buffer
       let source2 = z2.storage.raw_buffer
       if z1.is_C_contiguous and z2.is_C_contiguous:
@@ -251,28 +248,28 @@ template map2_inline*[T, U](t1: Tensor[T], t2: Tensor[U], op:untyped): untyped =
             let x {.inject, used.} = source1[z1.offset +% i]
             let y {.inject, used.} = source2[z2.offset +% i]
             data[i] = op
-      elif span.length > 1 or z1.size == 1:
-        for outer, offsets in spanOffsets(z1.shape, strides, origins,
-            span.outerRank, z1.size div span.length):
-          let firstOffset = offsets[0]
-          let secondOffset = offsets[1]
-          let outputOffset = outer *% span.length
+      else:
+        let strides = [z1.strides, z2.strides]
+        let span = innerSpan(z1.shape, strides)
+        let origins = [z1.offset, z2.offset]
+        if span.length > 1 or z1.size == 1:
           let count = uint(span.length)
           withSpanStep(span.steps[0], firstStep):
             withSpanStep(span.steps[1], secondStep):
-              for cursor in 0'u ..< count:
-                let i = cast[int](cursor)
-                let x {.inject, used.} = source1[firstOffset +% (i *% firstStep)]
-                let y {.inject, used.} = source2[secondOffset +% (i *% secondStep)]
-                data[outputOffset +% i] = op
-      else:
-        omp_parallel_blocks(block_offset, block_size, z1.size):
-          for i, x {.inject.}, y {.inject.} in enumerateZip(z1, z2, block_offset, block_size):
-            data[i] = op
-    else:
-      omp_parallel_blocks(block_offset, block_size, z1.size):
-        for i, x {.inject.}, y {.inject.} in enumerateZip(z1, z2, block_offset, block_size):
-          data[i] = op
+              for outer, offsets in spanOffsets(z1.shape, strides, origins,
+                  span.outerRank, z1.size div span.length):
+                let firstOffset = offsets[0]
+                let secondOffset = offsets[1]
+                let outputOffset = outer *% span.length
+                for cursor in 0'u ..< count:
+                  let i = cast[int](cursor)
+                  let x {.inject, used.} = source1[firstOffset +% (i *% firstStep)]
+                  let y {.inject, used.} = source2[secondOffset +% (i *% secondStep)]
+                  data[outputOffset +% i] = op
+        else:
+          omp_parallel_blocks(block_offset, block_size, z1.size):
+            for i, x {.inject.}, y {.inject.} in enumerateZip(z1, z2, block_offset, block_size):
+              data[i] = op
   else:
     var dest = newTensorUninit[outType](z1.shape)
     for i, x {.inject.}, y {.inject.} in enumerateZip(z1, z2):

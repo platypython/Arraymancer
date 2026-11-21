@@ -1772,14 +1772,26 @@ when defined(macosx):
     withCompilerOptimHints()
     let destination {.restrict.} = cast[ptr UncheckedArray[float32]](output)
     let source = cast[ptr UncheckedArray[float32]](input)
-    var cursor = 0
+    let length = uint(count)
+    var cursor = 0'u
     when defined(arm64):
-      let vectorCount = count and not 3
+      let vectorCount = length and not 15'u
       while cursor < vectorCount:
+        let values0 = vld1q_f32(unsafeAddr source[cursor])
+        let values1 = vld1q_f32(unsafeAddr source[cursor + 4])
+        let values2 = vld1q_f32(unsafeAddr source[cursor + 8])
+        let values3 = vld1q_f32(unsafeAddr source[cursor + 12])
+        vst1q_f32(addr destination[cursor], vsqrtq_f32(values0))
+        vst1q_f32(addr destination[cursor + 4], vsqrtq_f32(values1))
+        vst1q_f32(addr destination[cursor + 8], vsqrtq_f32(values2))
+        vst1q_f32(addr destination[cursor + 12], vsqrtq_f32(values3))
+        cursor += 16'u
+      let vectorTail = length and not 3'u
+      while cursor < vectorTail:
         let values = vld1q_f32(unsafeAddr source[cursor])
         vst1q_f32(addr destination[cursor], vsqrtq_f32(values))
-        cursor += 4
-    for index in cursor ..< count:
+        cursor += 4'u
+    for index in cursor ..< length:
       destination[index] = math.sqrt(source[index])
 when not defined(macosx):
   proc reducePackedFloat64*(output, input: ptr float64; count: uint;

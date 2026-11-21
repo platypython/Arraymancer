@@ -1,6 +1,9 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Skip span planning for contiguous CPU elementwise inputs and hoist invariant
+  broadcast stride dispatch. Unroll float32 hardware square roots without
+  changing strided/alias fallbacks or offset and vector-tail behavior.
 - Add CPU float32/64 seeded ``cummin`` and ``cummax`` gradients with ordered,
   input-precision scatter-add into independent dense storage. Preserve latest
   tie/NaN destinations, inactive positive zeros, signed/broadcast views,
