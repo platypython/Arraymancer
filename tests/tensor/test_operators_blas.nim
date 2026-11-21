@@ -151,6 +151,36 @@ proc main() =
 
       check: d_float * e_float == te_int.map(x => x.float64)
 
+    test "GEMV preserves offsets, vector strides and scaled accumulation":
+      template checkScaledGemvViews(T: typedesc; alpha, beta, first, second: untyped) =
+        ## Exercise both direct major orders and packing with guarded vector views.
+        block:
+          let rows = [[99.0, 99, 99], [1.0, 2, 3],
+                      [4.0, 5, 6], [99.0, 99, 99]].toTensor.asType(T)
+          let columns = [[99.0, 99], [1.0, 4], [2.0, 5],
+                         [3.0, 6], [99.0, 99]].toTensor.asType(T)
+          let padded = [[99.0, 1, 99, 2, 99, 3, 99],
+                        [99.0, 4, 99, 5, 99, 6, 99]].toTensor.asType(T)
+          let inputOwner = [99.0, 2, 99, -1, 99, 3, 99].toTensor.asType(T)
+          let input = inputOwner[1..5|2]
+          for matrix in [rows[1..2, _], columns.transpose[_, 1..3],
+                         padded[_, 1..5|2]]:
+            var outputOwner = [99.0, 1, 99, -2, 99].toTensor.asType(T)
+            var output = outputOwner[1..3|2]
+            gemv(alpha, matrix, input, beta, output)
+            var expected = [99.0, 0, 99, 0, 99].toTensor.asType(T)
+            expected[1] = first
+            expected[3] = second
+            check outputOwner == expected
+            check matrix * input == [9.0, 21].toTensor.asType(T)
+          check inputOwner == [99.0, 2, 99, -1, 99, 3, 99].toTensor.asType(T)
+      checkScaledGemvViews(float32, 2'f32, -1'f32, 17'f32, 44'f32)
+      checkScaledGemvViews(float64, 2.0, -1.0, 17.0, 44.0)
+      checkScaledGemvViews(Complex[float32], complex(2'f32, 1'f32),
+          complex(-1'f32, 2'f32), complex(17'f32, 11'f32), complex(44'f32, 17'f32))
+      checkScaledGemvViews(Complex[float64], complex(2.0, 1.0),
+          complex(-1.0, 2.0), complex(17.0, 11.0), complex(44.0, 17.0))
+
     test "GEMM and GEMV with transposed matrices":
       let a = @[@[1.0,2,3],@[4.0,5,6]].toTensor()
       let b = @[@[7.0, 8],@[9.0, 10],@[11.0, 12]].toTensor()

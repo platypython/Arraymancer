@@ -87,7 +87,7 @@ proc gemm*[T: SomeNumber](
   gemm(1.T, A, B, 0.T, C)
 
 proc matmulImpl[T](alpha: T, a, b: Tensor[T], beta: T): Tensor[T] {.noinit.} =
-  ## Promote vectors as views, broadcast batches and write each matrix into one output allocation.
+  ## Allocate once; promote vectors only when batch planning is needed.
   if a.rank < 1 or b.rank < 1:
     raise newException(ValueError, "Matrix multiplication requires operands of rank >= 1")
   if a.rank == 2 and b.rank == 2:
@@ -112,6 +112,15 @@ proc matmulImpl[T](alpha: T, a, b: Tensor[T], beta: T): Tensor[T] {.noinit.} =
       swap(matrix.strides[0], matrix.strides[1])
       gemv(alpha, matrix, a, beta, result)
     return
+  if a.rank == 2 and b.rank == 1:
+    let M = a.shape[0]
+    let K = a.shape[1]
+    if K != b.shape[0]:
+      raise newException(ValueError, "Matrix inner dimensions must agree for multiplication")
+    result = if K == 0: zeros[T](M) else: newTensorUninit[T](M)
+    if M != 0 and K != 0:
+      gemv(alpha, a, b, beta, result)
+    return
   let left = promoteMatmulOperand(a, false)
   let right = promoteMatmulOperand(b, true)
   let M = left.shape[left.rank - 2]
@@ -119,12 +128,6 @@ proc matmulImpl[T](alpha: T, a, b: Tensor[T], beta: T): Tensor[T] {.noinit.} =
   let N = right.shape[right.rank - 1]
   if K != right.shape[right.rank - 2]:
     raise newException(ValueError, "Matrix inner dimensions must agree for multiplication")
-
-  if a.rank == 2 and b.rank == 1:
-    result = if K == 0: zeros[T](M) else: newTensorUninit[T](M)
-    if M != 0 and K != 0:
-      gemv(alpha, a, b, beta, result)
-    return
 
   let a_batch_rank = left.rank - 2
   let b_batch_rank = right.rank - 2

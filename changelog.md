@@ -1,6 +1,8 @@
 Arraymancer v0.7.x
 =====================================================
 
+- Keep fallback tensor temporaries off C/F-contiguous CPU GEMV and skip
+  vector-promotion metadata for matrix-vector products.
 - Skip span planning for contiguous CPU elementwise inputs and hoist invariant
   broadcast stride dispatch. Unroll float32 hardware square roots without
   changing strided/alias fallbacks or offset and vector-tail behavior.

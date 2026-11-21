@@ -49,6 +49,28 @@ when defined(blis):
 
 # Note the fallback for non-real "naive_gemv_fallback" is called directly
 
+proc blasMV_y_eq_aAx_p_by_fallback[T: SomeFloat|Complex[float32]|Complex[float64]](
+  M, N: int, alpha: T, a, x: Tensor[T],
+  beta: T, y: var Tensor[T]) =
+  let
+    cont_A = a.asContiguous
+    cont_A_is_rowMajor = cont_A.is_C_contiguous
+    cont_A_order = if cont_A_is_rowMajor: rowMajor else: colMajor
+    lda = if cont_A_is_rowMajor: N else: M
+
+  when type(alpha) is Complex:
+    gemv(cont_A_order, noTranspose,
+         M, N,
+         unsafeAddr(alpha), cont_A.get_offset_ptr, lda,
+         x.get_offset_ptr, x.strides[0],
+         unsafeAddr(beta), y.get_offset_ptr, y.strides[0])
+  else:
+    gemv(cont_A_order, noTranspose,
+         M, N,
+         alpha, cont_A.get_offset_ptr, lda,
+         x.get_offset_ptr, x.strides[0],
+         beta, y.get_offset_ptr, y.strides[0])
+
 proc blasMV_y_eq_aAx_p_by*[T: SomeFloat|Complex[float32]|Complex[float64]](
   alpha: T, a, x: Tensor[T],
   beta: T, y: var Tensor[T]) =
@@ -60,28 +82,28 @@ proc blasMV_y_eq_aAx_p_by*[T: SomeFloat|Complex[float32]|Complex[float64]](
   let
     M = a.shape[0]
     N = a.shape[1] # = x.shape[0], x is considered as a column vector
+    a_is_rowMajor = a.is_C_contiguous
 
-    cont_A = a.asContiguous # if not contiguous, change to row Major
-    cont_A_is_rowMajor = cont_A.is_C_contiguous
+  if a_is_rowMajor or a.is_F_contiguous:
+    let
+      cont_A_order = if a_is_rowMajor: rowMajor else: colMajor
+      lda = if a_is_rowMajor: N else: M
 
-    cont_A_order =  if cont_A_is_rowMajor: rowMajor
-                    else: colMajor
+    when type(alpha) is Complex:
+      gemv(cont_A_order, noTranspose,
+           M, N,
+           unsafeAddr(alpha), a.get_offset_ptr, lda,
+           x.get_offset_ptr, x.strides[0],
+           unsafeAddr(beta), y.get_offset_ptr, y.strides[0])
+    else:
+      gemv(cont_A_order, noTranspose,
+           M, N,
+           alpha, a.get_offset_ptr, lda,
+           x.get_offset_ptr, x.strides[0],
+           beta, y.get_offset_ptr, y.strides[0])
+    return
 
-    lda =  if cont_A_is_rowMajor: N # leading dimension
-            else: M
-
-  when type(alpha) is Complex:
-    gemv( cont_A_order, noTranspose,
-          M, N,
-          unsafeAddr(alpha), cont_A.get_offset_ptr, lda,
-          x.get_offset_ptr, x.strides[0],
-          unsafeAddr(beta), y.get_offset_ptr, y.strides[0])
-  else:
-    gemv( cont_A_order, noTranspose,
-          M, N,
-          alpha, cont_A.get_offset_ptr, lda,
-          x.get_offset_ptr, x.strides[0],
-          beta, y.get_offset_ptr, y.strides[0])
+  blasMV_y_eq_aAx_p_by_fallback(M, N, alpha, a, x, beta, y)
 
 
 
